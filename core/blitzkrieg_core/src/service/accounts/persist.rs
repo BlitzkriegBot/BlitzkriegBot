@@ -912,6 +912,36 @@ impl Core {
             None => Vec::new(),
         };
         let default_id = crate::account::default_account_id();
+        // Overlay per-account round durations from SQLite (issue #1230):
+        // the account_settings row wins over the .env default read at book
+        // load. A row that fails to parse is warn-skipped; one bad cell must
+        // not brick a boot or widen any grid.
+        for account in self.accounts.account_list() {
+            let id = account.id.as_str();
+            let rd = db.db().with_connection(|conn| {
+                crate::db::account_setting_get(
+                    conn,
+                    id,
+                    crate::risk::account_store::ROUND_DURATION_SETTING,
+                )
+                .ok()
+                .flatten()
+                .and_then(|raw| raw.trim().parse::<i64>().ok())
+            });
+            if let Some(sec) = rd {
+                if self.config.allowed_round_secs.contains(&sec) {
+                    self.config
+                        .account_round_durations
+                        .insert(id.to_string(), sec);
+                } else {
+                    tracing::warn!(
+                        account = %id,
+                        value = sec,
+                        "stored round anchor not in declared union — the .env default stands"
+                    );
+                }
+            }
+        }
         // The default account's assignment key decides whether the boot runs
         // on the file's spelling (migration already happened) or migrates.
         let default_has_key = self

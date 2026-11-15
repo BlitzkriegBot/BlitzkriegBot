@@ -86,10 +86,10 @@ const ALLOW = [
   { path: 'core/blitzkrieg_core/src/ipc/server/tests/tests_risk_rounds.rs', atAuthoring: 1562 },
   // #1199 第六轮：dispatch_boot_enablement_tests.rs 的 fixture 补 db_path
   // 与 env 断言迁 SQL，1483→1547（+64 行）。
-  {
-    path: 'core/blitzkrieg_core/src/service/tests/strategy_dispatch_tests/dispatch_boot_enablement_tests.rs',
-    atAuthoring: 1547,
-  },
+    {
+      path: 'core/blitzkrieg_core/src/service/tests/strategy_dispatch_tests/dispatch_boot_enablement_tests.rs',
+      atAuthoring: 1547,
+    },
 ];
 
 const checks = [];

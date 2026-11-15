@@ -50,6 +50,12 @@ function makeCore(label, extraArgs = []) {
     tickMs: 20,
     autoRestart: false,
     cwd,
+    // issue #1199/#1230: the default DB path is install-root anchored (so a
+    // deployment's data is one file from any cwd). This gate's isolation is the
+    // scratch cwd, so point BLITZKRIEG_DB_PATH at the scratch DB — otherwise the
+    // core reads the deployment's real data (round anchors from other gates)
+        // and the fixture order inherits a stale grid.
+    envExtra: { BLITZKRIEG_DB_PATH: join(cwd, 'data', 'blitzkrieg.sqlite') },
     extraArgs,
   });
 }

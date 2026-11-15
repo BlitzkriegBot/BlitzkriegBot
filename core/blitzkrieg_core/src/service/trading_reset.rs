@@ -724,26 +724,14 @@ impl Core {
                 ));
             }
         }
-        // 操作者裁决 2026-11-14：轮次和账户其它数据同源 —— 落 SQLite
-        // （`account_settings.round.duration_sec`），**不再写 `.env`**。
-        // 持久优先：有库时先落库，失败即拒绝且无任何账簿副作用；无库
-        // （回测 / 进程内测试）只有内存生效，日志如实说明未落盘 ——
-        // 任何情况下都不写文件，`.env` 不再有第二个真相。
-        // 再撤单→市价强平（fail-closed），最后内存更新+引擎网格切换。
-        // 任何一步失败都不留半边天。
-        // `persisted` 反映写入是否落到了 SQLite（`.env` 是只读的，SQLite
-        // 是唯一持久化后端）。
         let persisted = self.account_risk_db.is_some();
+        // 操作者裁决 2026-11-14：轮次落 SQLite `account_settings`（key=round.duration_sec），不再写 `.env`；持久优先失败即拒绝，无库仅内存生效。
         if let Some(db) = self.account_risk_db.clone() {
-            let durable = if patch.reset {
-                None
-            } else {
-                sec.map(|s| s.to_string())
-            };
+            let value = sec.map(|s| s.to_string());
             db.save_setting(
                 account_id,
                 crate::risk::account_store::ROUND_DURATION_SETTING,
-                durable.as_deref(),
+                value.as_deref(),
             )
             .map_err(|e| {
                 CoreError::new(
@@ -752,12 +740,8 @@ impl Core {
                 )
             })?;
         } else {
-            tracing::warn!(
-                target: "risk",
-                account = %account_id,
-                "round_duration.set: no SQLite store on this core — the grid moves for \
-                 this session only and nothing is persisted (no file is written)"
-            );
+            tracing::warn!(target: "risk", account = %account_id,
+                "round_duration.set: no SQLite store — grid moves for this session only, nothing persisted");
         }
 
         // 撤单 → 市价强平 → 切网格的前两步，fail-closed（一律执行，秒切秒换）。

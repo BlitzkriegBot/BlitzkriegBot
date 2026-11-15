@@ -806,7 +806,7 @@ async fn round_duration_lands_in_sqlite_and_the_next_boot_reads_it_back() {
         assert_eq!(
             read["result"]["effectiveSec"],
             serde_json::json!(900),
-            "the default grid is separate from the default account's override: {read}"
+            "per-account override is separate from the process default grid: {read}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

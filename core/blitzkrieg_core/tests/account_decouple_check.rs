@@ -348,6 +348,22 @@ fn decouple_core(accounts_path: Option<&Path>, pot: Option<Decimal>, enable_defa
         }
         None => Core::new(config),
     };
+    // Open the SQLite store so account.strategies.set / round_duration.set can
+    // persist (issue #1230: writes no longer go to .env). Use a per-test unique
+    // suffix so parallel tests never contend on the same database file.
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let db_path = match accounts_path {
+        Some(p) => {
+            let stem = p.file_stem().unwrap_or_default().to_string_lossy();
+            p.with_file_name(format!("{stem}-{unique}.sqlite"))
+        }
+        None => scratch_dir().join(format!("decouple-{unique}.sqlite")),
+    };
+    c.open_account_risk_db(&db_path)
+        .expect("decouple test database opens");
     let cfg = c.config().engine_config();
     let mut eng = blitzkrieg_core::engine::Engine::new(cfg.clone());
     eng.register_user_strategy(Box::new(arb_adapter()), lua_source())

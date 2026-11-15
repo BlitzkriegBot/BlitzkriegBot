@@ -290,6 +290,8 @@ async fn strategy_isolation_fixture() -> (
         two_account_book(now_ms()),
     );
     let db_path = env_path.parent().unwrap().join("store.sqlite");
+    c.open_account_risk_db(&db_path)
+        .expect("settings store opens");
     let mut engine = crate::engine::Engine::new(EngineConfig::default());
     test_support::host_disabled(
         &mut engine,

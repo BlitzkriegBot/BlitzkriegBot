@@ -265,7 +265,7 @@ fn display_account_set_persists_and_validates_plan_first() {
         )
         .unwrap(),
     );
-    c2.open_account_risk_db(dir.join("store-c2.sqlite"))
+    c2.open_account_risk_db(dir.join("store.sqlite"))
         .expect("settings store opens");
     c2.set_display_account_persisting(&crate::account::AccountId::from("frozen1"), "test", "")
         .expect("a frozen account is a legal display target (issue 561)");

@@ -1,5 +1,10 @@
 # BlitzkriegBot v0.3.0 开发设计规范与实施蓝图（DEV_V0_3.md）
 
+> ⚠️ **存档说明（2026-11-15，#1199 第六轮）**：本文写的「upsert `ACCOUNT_*` /
+> `POLICY_*` 进 `.env`」「env 单一可信源」等持久化叙事已被推翻——内核持久化后端
+> 是 SQLite（`data/blitzkrieg.sqlite`），`.env` 对内核**只读**，`env_file::upsert` /
+> `write_atomic` 已删除。本文仅作 0.3 接口冻结期的历史记录，配置事实以代码为准。
+
 > **状态**：接口冻结稿（Interfaces Frozen）——冻结范围见 §14.0（两个契约文件 + 五个类型模块）
 > **基线**：`feat/trading-safety-selfcheck` @ `bf4871a0`（0.2.1；0.2.0 已完成部分成交、结算到账、Maker 侧实盘验证）
 > **目标版本**：v0.3.0

@@ -411,7 +411,7 @@ impl Core {
             return Err(CoreError::new(
                 CoreErrorCode::Internal,
                 format!(
-                    "round_duration.set(immediate): 强平未全部成交，已按实际成交入账，网格未切换；未平仓位：{}",
+                    "round_duration.set: 强平未全部成交，已按实际成交入账，网格未切换；未平仓位：{}",
                     still_open.join(", ")
                 ),
             ));
@@ -422,7 +422,7 @@ impl Core {
             account = %account_id,
             cancelled = order_ids.len(),
             closed = positions.len(),
-            "round duration immediate switch: 撤单+市价强平完成，可切入新网格",
+            "round duration switch: 撤单+市价强平完成，可切入新网格",
         );
         Ok(positions.len())
     }

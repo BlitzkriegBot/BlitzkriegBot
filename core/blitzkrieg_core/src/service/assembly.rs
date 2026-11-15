@@ -303,21 +303,14 @@ impl Core {
             // 再把 .env 里独有的账户补上。
             if !rows.is_empty() {
                 let mut sql_accounts = Self::ledger_book_from_rows(&rows, s.risk_db(), now_ms());
-                let sql_ids: Vec<String> = sql_accounts
-                    .account_list()
-                    .iter()
-                    .map(|a| a.id.as_str().to_string())
-                    .collect();
-                let removed = s.risk_db().load_removed_accounts();
-                for acc in accounts.account_list() {
-                    if sql_ids.iter().any(|id| id == acc.id.as_str())
-                        || removed.iter().any(|id| id == acc.id.as_str())
-                    {
-                        continue;
-                    }
-                    let _ = sql_accounts.insert(acc.clone());
-                }
+                // 墓碑门 + env 补账合并 + default venue 种子补绑：见
+                // `accounts::boot_seed`（#1199 第九轮，保持构造器可读）。
+                let removed = super::accounts::load_removed_accounts_fail_closed(s.risk_db());
+                let env_book: Vec<crate::account::Account> =
+                    accounts.account_list().into_iter().cloned().collect();
+                super::accounts::merge_env_side_accounts(&mut sql_accounts, &env_book, &removed);
                 accounts = sql_accounts;
+                super::accounts::seed_bind_default_venue(&mut accounts, s);
             } else {
                 // 首次升级 boot：`accounts` 表空、簿来自只读 `.env`（兼容
                 // 回退）。物化：整簿写进 SQL —— 从这次 boot 起 `accounts`

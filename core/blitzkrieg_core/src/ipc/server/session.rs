@@ -381,13 +381,14 @@ pub async fn run(
                             }
                         }
                     }
-                    // Same `.env`, same external edit: execution_policy's POLICY_*
-                    // keys ride the same file. Hot-reload them so a hand edit of
-                    // the execution-policy section lands without a restart — the
-                    // same "real-time write to .env, real-time enable, no restart"
-                    // contract the cockpit families already enjoy. The policy
-                    // carrier IS SQLite (no `.env` face yet), so this runs
-                    // regardless of the cockpit carrier.
+                    // Same external edit: execution_policy's POLICY_* keys are
+                    // resolved SQL-first (`load_for_reload_with_sql`). While a
+                    // SQL row exists, a hand edit of the `.env` POLICY_* keys
+                    // does NOT take effect — SQL outranks the file. This reload
+                    // re-resolves through that priority so a SQL-driven change
+                    // lands without a restart; the policy carrier IS SQLite
+                    // (no `.env` write face), so this runs regardless of the
+                    // cockpit carrier.
                     if let Err(e) = c.reload_execution_policy() {
                         tracing::warn!(
                             "execution_policy env-file watch: reload failed ({e}); \

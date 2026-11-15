@@ -1,4 +1,4 @@
-//! account (`.env`) persisting writers, scope rebuild and account lifecycle (#780).
+//! account persisting writers (SQLite durable face), scope rebuild and account lifecycle (#780).
 
 use crate::account::AccountLedgers;
 use crate::model::*;
@@ -160,7 +160,7 @@ impl Core {
     ///
     /// Validations (fail-closed, every refusal names its field):
     ///   * both venues non-empty AND distinct;
-    ///   * both accounts exist in the book (the .env ACCOUNT_* rows);
+    ///   * both accounts exist in the book (the `accounts` table rows / the boot book);
     ///   * when an account carries a venue binding, that binding must admit
     ///     its own leg's venue (an account pinned to venue V cannot trade
     ///     leg venue W — the scope gate would refuse every leg);
@@ -495,9 +495,9 @@ impl Core {
         Ok(())
     }
 
-    /// The trading-switch write (`account.trading.set`): memory AND
-    /// the operator's `.env` in one transaction — persist FIRST (a failure leaves
-    /// both stores untouched), memory after. The engine mirror needs no
+    /// The trading-switch write (`account.trading.set`): memory AND the
+    /// SQLite store in one persist-FIRST step (a failure leaves both untouched),
+    /// memory after. The engine mirror needs no
     /// separate push here: the next evaluation cycle re-pushes every
     /// account's trading fact, so the gate is in force within one cycle.
     /// `default` is settable like any account (a single-book deployment may
@@ -550,9 +550,9 @@ impl Core {
     }
 
     /// The lifecycle-status write (`account.unfreeze` writes back `status =
-    /// Active`): memory AND the operator's `.env` in one transaction — persist
-    /// FIRST (a failure leaves both the file and the memory untouched), memory
-    /// after. `default` is settable like any account.
+    /// Active`): memory AND the SQLite store in one persist-FIRST step (a
+    /// failure leaves both untouched), memory after. `default` is settable
+    /// like any account.
     ///
     /// 操作者裁决 2026-11-14（#1199 第六轮）：`.env` 对内核只读——本写的
     /// 持久化半边走 SQLite（`SqliteStore::save_account_status` /
@@ -624,8 +624,8 @@ impl Core {
     }
 
     /// The display-pointer write (显示账户配置化 / `display.account.set`):
-    /// memory AND the operator's `.env` in one transaction — persist FIRST (a failure
-    /// leaves both stores untouched), memory after. The refusals are ALL
+    /// memory AND the SQLite store in one persist-FIRST step (a failure leaves
+    /// both untouched), memory after. The refusals are ALL
     /// plan-first: the id must name a CONFIGURED account.
     ///
     /// 2026-10-20 操作者裁决（issue 561）：display 是面板的唯一可信账户
@@ -680,7 +680,7 @@ impl Core {
     }
 
     /// The strategy-assignment write (`account.strategies.set`): memory AND
-    /// the operator's `.env` in one transaction, plus the engine scope rebuild.
+    /// the SQLite store in one persist-FIRST step, plus the engine scope rebuild.
     ///
     /// Names are validated against the engine's REGISTERED set (plan-first —
     /// a typo fails here, never as a silently inert assignment). The rebuild:
@@ -696,8 +696,8 @@ impl Core {
     /// 账户↔venue 解耦语义: `requested` is the account's strategy
     /// ENABLEMENT set (the 启用按钮's persistence), not an assignment or a
     /// visibility filter — strategies are global. The write is a whole-set
-    /// decision: memory AND the operator's `.env` in one transaction (persist
-    /// first), then the engine scopes rebuilt from it (removed-and-flat
+    /// decision: memory AND the SQLite store in one persist-FIRST step,
+    /// then the engine scopes rebuilt from it (removed-and-flat
     /// drop; removed-and-held demote exits-only; added instantiate enabled).
     ///
     /// Returns the exits-only keep-list for the reply.
@@ -1188,7 +1188,8 @@ impl Core {
                 CoreErrorCode::InvalidParams,
                 format!(
                     "account.remove：`{id}` 是账户簿里最后一个账户——至少要保留一个账户 \
-                     （下一次启动会拒绝空账户簿；确要清空部署请直接清空 .env 的 ACCOUNT_* 行）"
+                     （下一次启动会拒绝空账户簿；确要清空部署请先用 blitzkrieg backup 存档，\
+                     再移除 data/blitzkrieg.sqlite）"
                 ),
             ));
         }
@@ -1270,16 +1271,16 @@ impl Core {
                             return Err(CoreError::new(
                                 CoreErrorCode::InvalidParams,
                                 format!(
-                                    "account.remove：`{id}` 的流水文件删除失败 —— .env \
-                                     已落盘但内存未动，旧流水文件还在；请重试一次，问题持续 \
-                                     请检查 data/ledger/ 的写权限"
+                                    "account.remove：`{id}` 的流水文件删除失败 —— 账户行已从 \
+                                     SQLite 删除，但内存未动，旧流水文件还在；请重试一次，\
+                                     问题持续请检查 data/ledger/ 的写权限"
                                 ),
                             ));
                         }
                         return Err(CoreError::new(
                             CoreErrorCode::InvalidParams,
                             format!(
-                                "account.remove：`{id}` 的流水文件 {name} 删除失败（{e}）—— .env 已落盘但内存未动，旧流水文件还在；请重试一次"
+                                "account.remove：`{id}` 的流水文件 {name} 删除失败（{e}）—— 账户行已从 SQLite 删除，但内存未动，旧流水文件还在；请重试一次"
                             ),
                         ));
                     }
@@ -1290,8 +1291,8 @@ impl Core {
             return Err(CoreError::new(
                 CoreErrorCode::InvalidParams,
                 format!(
-                    "account.remove：`{id}` 的流水文件删除失败 —— .env \
-                     已落盘但内存未动，旧流水文件还在；请重试一次，问题持续 \
+                    "account.remove：`{id}` 的流水文件删除失败 —— 账户行已从 SQLite \
+                     删除，但内存未动，旧流水文件还在；请重试一次，问题持续 \
                      请检查 data/ledger/ 的写权限"
                 ),
             ));

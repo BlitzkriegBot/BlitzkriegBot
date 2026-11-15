@@ -211,57 +211,6 @@ async function unfreeze(accountId: string): Promise<void> {
   }
 }
 
-/** 扩展插件启停写（`extension.enable` / `extension.disable`，POST /api/extension/set，
- * 网关路由已存在，之前面板无入口）。body 即 `{name, enabled}` 逐字转发，内核运行
- * on_load/on_unload 并回答 `{name, enabled}`，或命名失败原因。 */
-const extensionOperateId = ref<string | null>(null)
-const extensionErr = ref<string | null>(null)
-const extensionMsg = ref<string | null>(null)
-
-async function setExtension(name: string, enabled: boolean): Promise<void> {
-  if (extensionOperateId.value) return
-  extensionOperateId.value = name
-  extensionErr.value = null
-  extensionMsg.value = null
-  try {
-    const res = await api.extensionSet({ name, enabled, reason: 'panel extension toggle' })
-    if (res.error) throw new Error(res.error)
-    extensionMsg.value = `扩展 ${name} 已${enabled ? '启用' : '停用'}。`
-  } catch (e) {
-    extensionErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    extensionOperateId.value = null
-    setTimeout(() => { extensionMsg.value = null }, 6000)
-  }
-}
-
-/** 行情插件选切写（`market.plugin.set`，POST /api/market-plugin/set，网关路由已存在，
- * 之前面板无入口）：body 即 `{name?, reset?, reason?}` 逐字转发。只在下次会话生效，
- * 运行中的会话 feed/discovery/executor 不受影响。回执 `nextSessionPlugin` 为下次会话
- * 将选的插件。 */
-const pluginOperateId = ref<string | null>(null)
-const pluginErr = ref<string | null>(null)
-const pluginMsg = ref<string | null>(null)
-
-async function setMarketPlugin(name: string | undefined, reset: boolean): Promise<void> {
-  if (pluginOperateId.value) return
-  pluginOperateId.value = name ?? 'reset'
-  pluginErr.value = null
-  pluginMsg.value = null
-  try {
-    const res = await api.marketPluginSet({ name, reset, reason: 'panel plugin toggle' })
-    if (res.error) throw new Error(res.error)
-    pluginMsg.value = reset
-      ? '行情插件持久格已清，下次会话回落至启动分辨。'
-      : `行情插件下次会话将切至 ${res.nextSessionPlugin || name}。`
-  } catch (e) {
-    pluginErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    pluginOperateId.value = null
-    setTimeout(() => { pluginMsg.value = null }, 6000)
-  }
-}
-
 /** 「恢复 defaults 后自定义」：把当前编辑缓冲清回全局段的值（仍需保存落盘）。 */
 function resetToDefaultsLocal(): void {
   loadEditorFromSection(policyList.value?.defaults ?? null)

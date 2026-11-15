@@ -23,9 +23,14 @@ use rust_decimal::Decimal;
 use super::{Core, fee_quote};
 
 mod audit;
+mod boot_seed;
 mod persist;
 mod reconcile;
 mod sweeps;
+
+pub(super) use boot_seed::{
+    load_removed_accounts_fail_closed, merge_env_side_accounts, seed_bind_default_venue,
+};
 
 impl Core {
     /// Venue order ids the OME believes are resting (orphan detection input).

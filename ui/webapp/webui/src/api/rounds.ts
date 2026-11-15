@@ -40,6 +40,9 @@ export interface RoundDurationSetBody {
 export interface RoundDurationUpdateDoc {
   nextSessionSec: number
   reset: boolean
+  /** 本次写入市价强平的在途仓位数（真实数字，来自内核 cancel_and_flatten_account；
+   *  在途挂单的撤销不计数）。 */
+  flattenedPositions?: number
   atMs: number
   actor: string
   reason?: string

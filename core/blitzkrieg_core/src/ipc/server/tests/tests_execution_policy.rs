@@ -48,31 +48,33 @@ async fn policy_journals_are_private_per_fixture() {
     let _ = std::fs::remove_dir_all(path_b.parent().unwrap());
 }
 
-/// Issue #965: the KERNEL's own bootstrap template is not a legacy operator
-/// file. A fresh deployment bootstraps the template at the default path; the
-/// first real `execution_policy.set` must go THROUGH (the template is inert,
-/// the .env write is the real face) and sweep the template, so no dead toml
-/// lingers beside the env keys that are now the single source.
+/// 2026-11-15 操作者裁决（#1236 追加）：全新安装**不再自举生成**
+/// `execution_policy.toml`。这条测试原断言"内核模板首次保存被 sweep"——
+/// 生成能力删除后它失去对象。改为钉住新语义：一份磁盘上遗留的 toml
+/// （无论来源）是死数据——写入放行、文件原样不动、段落落 store。
 #[tokio::test]
-async fn a_set_sweeps_the_kernel_generated_template_and_writes_the_env() {
+async fn a_set_proceeds_past_a_leftover_policy_toml_and_leaves_it_untouched() {
     let (core, registry, peer, env_path) = policy_fixture().await;
     let toml_path = {
         let c = core.lock().await;
         std::path::PathBuf::from(c.config().execution_policy_path.clone().unwrap())
     };
-    std::fs::write(&toml_path, crate::execution_policy::BOOTSTRAP_TEMPLATE)
-        .expect("seed the kernel-generated template");
+    std::fs::write(
+        &toml_path,
+        "version = 1\n\n[defaults]\nbudget_ratio = 0.10\n",
+    )
+    .expect("seed a leftover policy toml");
 
     let v = rpc(&core, &registry, &peer,
         r#"{"jsonrpc":"2.0","id":1,"method":"execution_policy.set","params":{"accountId":"acct-t","budgetRatio":"0.05","maxBudgetUsd":"20"}}"#.into())
         .await;
     assert!(
         v.get("error").is_none(),
-        "the kernel's own template must not block the write: {v}"
+        "dead data must not block the write: {v}"
     );
     assert!(
-        !toml_path.exists(),
-        "the template is swept on the first real save"
+        toml_path.exists(),
+        "a proceeding write never deletes the file"
     );
     // 操作者裁决 2026-11-14：段落在 SQLite 的 account_settings 行里。
     let rows = crate::risk::account_store::AccountRiskDb::open(
@@ -91,11 +93,15 @@ async fn a_set_sweeps_the_kernel_generated_template_and_writes_the_env() {
     let _ = std::fs::remove_dir_all(env_path.parent().unwrap());
 }
 
-/// Issue #965's guard half: an EDITED file at the policy path is the
-/// operator's own — the write still refuses (one source, issue #751), the
-/// file stays untouched, and nothing lands in the env.
+/// Issue #965's guard half, UPDATED for the SQLite-only loader (#1199 第六轮 +
+/// 2026-11-15 操作者实机报告): an EDITED (real, 0.4.1-era) toml at the policy
+/// path is DEAD DATA — the loader reads the store's POLICY_* rows only, so the
+/// file cannot form a second source. Refusing here blocked EVERY panel save
+/// forever ("完全无法保存"); the write now proceeds with a loud warn, the file
+/// is left untouched (never deleted without the operator's say-so), and the
+/// section lands in the store the loader reads.
 #[tokio::test]
-async fn a_set_still_refuses_an_operator_edited_policy_file() {
+async fn a_set_proceeds_past_an_operator_edited_policy_file_with_a_warn() {
     let (core, registry, peer, env_path) = policy_fixture().await;
     let toml_path = {
         let c = core.lock().await;
@@ -111,31 +117,26 @@ async fn a_set_still_refuses_an_operator_edited_policy_file() {
         r#"{"jsonrpc":"2.0","id":1,"method":"execution_policy.set","params":{"accountId":"acct-o","budgetRatio":"0.05"}}"#.into())
         .await;
     assert!(
-        v["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("refusing the policy write"),
-        "an operator file blocks the env write by name: {v}"
+        v.get("error").is_none(),
+        "dead data must not block the store write: {v}"
     );
     assert!(
         toml_path.exists(),
-        "a refused write never touches the operator's file"
+        "a proceeding write never deletes the operator's file"
     );
-    // 操作者裁决 2026-11-14：拒绝下 store 里也不落任何 POLICY_ 行。
+    // 操作者裁决 2026-11-14：段落在 SQLite 的 account_settings 行里。
     let rows = crate::risk::account_store::AccountRiskDb::open(
         env_path.parent().unwrap().join("store.sqlite"),
     )
     .expect("the store re-opens")
     .load_settings()
     .expect("settings readable");
-    assert!(
-        !rows
-            .get("acct-o")
-            .map(|s| s
-                .keys()
-                .any(|k| k.starts_with("POLICY_BUDGET_RATIO_ACCT_O")))
-            .unwrap_or(false),
-        "nothing landed in the store under the refusal: {rows:?}"
+    assert_eq!(
+        rows.get("acct-o")
+            .and_then(|s| s.get("POLICY_BUDGET_RATIO_ACCT_O"))
+            .map(String::as_str),
+        Some("0.05"),
+        "the section landed in the store despite the dead toml: {rows:?}"
     );
     let _ = std::fs::remove_dir_all(env_path.parent().unwrap());
 }

@@ -37,9 +37,15 @@ export function useRoundDuration() {
     get: () => String(pending.value ?? doc.value?.perAccount?.['default'] ?? doc.value?.effectiveSec ?? ''),
     set: (v) => { pending.value = Number(v) },
   })
-  const dirty = computed(
-    () => pending.value !== null && pending.value !== doc.value?.nextSessionSec,
-  )
+  // dirty 与 value 的显示源同口径（审计 P2-6）：pending 与「当前显示的基础
+  // 档位」（perAccount['default'] ?? effectiveSec）比较。此前 dirty 比
+  // nextSessionSec —— 保存成功后 nextSessionSec 已切到新档，再点回原档时
+  // dirty 恒 false，保存按钮消失（实机恶性 bug：保存按钮不跟随轮次切换）。
+  const dirty = computed(() => {
+    if (pending.value === null) return false
+    const base = doc.value?.perAccount?.['default'] ?? doc.value?.effectiveSec
+    return base === undefined ? true : pending.value !== base
+  })
   const flagLocked = computed(() => doc.value?.source === 'cli_or_env')
   /** 5m/15m/1h/4h/daily，非标档位回落「Xs」。 */
   const roundLabel = (sec: number | null): string => {
@@ -61,7 +67,8 @@ export function useRoundDuration() {
     }
   }
 
-  /** 保存立即生效：先撤该账户在途单、按市价真实强平其仓位，再切入新网格。 */
+  /** 保存立即生效：先撤该账户在途单、按市价真实强平其仓位，再切入新网格。
+   *  成功文案用回执的真实强平数（无仓时如实说"无在途仓位"），不固定宣称。 */
   async function save(accountId: string = 'default'): Promise<void> {
     if (pending.value === null) return
     busy.value = true
@@ -76,7 +83,10 @@ export function useRoundDuration() {
       if (res.error) {
         err.value = res.error
       } else {
-        msg.value = `立即切入 ${res.nextSessionSec}s 网格；当前轮在途单已撤销、仓位已按市价强平。`
+        const flat = res.flattenedPositions ?? 0
+        msg.value =
+          `立即切入 ${res.nextSessionSec}s 网格；在途挂单已撤销` +
+          (flat > 0 ? `，${flat} 个仓位已按市价强平。` : '，无在途仓位需要强平。')
         await load()
       }
     } catch (e) {
@@ -86,7 +96,8 @@ export function useRoundDuration() {
     }
   }
 
-  /** 清除面板设置（回落启动参数解析）——设置卡独有的退化路径，同一写单源。 */
+  /** 清除面板设置（回落 default 网格）——设置卡独有的退化路径，同一写单源。
+   *  成功文案用回执的真实强平数（无仓时如实说"无在途仓位"），不固定宣称。 */
   async function reset(accountId: string = 'default'): Promise<void> {
     busy.value = true
     err.value = null
@@ -100,7 +111,10 @@ export function useRoundDuration() {
       if (res.error) {
         err.value = res.error
       } else {
-        msg.value = `面板设置已清除，回落到启动参数网格；当前轮在途单已撤销、仓位已按市价强平。`
+        const flat = res.flattenedPositions ?? 0
+        msg.value =
+          `面板设置已清除，回落 default 网格；在途挂单已撤销` +
+          (flat > 0 ? `，${flat} 个仓位已按市价强平。` : '，无在途仓位需要强平。')
         await load()
       }
     } catch (e) {

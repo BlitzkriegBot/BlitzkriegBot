@@ -379,8 +379,6 @@ const needsStrategyHint = computed(() => {
  * claims nothing.
  */
 	const dbEmpty = computed(() => snap.value?.stats?.dbEmpty === true)
-
-		// ── §9：此卡读 process-level stats.settlement，不受页面账户/场馆过滤；
 </script>
 
 <template>

@@ -14,30 +14,28 @@
 //!     copies, so a write here IS the restart-durable value: the merge
 //!     (fields onto the stored row) mirrors the write path's in-memory merge.
 //!     The production write port (`risk.setSystemic` / `risk.setExit`) keeps
-//!     the whole-row `AccountRiskDb::save_risk` / `save_exit` write while the
-//!     default assembly is EnvStore — the ExitConfig carries calibration
-//!     fields the wire audit never names, so the full-row write is the exact
-//!     pre-seam semantics (the five-field merge here is the carrier for the
-//!     swapped backend, and it is parity-proven against the raw pair: the
-//!     `account_risk` six-field row, the `account_settings`
+//!     the whole-row `AccountRiskDb::save_risk` / `save_exit` write; SQLite
+//!     is the default assembly's durable backend — the ExitConfig carries
+//!     calibration fields the wire audit never names, so the full-row write
+//!     is the exact pre-seam semantics (parity-proven against the raw pair:
+//!     the `account_risk` six-field row, the `account_settings`
 //!     order-notional key, `source = 'panel'`, and the exit `policy_json`).
 //!   * **settings family** (execution-policy sections, per-account round
 //!     duration, the account-book knobs, the arb legs) — the rows land in
 //!     the tables the importer fills (`account_settings`, `accounts`,
 //!     `strategy_assignments`, `arb_pairs`, `kernel_meta`), which is the
 //!     right durable shape.
-//!   * **credentials** — a typed refusal: the table stores per-account
-//!     credential ENV VAR NAMES plus the AES-256-GCM sealed payload, and the
-//!     var-name→account mapping is a PR-3 design decision (the current env
-//!     grammar is global). Values never land in plaintext anywhere; a
-//!     refusal is the honest face until the mapping exists.
+//!   * **credentials** — per-account credential ENV VAR NAMES plus the
+//!     AES-256-GCM sealed payload, durably landed in `kernel_meta`
+//!     (`credential.<VAR>`); the boot injects the plaintext into the process
+//!     env only (never to disk). Values never land in plaintext anywhere.
 //!
 //! Install state (issue #1199 r2, the honest ledger): this backend has passed
-//! the three-backend parity proof
+//! the two-backend parity proof
 //! (`tests/store_backend_parity.rs`: one business path — account
 //! create/venue/rounds/status/trading/strategies/remove, the settings cell,
 //! the risk/exit round-trip — asserted fact-for-fact identical across
-//! EnvStore / MemStore / SqliteStore, with the legitimate differences
+//! MemoryStore / SqliteStore, with the legitimate differences
 //! enumerated, not silenced).
 //!
 //! Fail-closed posture (issue #1199 acceptance): the store exists only with

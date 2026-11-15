@@ -88,6 +88,13 @@ pub const EXPIRY_TRUST_MS: i64 = 300_000;
 /// legible after two re-query cycles. 120s = two requery intervals — the
 /// same evidence, caught before a 15-minute round has outlived its length.
 pub const EXPIRY_FALLBACK_AFTER_MS: i64 = 120_000;
+/// #1236（操作者裁决 2026-11-15）：**过期轮次必须强制结算——轮次过期 10s
+/// 内完成**。binary 市场到期时价格天然收敛到 1/0（实机截图：过期仓位
+/// Cur = 0.99 / 0.01 / 0.97），最后报价就是裁决结果的最佳估计；过期 10s
+/// 后平台侧结算已可确认，等待不再以幽灵仓位为代价。裁决晚到的真实现金
+/// 仍由 reconcile sweep 对平，与 #991 的现金裁决点一致。此时长取代原
+/// 120s 沉默窗（#930/#684）：强制结算不再区分 venue 是否应答。
+pub const EXPIRY_ESTIMATE_SETTLE_AFTER_MS: i64 = 10_000;
 /// The exit reason a settled position closes with (`exit:settlement`).
 pub const SETTLEMENT_EXIT_REASON: ExitReason = ExitReason::Settlement;
 /// #684: the exit reason a fallback-closed position carries

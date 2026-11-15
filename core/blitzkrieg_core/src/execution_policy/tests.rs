@@ -1189,44 +1189,10 @@ then = { action = "skip" }
         }
     }
 
-    // ── Issue #965: the missing-file bootstrap ──────────────────────────────
-
-    /// A missing file bootstraps the template at the path (creating the parent
-    /// directories — the #380 Fallback spelling may not exist yet), warns, and
-    /// returns the template text. Never a silent None.
-    #[test]
-    fn read_or_bootstrap_generates_the_template_for_a_missing_file() {
-        let root = scratch("bootstrap-missing");
-        let path = root.join("user_layer/configs/execution_policy.toml");
-        assert!(!path.exists(), "premise: nothing on disk");
-
-        let text = read_or_bootstrap(&path).expect("bootstraps");
-        assert_eq!(text, BOOTSTRAP_TEMPLATE, "the template text comes back");
-        let on_disk = std::fs::read_to_string(&path).expect("the template landed");
-        assert_eq!(on_disk, BOOTSTRAP_TEMPLATE);
-        assert!(
-            on_disk.contains("INERT"),
-            "the template says it is not a source (the loader reads POLICY_* env only)"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// An existing file comes back verbatim and is NEVER rewritten — the
-    /// bootstrap only fills the gap, it does not overwrite an operator file.
-    #[test]
-    fn read_or_bootstrap_returns_an_existing_file_untouched() {
-        let root = scratch("bootstrap-existing");
-        let path = policy_tree(&root);
-        let before = std::fs::read_to_string(&path).unwrap();
-
-        let text = read_or_bootstrap(&path).expect("reads");
-        assert_eq!(text, before, "existing text, verbatim");
-        assert_ne!(
-            text, BOOTSTRAP_TEMPLATE,
-            "an existing file is not replaced by the template"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
+    // ── Issue #965 的 missing-file bootstrap 已删除（#1236 操作者裁决）──────
+    // 全新安装不再自举生成 execution_policy.toml：loader 只读 store 的
+    // POLICY_* 行，模板 arm 不了任何东西。原 read_or_bootstrap 两个用例
+    // （生成模板 / 现存文件原样返回）随函数一并删除。
 
     /// 2026-11-08 live find (operator blocked): the panel's "defaults" chip
     /// sends accountId="defaults"; the write face spelled the keys

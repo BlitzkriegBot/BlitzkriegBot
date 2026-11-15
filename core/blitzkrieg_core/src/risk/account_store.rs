@@ -442,13 +442,17 @@ impl AccountRiskDb {
     }
 
     /// 读取所有已删除账户的墓碑（key: `removed_account.<id>`），用于 boot
-    /// 时防止已删除的账户从 .env 补账复活。
-    pub fn load_removed_accounts(&self) -> Vec<String> {
-        self.load_kernel_meta_by_prefix("removed_account.")
-            .unwrap_or_default()
+    /// 时防止已删除的账户从 .env 补账复活。读失败 fail-closed：静默当作
+    /// "没有墓碑" 会让已删账户复活，与 boot 链其余读取（load_accounts 读
+    /// 失败 panic 拒启）不一致。
+    pub fn load_removed_accounts(&self) -> Result<Vec<String>, String> {
+        let rows = self
+            .load_kernel_meta_by_prefix("removed_account.")
+            .map_err(|e| format!("removed_account tombstones read failed: {e}"))?;
+        Ok(rows
             .into_iter()
             .map(|(k, _)| k.strip_prefix("removed_account.").unwrap_or(&k).to_string())
-            .collect()
+            .collect())
     }
 
     /// Full-row upsert — the boot's env-book materialization (issue #1199

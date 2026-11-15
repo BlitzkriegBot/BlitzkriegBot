@@ -7,7 +7,7 @@ use super::*;
 /// 估算；trades 流水写 exit_reason=operator_grid_switch，扫描器网格立即
 /// 随新周期，覆盖落 SQLite（`account_settings`），`.env` 不再被写。
 #[tokio::test]
-async fn round_duration_immediate_closes_position_and_switches_grid() {
+async fn round_duration_set_closes_position_and_switches_grid() {
     let dir = std::env::temp_dir().join(format!("bk-round-dur-imm-pos-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -87,7 +87,7 @@ async fn round_duration_immediate_closes_position_and_switches_grid() {
     assert_eq!(
         positions_len(&core, &registry, &peer).await,
         0,
-        "immediate switch must flatten the in-transit position"
+        "the set must flatten the in-transit position"
     );
     let trades = trades_rows(&core, &registry, &peer).await;
     let rows = trades["result"]["trades"]
@@ -153,7 +153,7 @@ async fn round_duration_immediate_closes_position_and_switches_grid() {
 
 /// 无在途仓位时切换直接切网格，不触碰任何仓位。
 #[tokio::test]
-async fn round_duration_immediate_no_position_switches_grid_directly() {
+async fn round_duration_set_no_position_switches_grid_directly() {
     let dir = std::env::temp_dir().join(format!("bk-round-dur-imm-none-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -200,7 +200,7 @@ async fn round_duration_immediate_no_position_switches_grid_directly() {
     .await;
     assert!(
         set.get("error").is_none(),
-        "immediate set with no positions must land: {set}"
+        "the set with no positions must land: {set}"
     );
     assert_eq!(
         positions_len(&core, &registry, &peer).await,
@@ -224,7 +224,7 @@ async fn round_duration_immediate_no_position_switches_grid_directly() {
 /// #1154: flagLocked（`round_duration_source == "cli_or_env"`）时即时切换被
 /// 如实拒绝：仓位不动、网格不动、不静默。
 #[tokio::test]
-async fn round_duration_immediate_refused_when_flag_locked() {
+async fn round_duration_set_refused_when_flag_locked() {
     let dir = std::env::temp_dir().join(format!("bk-round-dur-imm-lock-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -293,7 +293,7 @@ async fn round_duration_immediate_refused_when_flag_locked() {
     .await;
     assert!(
         set.get("error").is_some(),
-        "immediate set under flag_locked must be refused: {set}"
+        "the set under flag_locked must be refused: {set}"
     );
     let msg = set["error"]["message"].as_str().unwrap_or_default();
     assert!(
@@ -324,7 +324,7 @@ async fn round_duration_immediate_refused_when_flag_locked() {
 /// #1154: 强平无法完全成交时按实际成交入账并如实报错，网格不切；
 /// 不影子价、不静默。（出场账簿无买盘，强平单无法成交。）
 #[tokio::test]
-async fn round_duration_immediate_unfilled_close_refuses_and_keeps_grid() {
+async fn round_duration_set_unfilled_close_refuses_and_keeps_grid() {
     let no_bid_book = r#"{"jsonrpc":"2.0","id":1,"method":"books.snapshot","params":{"tokenId":"tok","bids":[],"asks":[{"price":0.40,"size":100}]}}"#.to_string();
 
     let (core, registry, peer) = {
@@ -384,7 +384,7 @@ async fn round_duration_immediate_unfilled_close_refuses_and_keeps_grid() {
     .await;
     assert!(
         set.get("error").is_some(),
-        "immediate set with an unfilled strong-close must be refused: {set}"
+        "the set with an unfilled strong-close must be refused: {set}"
     );
     let msg = set["error"]["message"].as_str().unwrap_or_default();
     assert!(
@@ -425,7 +425,7 @@ async fn round_duration_immediate_unfilled_close_refuses_and_keeps_grid() {
 /// `reset` 分支同语义——先平掉在途仓位，再清
 /// 格回落默认网格。
 #[tokio::test]
-async fn round_duration_immediate_reset_closes_positions_and_clears_grid() {
+async fn round_duration_set_reset_closes_positions_and_clears_grid() {
     let dir = std::env::temp_dir().join(format!("bk-round-dur-imm-reset-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -494,10 +494,7 @@ async fn round_duration_immediate_reset_closes_positions_and_clears_grid() {
         r#"{"jsonrpc":"2.0","id":2,"method":"round_duration.set","params":{"accountId":"default","reset":true}}"#.to_string(),
     )
     .await;
-    assert!(
-        reset.get("error").is_none(),
-        "immediate reset must land: {reset}"
-    );
+    assert!(reset.get("error").is_none(), "the reset must land: {reset}");
     assert_eq!(reset["result"]["reset"], serde_json::json!(true));
     assert_eq!(
         reset["result"]["nextSessionSec"],
@@ -507,7 +504,7 @@ async fn round_duration_immediate_reset_closes_positions_and_clears_grid() {
     assert_eq!(
         positions_len(&core, &registry, &peer).await,
         0,
-        "immediate reset must flatten the in-transit position too"
+        "the reset must flatten the in-transit position too"
     );
     let after = rpc(
         &core,
@@ -535,10 +532,10 @@ async fn round_duration_immediate_reset_closes_positions_and_clears_grid() {
     );
 }
 
-/// #1154 fail-closed：`immediate` + 白名单外档位必须在撤单/强平之前就拒绝，
-/// 仓位与网格一个字节不动。
+/// 白名单外档位必须在撤单/强平之前就拒绝（fail-closed），仓位与网格一个
+/// 字节不动。
 #[tokio::test]
-async fn round_duration_immediate_refuses_off_whitelist_before_touching_positions() {
+async fn round_duration_set_refuses_off_whitelist_before_touching_positions() {
     let dir =
         std::env::temp_dir().join(format!("bk-round-dur-imm-whitelist-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -607,7 +604,7 @@ async fn round_duration_immediate_refuses_off_whitelist_before_touching_position
     .await;
     assert!(
         set.get("error").is_some(),
-        "off-whitelist immediate set must be refused: {set}"
+        "off-whitelist set must be refused: {set}"
     );
     let msg = set["error"]["message"].as_str().unwrap_or_default();
     assert!(

@@ -13,9 +13,3 @@
 # implementations. It is the exact list PR-1/PR-2 retire.
 # The session.rs .env watcher is a READ path — not a violation, and part of
 # the PR-2 retirement face (map §3.2 A2): do not delete it.
-core/blitzkrieg_core/src/runtime_config.rs:204 env-direct crate::env_file::upsert_env_vars(env, &vars)?;
-core/blitzkrieg_core/src/runtime_config.rs:206 env-direct crate::env_file::remove_env_vars(env, &["RUNTIME_MARKET_PLUGIN"])?;
-core/blitzkrieg_core/src/runtime_config.rs:259 env-direct crate::env_file::upsert_env_vars(env, &vars)?;
-core/blitzkrieg_core/src/runtime_config.rs:261 env-direct crate::env_file::remove_env_vars(env, &["RUNTIME_ROUND_DURATION_SEC"])?;
-core/blitzkrieg_core/src/runtime_config.rs:307 env-direct crate::env_file::upsert_env_vars(env_path, &drained)?;
-core/blitzkrieg_core/src/shadow_evolution/mod.rs:1235 env-direct if let Err(e) = crate::env_file::upsert_env_vars(std::path::Path::new(env_path), &vars) {

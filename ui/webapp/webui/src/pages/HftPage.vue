@@ -728,16 +728,21 @@ const roundDurLabel = computed(() => {
  */
 const roundSwitch = useRoundDuration()
 
-// 本单（立即生效）：先查当前账户在途仓位，有则必弹确认框（N 仓位 + 滑点警告），
-// 无仓位直接切；flagLocked 时整条路径禁用。切换一律立即撤单+市价强平+切网格，
-// 不存在「下次会话生效」。
+// 本单（立即生效，保存与清除同一确认门）：先查当前账户在途仓位，有则必弹
+// 确认框（N 仓位 + 滑点警告 + 挂单一并撤销），无仓位直接写；flagLocked 时
+// 整条路径禁用。写入一律立即撤单+市价强平+切网格，不存在「下次会话生效」。
+// 账户 id 在探测时冻结进确认态：确认框停留期间切账户，确认后写的仍是探测
+// 时的那个账户（否则会平掉另一个账户，审计 P2-7）。
 const hftRoundConfirmOpen = ref(false)
 const hftRoundConfirmN = ref(0)
 const hftRoundConfirmSec = ref(0)
+const hftRoundConfirmKind = ref<'set' | 'reset'>('set')
+const hftRoundConfirmAccount = ref('default')
 
-async function doSaveRound(): Promise<void> {
+/** 保存与清除共用的「有仓必弹确认」前置：探测冻结账户的在途仓位，有仓弹
+ * 确认框（kind 区分 set/reset 文案），无仓直接写。 */
+async function confirmThenWrite(kind: 'set' | 'reset'): Promise<void> {
   const accountId = store.activeAccount ?? 'default'
-  // 先查当前账户在途仓位，有则必弹确认框，不静默；无仓位直接切。
   try {
     const snap = await api.snapshot()
     const n = (snap.positions ?? []).filter(
@@ -746,6 +751,8 @@ async function doSaveRound(): Promise<void> {
     if (n > 0) {
       hftRoundConfirmN.value = n
       hftRoundConfirmSec.value = Number(roundSwitch.value.value)
+      hftRoundConfirmKind.value = kind
+      hftRoundConfirmAccount.value = accountId
       hftRoundConfirmOpen.value = true
       return
     }
@@ -753,13 +760,23 @@ async function doSaveRound(): Promise<void> {
     roundSwitch.err.value = e instanceof Error ? e.message : String(e)
     return
   }
-  await roundSwitch.save(accountId)
+  await writeRound(kind, accountId)
+}
+
+/** 按冻结的 kind 与账户 id 执行写入（确认框确认后走这里，不再重读 store）。 */
+async function writeRound(kind: 'set' | 'reset', accountId: string): Promise<void> {
+  if (kind === 'set') {
+    await roundSwitch.save(accountId)
+  } else {
+    await roundSwitch.reset(accountId)
+  }
 }
 
 // 清除该账户的轮次设置，回落到启动参数解析（issue 1155：设置页轮次卡删除后，
-// 行情页保留唯一的清除入口，不让 reset 沦为仅 API 可达）。
+// 行情页保留唯一的清除入口，不让 reset 沦为仅 API 可达）。清除与保存同一
+// 确认门：内核对 reset 同样撤单+市价强平（trading_reset.rs 先强平再分支）。
 async function doClearRound(): Promise<void> {
-  await roundSwitch.reset(store.activeAccount ?? 'default')
+  await confirmThenWrite('reset')
 }
 
 // 倒计时卡的周期切换按当前账户 venue 的插件声明筛档（2026-10-26 操作者
@@ -1048,7 +1065,7 @@ const journalOpen = ref(false)
             size="sm"
             :disabled="roundSwitch.busy.value"
             title="把选中的轮次周期写入当前账户；立即撤单该账户在途单、按市价真实强平其仓位，再切入新网格（有在途仓位时先弹此确认）"
-            @click="doSaveRound"
+            @click="confirmThenWrite('set')"
           >
             <Check class="size-3.5" />保存
           </Button>
@@ -1056,25 +1073,29 @@ const journalOpen = ref(false)
             v-if="!roundSwitch.flagLocked.value"
             size="sm"
             :disabled="roundSwitch.busy.value || roundSwitch.doc.value?.perAccount?.[store.activeAccount ?? 'default'] === undefined"
-            title="清除该账户的轮次设置，回落到启动参数解析"
+            title="清除该账户的轮次设置，回落 default 网格；立即撤单该账户在途单、按市价真实强平其仓位（有在途仓位时先弹此确认）"
             @click="doClearRound"
           >
             <RefreshCw class="size-3.5" />清除
           </Button>
 
-          <!-- 本单：立即切换轮次的确认框——有在途仓位时必弹，N 仓位 + 滑点警告。 -->
+          <!-- 保存与清除共用同一确认门：有在途仓位时必弹，N 仓位 + 滑点警告 +
+               挂单一并撤销；kind 区分 set/reset 文案；账户 id 冻结进确认态。 -->
           <ConfirmWordDialog
             v-model:open="hftRoundConfirmOpen"
             word="YES"
-            title="立即切换轮次"
+            :title="hftRoundConfirmKind === 'set' ? '立即切换轮次' : '清除轮次设置'"
             :lines="[
-              `将立即平掉 ${hftRoundConfirmN} 个在途仓位，并按 ${roundSwitch.roundLabel(hftRoundConfirmSec)}s 开新轮，`,
+              `将立即撤单该账户全部在途挂单，并平掉 ${hftRoundConfirmN} 个在途仓位（账户 ${hftRoundConfirmAccount}），`,
+              hftRoundConfirmKind === 'set'
+                ? `随后按 ${roundSwitch.roundLabel(hftRoundConfirmSec)}s 开新轮；`
+                : '随后回落 default 网格；',
               '强平按市价成交，可能产生滑点损失；已成交部分如实入账，不静默。',
             ]"
-            action-label="确认立即切换"
+            :action-label="hftRoundConfirmKind === 'set' ? '确认立即切换' : '确认清除并强平'"
             :busy="roundSwitch.busy.value"
             :error="roundSwitch.err.value"
-            @confirm="roundSwitch.save(store.activeAccount ?? 'default')"
+            @confirm="writeRound(hftRoundConfirmKind, hftRoundConfirmAccount)"
           />
 
           <Tooltip :content="sound ? '关闭提示音' : '开启提示音'">

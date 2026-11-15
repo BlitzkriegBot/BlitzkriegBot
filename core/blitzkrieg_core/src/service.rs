@@ -1422,7 +1422,7 @@ pub(crate) fn reconcile_config_gate_for(core: &mut Core, id: &AccountId, now_ms:
 mod tests {
     use super::*;
     use crate::risk::RiskConfig;
-    use crate::settlement::EXPIRY_FALLBACK_AFTER_MS;
+    use crate::settlement::{EXPIRY_ESTIMATE_SETTLE_AFTER_MS, EXPIRY_FALLBACK_AFTER_MS};
     use rust_decimal_macros::dec;
 
     // The shared fixtures (dry_core / order / reset_params / reset_audit_dir /

@@ -161,10 +161,10 @@ mod bin_tests;
 // modules (`crate::position_db` / `crate::strategy_state`) so the bin and
 // any embedded reader share ONE name song.
 use bin_support::boot::{
-    EnvVars, bootstrap_policy_template, builtin_registry, daily_loss_path_for,
-    default_position_log_for, default_socket, default_strategy_state_for, parse_args,
-    parse_strategy_limits, parse_virtual_limits, resolve_event_archive, resolved_policy_path,
-    risk_state_path_for, round_duration_source_from, run_net_check,
+    EnvVars, builtin_registry, daily_loss_path_for, default_position_log_for, default_socket,
+    default_strategy_state_for, parse_args, parse_strategy_limits, parse_virtual_limits,
+    resolve_event_archive, resolved_policy_path, risk_state_path_for, round_duration_source_from,
+    run_net_check,
 };
 use bin_support::subcommands::{
     run_backtest, run_blueprint_compile, run_mode_backtest, run_regime_eval, run_replay,
@@ -523,33 +523,10 @@ async fn main() -> anyhow::Result<()> {
             Some(r.path.to_string_lossy().into_owned())
         }
     };
-    // Issue #965: self-bootstrap the policy TEMPLATE when the default-resolved
-    // path has no file — an explicit warning + a shape reference on disk
-    // instead of a silent neutral kernel. The loader is env-only (issue #967):
-    // the template arms nothing, the POLICY_* keys in `.env` do. An explicit
-    // --execution-policy path is honoured verbatim and never bootstrapped;
-    // a path inside the build tree (`target/…`) is skipped on purpose (see
-    // `bootstrap_policy_template` — the #188 anchor must not see a
-    // `user_layer/` there).
-    if let blitzkrieg_core::execution_policy::ResolvedPolicyPath::Default(r) = &resolved_policy {
-        match bootstrap_policy_template(r) {
-            bin_support::boot::PolicyTemplateBootstrap::Present => {}
-            bin_support::boot::PolicyTemplateBootstrap::Generated(path) => eprintln!(
-                "blitzkrieg-core: execution_policy.toml was missing — generated the bootstrap \
-                 template at {}; arm rules with POLICY_* keys in .env (the loader's single \
-                 source, issue #967 — the template is a shape reference, not a source)",
-                path.display()
-            ),
-            bin_support::boot::PolicyTemplateBootstrap::Skipped { path, why } => eprintln!(
-                "blitzkrieg-core: no policy template generated at {} — {why}",
-                path.display()
-            ),
-            bin_support::boot::PolicyTemplateBootstrap::Failed(reason) => eprintln!(
-                "blitzkrieg-core: {reason} — running the neutral policy (code defaults, \
-                 no rules; arm with POLICY_* keys in .env)"
-            ),
-        }
-    }
+    // 操作者裁决 2026-11-15（#1236 追加）：#965 的 policy 模板自举已删除。
+    // 全新安装不再生成 execution_policy.toml —— loader 只读 store 的
+    // POLICY_* 行，磁盘上有没有这个文件对内核零影响；升级部署的遗留文件
+    // 由 IPC 写面的 gate warn 说明为死数据。
 
     let mut config = CoreConfig {
         mode,

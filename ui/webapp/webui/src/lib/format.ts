@@ -33,7 +33,11 @@ export function signedMoney(v: unknown, digits = 2, fallback = '—'): string {
   return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`
 }
 
-/** Core sends winRate as a 0..1 fraction; always scale to percent. */
+/**
+ * Core shadow-evolution proposals carry winRate as a 0..1 fraction; scale to
+ * percent. **只供 shadow 链**（EvolutionPage）——trade_summary 的 raw 字段
+ * 是百分数 0–100，走这里会被二次放大成 7330% 这类恶性数字。
+ */
 export function winRatePct(v: unknown): number {
   const n = Number(v)
   if (!Number.isFinite(n)) return 0
@@ -51,14 +55,16 @@ export function winRateOf(wins: number, losses: number): number {
 }
 
 /**
- * 服务端给了 winRate 就用它（内核已裁决的聚合），没给就按同一公式用同一份
- * 盈/亏计数复算 —— 两条路都返回数值，绝不返回 null。
+ * 服务端 summary 的胜率 **raw 字段不再被信任**（2026-11-15 操作者实机实锤：
+ * wire 上 raw 历史两套口径并存 —— trade_summary 产百分数 0–100，shadow 产
+ * 小数 0–1；旧实现把百分数再 ×100，二次放大成 7330% 这种恶性数字）。本
+ * 函数永远由同一 summary 自带的盈/亏计数复算（`winRateOf`，百分数 0–100），
+ * 与「总览/行情页已平仓交易」卡同源同口径；raw 参数仅为签名兼容保留。
+ * 0 笔 = 0.0%，绝不返回 null。
  */
 export function winRateValue(raw: unknown, wins: number, losses: number): number {
-  if (raw === undefined || raw === null || !Number.isFinite(Number(raw))) {
-    return winRateOf(wins, losses)
-  }
-  return winRatePct(raw)
+  void raw
+  return winRateOf(wins, losses)
 }
 
 export function pct(v: unknown, digits = 1, fallback = '—'): string {

@@ -133,36 +133,22 @@ async fn policy_toml_gate(
     let Some(policy_path) = policy_path else {
         return Ok(());
     };
-    let path = std::path::Path::new(&policy_path);
-    if !path.exists() {
-        return Ok(());
+    // Any residual execution_policy.toml on disk (a 0.4.1-era file, or the
+    // bootstrap template an older kernel generated) is DEAD DATA: the loader
+    // reads the store's POLICY_* rows only (#967 + #1199), so the file cannot
+    // form a second source. Refusing here blocked every panel save forever
+    // (the operator saw "无法保存" with no way through the panel); sweeping it
+    // would delete a file we no longer own the semantics of. One warn, the
+    // write proceeds — the operator deletes the file at their leisure.
+    if std::path::Path::new(&policy_path).exists() {
+        tracing::warn!(
+            path = %policy_path,
+            "execution_policy.toml is present but the loader reads the store's \
+             POLICY_* rows only — the file is dead data (safe to delete) and \
+             does NOT block this write"
+        );
     }
-    let is_kernel_template = std::fs::read_to_string(path)
-        .map(|text| text == crate::execution_policy::BOOTSTRAP_TEMPLATE)
-        .unwrap_or(false);
-    if is_kernel_template {
-        if let Err(e) = std::fs::remove_file(path) {
-            // The template is inert, so a failed sweep must not block the
-            // operator's write — warn and carry on.
-            tracing::warn!(
-                path = %policy_path,
-                error = %e,
-                "could not sweep the auto-generated execution_policy.toml \
-                 template — proceeding with the store write (the file is inert)"
-            );
-        }
-        return Ok(());
-    }
-    Err((
-        Failure::INVALID_PARAMS,
-        format!(
-            "refusing the policy write: the legacy {policy_path} still exists — \
-             run scripts/migrate-config-to-env.sh first (issue 751/#967: one source; \
-             the loader reads the store's POLICY_* rows only, so this file is \
-             dead data)"
-        ),
-        None,
-    ))
+    Ok(())
 }
 
 /// #363: the `execution_policy.set` flow — validate params, write the ONE

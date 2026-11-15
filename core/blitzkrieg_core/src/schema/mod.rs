@@ -1355,8 +1355,9 @@ pub struct AccountRoundDuration {
 /// 2026-11-13 操作者指令：切换即「秒切秒换」，不再有 `immediate` 开关。
 /// 每次写入一律先撤该账户在途轮市场的全部挂单、按市价真实强平其在途
 /// 仓位（PnL 按真实成交价），再把扫描器网格切入新周期；任一步骤
-/// 失败 fail-closed，网格不切。历史客户端仍会发 `immediate` 字段——serde
-/// 容忍未知字段，一律按立即切换语义处理。
+/// 失败 fail-closed，网格不切。仓库内已无客户端发 `immediate` 字段（前端
+/// 残留已在 #1235 清除）；旧客户端若仍发，serde 容忍未知字段并按立即切换
+/// 语义处理。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetRoundDurationParams {
@@ -1376,15 +1377,15 @@ pub struct SetRoundDurationParams {
 pub struct RoundDurationUpdate {
     /// The account whose grid was set.
     pub account_id: String,
-    /// What the account will run on after this write (for `reset`, the
-    /// default grid).
+    /// What the account will run on after this write (for `reset`, the default grid).
     pub next_session_sec: i64,
-    /// `reset` clears the account's override (falls back to boot resolution)
-    /// instead of writing a value.
+    /// `reset` clears the account's override (falls back to boot resolution) instead.
     pub reset: bool,
-    /// `true` when the write was durably persisted to the SQLite store
-    /// (issue #1199: `.env` is read-only, SQLite is the durable home).
+    /// `true` when durably persisted to SQLite (#1199: `.env` is read-only).
     pub persisted: bool,
+    /// Real count of in-transit positions market-flattened by this write
+    /// (from `cancel_and_flatten_account`); cancelled orders not counted.
+    pub flattened_positions: usize,
     pub at_ms: i64,
     pub actor: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1393,10 +1394,9 @@ pub struct RoundDurationUpdate {
 }
 
 /// [`RoundDurationUpdate::note`] — one spelling, used by the reply and the log.
-pub const ROUND_DURATION_SET_NOTE: &str = "per-account round grid: new wheels for the account run on the \
-     new grid immediately; in-transit wheels keep their birth grid (not re-slotted); \
-     the value persists for the next session; an explicit --round-sec / BK_ROUND_SEC \
-     still outranks this setting at boot";
+pub const ROUND_DURATION_SET_NOTE: &str = "per-account round grid: in-transit orders are cancelled \
+     and positions are market-flattened BEFORE the grid switches; the switch is fail-closed \
+     (the grid does not move on any failure); the value persists for the next session; an explicit --round-sec / BK_ROUND_SEC still outranks this setting at boot";
 
 // ── ④ 统一映射：unified.candidates / unified.confirm / unified.revoke ─────
 

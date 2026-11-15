@@ -4,11 +4,12 @@
 //! updown 列表只载未来 ~20h 的未到期轮次，已过期 conditionId 永远不会出现
 //! 在结算应答里。
 //!
-//! 第一层（内核自动）：查询零应答且过期超过 [`EXPIRY_FALLBACK_AFTER_MS`]
-//! （2h）→ 按兜底价（最近已知 mid，为 0 则入场价=成本回收）平仓入历史，
-//! trade record 带 `unverifiable_expiry` 标签，**不建 redemption claim** ——
-//! 裁决未经验证，赎回一个发明出来的赢家是错的；场地现金真值由既有
-//! reconcile/realign sweep 跟平。
+//! 第一层（内核自动，#1236 操作者裁决 2026-11-15）：轮次过期超过
+//! [`EXPIRY_ESTIMATE_SETTLE_AFTER_MS`]（10s）→ 按兜底价（最近已知 mid，
+//! 为 0 则入场价=成本回收；binary 市场到期前已收敛 1/0）**强制平仓入
+//! 历史**，trade record 带 `unverifiable_expiry` 标签，**不建 redemption
+//! claim** —— 裁决未经验证，赎回一个发明出来的赢家是错的；场地现金真值
+//! 由既有 reconcile/realign sweep 跟平。
 //!
 //! 第二层（操作员）：`positions.force_close` —— 持仓存在 + 已过期 +
 //! manual-ops 审计路径三道门；审计行、warn、RiskAlert；同样不建 claim。
@@ -109,8 +110,8 @@ fn stage_unanswered_query(c: &mut Core, condition_id: &str, token_id: &str, firs
     let _ = token_id;
 }
 
-/// 用例 1：过期超过 2h + 查询零应答 → 兜底平仓，trade record 带
-/// `unverifiable_expiry`，无 redemption claim，审计锚全程为真。
+/// 用例 1：过期超过 10s 强制结算窗（无论查询是否零应答）→ 兜底平仓，
+/// trade record 带 `unverifiable_expiry`，无 redemption claim，审计锚全程为真。
 #[test]
 fn an_expired_never_answered_position_falls_back_closed() {
     let dir = scratch("fallback-closes");
@@ -123,8 +124,8 @@ fn an_expired_never_answered_position_falls_back_closed() {
     stage_unanswered_query(&mut c, "cond", "tok", sent);
     assert_eq!(c.positions().open_positions().len(), 1, "still held");
 
-    // 2h 静默界限之后的第一拍：兜底 sweep 平仓。
-    let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
+    // 10s 强制结算界限之后的第一拍：兜底 sweep 平仓。
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
     c.tick(bound + 1_000).unwrap();
 
     assert!(
@@ -175,7 +176,8 @@ fn an_expired_never_answered_position_falls_back_closed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 用例 2：未到 2h 界限 → 不平。等待仍是正确姿态（场地理论上还能裁决）。
+/// 用例 2：未到 10s 强制结算界限 → 不平。10s 内的等待仍是正确姿态
+/// （feed 的最后报价可能仍在向 1/0 收敛）。
 #[test]
 fn inside_the_silence_bound_the_position_stays_open() {
     let dir = scratch("inside-bound");
@@ -185,23 +187,23 @@ fn inside_the_silence_bound_the_position_stays_open() {
     c.tick(sent).unwrap();
     stage_unanswered_query(&mut c, "cond", "tok", sent);
 
-    // 界限前 1s：什么都不发生。
-    c.tick(sent + super::EXPIRY_FALLBACK_AFTER_MS - 1_000)
-        .unwrap();
+    // 界限前 1s（10s 强制结算窗未到）：什么都不发生。
+    c.tick(sent + 9_000).unwrap();
     assert_eq!(
         c.positions().open_positions().len(),
         1,
-        "before the bound the fallback must not fire"
+        "inside the 10s force-settle bound the fallback must not fire"
     );
     assert!(c.positions().closed_positions().is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 用例 3：场地应答过（answers > 0）即使过期很久 → 不平（还在诚实等
-/// resolved=true）。"not resolved yet" 的应答也算数 —— 场地活着。
+/// 用例 3（#1236 对齐）：场地应答过（answers > 0）且过期在 10s 强制结算
+/// 窗口之内 → 不平（还在等 resolved=true；"not resolved yet" 的应答也算数
+/// —— 场地活着）。
 #[test]
-fn an_answered_market_is_never_fallback_closed() {
+fn an_answered_market_inside_the_ten_second_bound_stays_open() {
     let dir = scratch("answered-stays");
     let mut c = fallback_core(&dir, false);
     open_expiring_position(&mut c);
@@ -214,15 +216,48 @@ fn an_answered_market_is_never_fallback_closed() {
     c.settlement.note_answer("cond", false, sent + 100);
     assert!(c.settlement.unanswered_since(0, sent + 200).is_empty());
 
-    // 远超 2h：只有零应答的 condition 才进兜底，这里必须原地不动。
-    c.tick(sent + super::EXPIRY_FALLBACK_AFTER_MS + 60_000)
-        .unwrap();
+    // 过期后 9s：10s 强制结算窗未到 —— 原地不动。
+    c.tick(sent + 9_000).unwrap();
     assert_eq!(
         c.positions().open_positions().len(),
         1,
-        "an answered market keeps waiting for its verdict — the fallback never touches it"
+        "inside the 10s force-settle bound an answered market keeps waiting \
+         for its verdict"
     );
     assert!(c.positions().closed_positions().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 用例 3b（#1236 操作者裁决 2026-11-15）：场地应答过但过期超过 600s 估计
+/// 结算窗 → 按最后报价（binary 市场到期前已收敛到 1/0，实机 Cur = 0.99 /
+/// 0.01 / 0.97）兜底平仓，trade record 带 `unverifiable_expiry`。裁决
+/// 晚到的真实现金仍由 reconcile 对平 —— 等待不再以幽灵仓位为代价。
+#[test]
+fn an_answered_market_past_the_estimate_bound_falls_back_closed() {
+    let dir = scratch("answered-slow-falls");
+    let mut c = fallback_core(&dir, false);
+    open_expiring_position(&mut c);
+    let sent = EXPIRES_MS + 100;
+    c.tick(sent).unwrap();
+    stage_unanswered_query(&mut c, "cond", "tok", sent);
+
+    // 场地一直有应答（resolved=false 的"未裁决"回答），但过期超过 10s
+    // 强制结算窗仍未给出 verdict —— 平台侧结算早已完成（操作者裁决）。
+    c.settlement.note_answer("cond", false, sent + 100);
+    let past_bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS + 1_000;
+    c.tick(past_bound).unwrap();
+    assert!(
+        c.positions().open_positions().is_empty(),
+        "past the estimate bound the slow venue no longer strands the position"
+    );
+    let closed = c.positions().closed_positions();
+    assert_eq!(closed.len(), 1, "exactly one fallback close");
+    assert_eq!(
+        closed[0].exit_price,
+        dec!(0.40),
+        "the close prices at the last known mid (the final pre-expiry quote)"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -244,7 +279,7 @@ fn after_the_fallback_the_market_leaves_the_watch_list() {
         "precondition: watched"
     );
 
-    let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
     c.tick(bound + 1_000).unwrap();
     assert!(c.positions().open_positions().is_empty());
     let stats = c.engine_stats_at(bound + 2_000)["settlement"].clone();
@@ -440,7 +475,7 @@ fn the_zero_mid_fallback_recovers_cost_via_the_entry_price() {
     c.tick(sent).unwrap();
     assert_eq!(c.settlement.unanswered_since(0, sent + 100).len(), 1);
 
-    let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
     c.tick(bound + 1_000).unwrap();
     assert!(c.positions().open_positions().is_empty());
     let closed = &c.positions().closed_positions()[0];
@@ -479,7 +514,7 @@ fn the_residual_mid_fallback_books_at_raw_mid_no_floor() {
         let sent = EXPIRES_MS + 100;
         c.tick(sent).unwrap();
         stage_unanswered_query(&mut c, "cond", "tok", sent);
-        let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
+        let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
         c.tick(bound + 1_000).unwrap();
 
         assert!(c.positions().open_positions().is_empty());
@@ -510,7 +545,7 @@ fn the_residual_mid_fallback_books_at_raw_mid_no_floor() {
         let sent = EXPIRES_MS + 100;
         c.tick(sent).unwrap();
         stage_unanswered_query(&mut c, "cond", "tok", sent);
-        let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
+        let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
         c.tick(bound + 1_000).unwrap();
 
         let closed = &c.positions().closed_positions()[0];
@@ -607,7 +642,7 @@ fn reconcile_backfill_flips_fallback_to_venue() {
     let sent = EXPIRES_MS + 100;
     c.tick(sent).unwrap();
     stage_unanswered_query(&mut c, "cond", "tok", sent);
-    let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
     c.tick(bound + 1_000).unwrap();
     assert!(c.positions().open_positions().is_empty());
     let closed_before = &c.positions().closed_positions()[0];
@@ -698,7 +733,7 @@ fn market_resolution_backfills_a_fallback_row_with_no_open_position() {
     let sent = EXPIRES_MS + 100;
     c.tick(sent).unwrap();
     stage_unanswered_query(&mut c, "cond", "tok", sent);
-    let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
     c.tick(bound + 1_000).unwrap();
     let closed_before = &c.positions().closed_positions()[0];
     assert_eq!(closed_before.source, "fallback", "precondition");
@@ -758,7 +793,7 @@ fn unverified_exposure_report_lists_only_fallback_closes() {
     let sent = EXPIRES_MS + 100;
     c.tick(sent).unwrap();
     stage_unanswered_query(&mut c, "cond", "tok", sent);
-    let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
     c.tick(bound + 1_000).unwrap();
     assert!(c.positions().open_positions().is_empty());
     let fallback_cost = c.positions().closed_positions()[0].cost_usd;
@@ -850,7 +885,7 @@ fn zero_feed_fallback_is_cost_recovery_not_profit() {
     let sent = EXPIRES_MS + 100;
     c.tick(sent).unwrap();
     stage_unanswered_query(&mut c, "cond", "tok", sent);
-    let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
     c.tick(bound + 1_000).unwrap();
 
     let closed = &c.positions().closed_positions()[0];

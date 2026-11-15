@@ -1,4 +1,5 @@
-//! The unverifiable-expiry fallback family (issue #991): sweep, policy-
+//! The unverifiable-expiry fallback family (issue #991 + #1236): the
+//! force-settle sweep (过期 10s 强制结算，操作者裁决 2026-11-15), policy-
 //! switched cash-vs-receivable booking, receivable aging banner feed, and
 //! local redemption at venue truth (resolution / reconcile / token priced).
 //! Split verbatim from `settlement.rs` (pure code motion, no logic edits) —
@@ -8,7 +9,7 @@ use crate::model::*;
 use crate::schema::Event;
 use crate::service::config::UnverifiedExpiryPolicy;
 use crate::settlement::{
-    EXPIRY_FALLBACK_AFTER_MS, PRICE_SOURCE_CURRENT, PRICE_SOURCE_ENTRY_FALLBACK,
+    EXPIRY_ESTIMATE_SETTLE_AFTER_MS, PRICE_SOURCE_CURRENT, PRICE_SOURCE_ENTRY_FALLBACK,
     UNVERIFIED_EXPIRY_EXIT_REASON,
 };
 use rust_decimal::Decimal;
@@ -16,13 +17,12 @@ use rust_decimal::Decimal;
 use super::Core;
 
 impl Core {
-    /// whose expiry is long past AND whose verdict query has never been
-    /// answered by the venue. The updown round list only carries future rounds,
-    /// so an already-expired condition never appears in an answer: waiting is
-    /// not patience, it is a ghost position forever (`positions.exit` bounces
-    /// off the venue's "Insufficient position", and nothing else can clear it).
+    /// #1236 操作者裁决 2026-11-15：**过期轮次强制结算——轮次过期 10s 内
+    /// 完成**，不区分 venue 是否应答（原 120s 沉默窗一并取代）。binary 市场
+    /// 到期时价格天然收敛到 1/0，持仓上最后已知的报价（feed 在过期前最后
+    /// 几秒写下）就是裁决结果的最佳估计；过期 10s 后平台侧结算已可确认。
     ///
-    /// The close is deliberately NOT a settlement:
+    /// whose expiry is long past. The close is deliberately NOT a settlement:
     ///   * price = the position's last known mid; `0` (a dead feed) falls back
     ///     to the entry price, i.e. cost recovery — never an invented payout;
     ///   * NO redemption claim is booked (`SettlementBook::book` is not
@@ -39,27 +39,29 @@ impl Core {
     /// the market through [`Self::sync_settlement_watch`] once its last
     /// position is gone.
     pub(crate) fn run_expiry_fallback_sweep(&mut self, now_ms: i64) {
-        // Only markets the venue has structurally never answered, past the
-        // silence bound. `answers > 0` means the venue is ruling on this
-        // condition honestly (even "not resolved yet") — keep waiting.
-        let unanswered: std::collections::HashSet<String> = self
-            .settlement
-            .unanswered_since(EXPIRY_FALLBACK_AFTER_MS, now_ms)
-            .into_iter()
-            .map(|(c, _)| c)
-            .collect();
-        if unanswered.is_empty() {
-            return;
-        }
+        // #1236 操作者裁决 2026-11-15：**过期轮次必须强制结算——轮次过期
+        // 10s 内完成**，不再区分 venue 是否应答（原 120s 沉默窗 #930/#684
+        // 一并取代）。binary 市场到期时价格天然收敛到 1/0（实机截图：过期
+        // 仓位 Cur = 0.99 / 0.01 / 0.97），持仓上最后已知的报价就是裁决结果
+        // 的最佳估计——它正是 feed 在过期前最后几秒写下的价格。过期 10s
+        // 后平台侧结算已可确认，等待只会产出幽灵仓位。裁决晚到的真实现金
+        // 仍由 reconcile sweep 对平，与 #991 的现金裁决点一致。
         let targets: Vec<crate::position::OpenPosition> = self
             .positions
             .open_positions()
             .iter()
             .filter(|p| {
-                unanswered.contains(&p.condition_id)
-                    // Only past-expiry holdings qualify: a future expiry with an
-                    // unanswered query is still (theoretically) settleable.
-                    && p.expires_at_ms <= now_ms
+                // A position without a condition id has no settlement path at
+                // all (nothing to query, nothing to reconcile against) — that
+                // is a data-integrity defect, not this sweep's to guess at.
+                // The same for an expiry that PRE-DATES the entry by more than
+                // EXPIRY_TRUST_MS: the recorded end is not a market end
+                // (track_markets' own exclusion — settling it would price one
+                // market with another market's verdict).
+                !p.condition_id.is_empty()
+                    && p.expires_at_ms > 0
+                    && p.entered_at_ms - p.expires_at_ms <= crate::settlement::EXPIRY_TRUST_MS
+                    && now_ms - p.expires_at_ms > EXPIRY_ESTIMATE_SETTLE_AFTER_MS
             })
             .cloned()
             .collect();
@@ -67,7 +69,7 @@ impl Core {
             return;
         }
         let closed_count = targets.len();
-        for pos in targets {
+        for pos in &targets {
             // Fallback price: the last known mid; a zeroed feed recovers cost
             // via the entry price. Both are bookkeeping values — the venue's
             // real cash position is what the reconcile sweep reports.
@@ -115,32 +117,35 @@ impl Core {
                     fallback_price = %price,
                     price_source = %price_source,
                     policy = %self.config.unverified_expiry_policy.as_str(),
-                    "position closed at unverifiable expiry — the venue never answered this market's settlement query; \
-                     booked per the unverifiable-expiry policy"
+                    expired_ago_ms = now_ms - pos.expires_at_ms,
+                    "position force-settled past expiry (>10s, no venue verdict): the last \
+                     pre-expiry quote on a binary market is the best estimate of the 1/0 \
+                     outcome; booked per the unverifiable-expiry policy"
                 );
             }
         }
         self.persist_positions();
-        // A market whose LAST position left via the fallback: the watch would
-        // only forget it on the next drain's `sync_settlement_watch` — forget
-        // it NOW (the same thing `on_market_resolution` does), so the panel's
-        // `trackedMarkets` reads 0 immediately and `unanswered_since` stops
+        // A market whose LAST position left via the force settle: the watch
+        // would only forget it on the next drain's `sync_settlement_watch` —
+        // forget it NOW (the same thing `on_market_resolution` does), so the
+        // panel's `trackedMarkets` reads 0 immediately and nothing keeps
         // naming a market we no longer hold.
-        for condition_id in &unanswered {
+        for pos in &targets {
             if self
                 .positions
                 .open_positions()
                 .iter()
-                .all(|p| p.condition_id != *condition_id)
+                .all(|p| p.condition_id != pos.condition_id)
             {
-                self.settlement.forget_market(condition_id);
+                self.settlement.forget_market(&pos.condition_id);
             }
         }
         self.emit(Event::RiskAlert {
             code: blitzkrieg_market_api::CoreErrorCode::Internal,
             message: format!(
-                "expiry fallback: closed {} position(s) on market(s) the venue never answered \
-                 (unverifiable-expiry, booked per policy {})",
+                "expiry force settle: closed {} position(s) past expiry (>10s) without a \
+                 venue verdict (unverifiable-expiry estimate at the last pre-expiry quote, \
+                 booked per policy {})",
                 closed_count,
                 self.config.unverified_expiry_policy.as_str()
             ),

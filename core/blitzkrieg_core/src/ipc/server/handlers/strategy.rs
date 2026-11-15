@@ -127,10 +127,10 @@ pub(crate) async fn handle_strategy(
                 // service layer itself performs: a configured accounts path
                 // (the book's durable home) admits the write, and a None —
                 // replays and in-process tests, per backtest.rs's None-ing —
-                // keeps the legacy engine-only success. Sandboxes with a
-                // configured path but no .env on disk simply CREATE the env
-                // file on first toggle (`env_file::write_atomic` makes
-                // parents); legacy-exists refusal stays fail-closed inside
+                // keeps the legacy engine-only success. The durable face of
+                // that write is SQLite (`account_settings.strategies`); the
+                // env grammar is read-only and never written (#1199). The
+                // legacy-exists refusal stays fail-closed inside
                 // `set_scoped_strategy_enabled` →
                 // `refuse_while_legacy_toml` (book.rs), so a write that would
                 // be dead data still errors instead of lying quiet. #1199:

@@ -788,6 +788,13 @@ pub async fn fetch_latest(token: Option<String>) -> Result<String, String> {
 /// GitHub Releases "latest". One builder, used by both routes. GitHub requires
 /// a User-Agent; the timeout is short (a failed check must never hold anything
 /// up). The token goes in a HEADER only — never the URL, never a log (P16).
+///
+/// 2026-11-15 操作者指正：这里打的是 **github.com 的 releases/latest 网页**
+/// （302 → `/releases/tag/<tag>`），不是 `api.github.com` 的同名端点 —— API
+/// 端点在共享出口上会遇到 60 req/h 的未认证限流（实机 "HTTP 403 Forbidden"），
+/// 而网页重定向几乎不限速、不需要 token。reqwest 已跟随重定向，最终 URL 的
+/// path 就带着 tag；解析出来后**合成与 API 相同形状的 JSON**返回，
+/// `parse_latest_release` 与全部注入式测试零改动。
 async fn fetch_latest_impl(token: Option<&str>) -> Result<String, String> {
     // The stamp lives in blitzkrieg-build-info's compilation unit; from here it
     // is read through BUILD_INFO, not env!() (the core crate has no stamps of
@@ -807,9 +814,7 @@ async fn fetch_latest_impl(token: Option<&str>) -> Result<String, String> {
     )?
     .build()
     .map_err(|e| format!("http client: {e}"))?;
-    let mut req = client
-        .get(RELEASES_LATEST)
-        .header("Accept", "application/vnd.github+json");
+    let mut req = client.get(RELEASES_LATEST);
     if let Some(t) = token {
         req = req.bearer_auth(t);
     }
@@ -819,14 +824,23 @@ async fn fetch_latest_impl(token: Option<&str>) -> Result<String, String> {
         .map_err(|e| format!("GET releases/latest: {e}"))?;
     let status = resp.status();
     if !status.is_success() {
-        // 404 = private repo or no release yet (token territory); 403/429 = rate limit.
+        // 404 = the repo has no published release yet (nothing to update to);
+        // anything else is the network/proxy path failing.
         return Err(format!("GET releases/latest: HTTP {status}"));
     }
-    resp.text().await.map_err(|e| format!("read body: {e}"))
+    let final_url = resp.url().clone();
+    let path = final_url.path().to_string();
+    let tag = path
+        .rsplit_once("/releases/tag/")
+        .map(|(_, t)| t.to_string())
+        .ok_or_else(|| format!("releases/latest did not redirect to a tag page: {path}"))?;
+    let url = final_url.to_string();
+    // The consumer contract (parse_latest_release + the injected-fetch tests)
+    // speaks the API's JSON shape; the PAGE resolved it this time.
+    Ok(format!(r#"{{"tag_name":"{tag}","html_url":"{url}"}}"#))
 }
 
-const RELEASES_LATEST: &str =
-    "https://api.github.com/repos/ceer-quant/BlitzkriegBot/releases/latest";
+const RELEASES_LATEST: &str = "https://github.com/ceer-quant/BlitzkriegBot/releases/latest";
 
 /// One check, and the verdict PERSISTED. Every real caller (startup, the
 /// auto scheduler, the manual `system.update.check` arm) wants the same two

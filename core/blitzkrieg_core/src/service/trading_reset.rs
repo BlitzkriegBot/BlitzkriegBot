@@ -691,13 +691,13 @@ impl Core {
         if self.config.round_duration_source == "cli_or_env" {
             return Err(CoreError::new(
                 CoreErrorCode::InvalidParams,
-                "round_duration.set(immediate): 当前网格由 --round-sec / BK_ROUND_SEC \
-                 显式锁定，立即切换会平掉在途仓位，被拒绝——去掉该启动参数后重试"
+                "round_duration.set: 当前网格由 --round-sec / BK_ROUND_SEC \
+                 显式锁定，写入会立即撤单并市价强平在途仓位，被拒绝——去掉该启动参数后重试"
                     .to_string(),
             ));
         }
         // duration_sec 的白名单与该账户 ROUNDS 订阅允许列表：先于一切账簿动作
-        // 校验，这样 immediate 的撤单/强平绝不会在随后被拒而留下半边天。
+        // 校验，这样写入的撤单/强平绝不会在随后被拒而留下半边天。
         if let Some(sec) = sec {
             if !self.config.allowed_round_secs.contains(&sec) {
                 return Err(CoreError::new(
@@ -745,7 +745,8 @@ impl Core {
         }
 
         // 撤单 → 市价强平 → 切网格的前两步，fail-closed（一律执行，秒切秒换）。
-        self.cancel_and_flatten_account(account_id, now_ms, actor)?;
+        // reset 与写入同样先强平：真实被平仓位数带回执（flattened_positions）。
+        let flattened = self.cancel_and_flatten_account(account_id, now_ms, actor)?;
         // reset: clear the account's override from memory (already removed above).
         if patch.reset {
             self.config.account_round_durations.remove(account_id);
@@ -765,6 +766,7 @@ impl Core {
                 next_session_sec: self.config.default_round_duration_sec,
                 reset: true,
                 persisted,
+                flattened_positions: flattened,
                 at_ms: now_ms,
                 actor: actor.to_string(),
                 reason: patch.reason.clone(),
@@ -772,7 +774,7 @@ impl Core {
             });
         }
         // Write path: duration_sec is Some (guaranteed by validation above).
-        // .env upsert already done above (persist-first); now update memory + engine grid.
+        // SQLite persist already done above (persist-first); now update memory + engine grid.
         let sec = sec.unwrap();
         self.config
             .account_round_durations
@@ -800,6 +802,7 @@ impl Core {
             next_session_sec: sec,
             reset: false,
             persisted,
+            flattened_positions: flattened,
             at_ms: now_ms,
             actor: actor.to_string(),
             reason: patch.reason.clone(),

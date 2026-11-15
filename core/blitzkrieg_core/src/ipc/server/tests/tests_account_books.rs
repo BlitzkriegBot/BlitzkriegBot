@@ -565,6 +565,109 @@ async fn account_remove_round_trips_list_and_the_persisted_file() {
     let _ = std::fs::remove_dir_all(scratch);
 }
 
+/// 墓碑端到端（issue #1199 P1-2）：boot（env 簿物化）→ remove → 用同一
+/// db_path 重建 Core —— 已删除的账户**不复活**（boot 合并跳过墓碑），
+/// `accounts` 表无行，账面无 id。这是"删了之后重启还在"缺陷的回归钉。
+#[tokio::test]
+async fn removed_account_does_not_resurrect_on_reboot() {
+    let (core, registry, peer, env_path, db_path) = two_account_persist_fixture().await;
+
+    // Remove paper through the wire: the row goes AND the tombstone lands
+    // in the same SQLite transaction.
+    let reply = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"account.remove","params":{"id":"paper","actor":"panel","reason":"cleanup"}}"#
+            .to_string(),
+    )
+    .await;
+    assert!(
+        reply.get("error").is_none(),
+        "the remove must land: {reply}"
+    );
+
+    // The tombstone is on disk before the reboot.
+    let db = crate::risk::account_store::AccountRiskDb::open(&db_path).expect("store re-opens");
+    let tombstones = db.load_removed_accounts().expect("tombstones readable");
+    assert!(
+        tombstones.iter().any(|id| id == "paper"),
+        "the removal tombstone for `paper` must persist across the reboot"
+    );
+
+    // REBOOT: a fresh Core over the same env book (which still names paper)
+    // and the same db_path — the boot merge must SKIP the tombstoned account.
+    let accounts_path = env_path.parent().unwrap().join("accounts.toml");
+    let env_text = std::fs::read_to_string(&env_path).unwrap();
+    assert!(
+        env_text.contains("ACCOUNT_PAPER_NAME"),
+        "the env still names paper (env is read-only): {env_text}"
+    );
+    let book = crate::account::AccountLedgers::new(
+        vec![
+            crate::account::Account {
+                id: AccountId::from("default"),
+                name: "main".into(),
+                market_type: blitzkrieg_market_api::MarketType::Prediction,
+                status: AccountStatus::Active,
+                credential_keys: crate::account::CredentialKeys::default(),
+                venue: String::new(),
+                trading_enabled: true,
+                strategies: Vec::new(),
+                rounds: Vec::new(),
+                opening_equity: None,
+                updated_at_ms: now_ms(),
+            },
+            crate::account::Account {
+                id: AccountId::from("paper"),
+                name: "paper".into(),
+                market_type: blitzkrieg_market_api::MarketType::Prediction,
+                status: AccountStatus::Active,
+                credential_keys: crate::account::CredentialKeys::default(),
+                venue: String::new(),
+                trading_enabled: true,
+                strategies: Vec::new(),
+                rounds: Vec::new(),
+                opening_equity: None,
+                updated_at_ms: now_ms(),
+            },
+        ],
+        AccountId::from("default"),
+    );
+    let cfg = CoreConfig {
+        accounts_config_path: Some(accounts_path.to_string_lossy().into_owned()),
+        db_path: Some(db_path.clone()),
+        trade_log_path: None,
+        order_log_path: None,
+        position_log_path: None,
+        ..Default::default()
+    };
+    let rebooted = Core::with_account_book(cfg, book);
+    let ids: Vec<String> = rebooted
+        .accounts
+        .account_list()
+        .iter()
+        .map(|a| a.id.as_str().to_string())
+        .collect();
+    assert!(
+        !ids.iter().any(|id| id == "paper"),
+        "the tombstoned account `paper` must NOT resurrect on reboot"
+    );
+    assert!(
+        ids.iter().any(|id| id == "default"),
+        "`default` stays in the book"
+    );
+
+    // The rows agree: paper has no row.
+    let rows = db.load_accounts().expect("rows readable");
+    assert!(rows.iter().all(|r| r.id != "paper"), "paper left the rows");
+
+    let scratch = env_path.parent().unwrap().to_path_buf();
+    drop(db);
+    drop(rebooted);
+    let _ = std::fs::remove_dir_all(scratch);
+}
+
 /// account.remove 的 journal 收尾（流水卡幽灵 seed 根因修复的 wire 半边）：
 /// 删户把该账户的磁盘流水文件一并清掉、内存 trail 清空；同名 id 立刻重建
 /// 时，`account.journal` 回执是一份**没有上一世成交**的新账本。生产 kalshi

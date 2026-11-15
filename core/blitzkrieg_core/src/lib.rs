@@ -120,8 +120,8 @@ pub mod shadow_evolution;
 pub mod signal;
 pub mod sim;
 /// #1199: the storage seam — business writes go through [`store::StoreApi`]
-/// instead of naming `.env` files and env keys. `store::EnvStore` is the
-/// `.env` backend (behaviour byte-identical to the pre-seam writers).
+/// instead of naming `.env` files and env keys. `.env` is read-only at
+/// runtime; SQLite (`config.db_path`) is the durable write face.
 pub mod store;
 pub mod strategies;
 pub mod strategy_engine;

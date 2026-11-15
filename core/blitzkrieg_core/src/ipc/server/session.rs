@@ -386,7 +386,7 @@ pub async fn run(
                     // the execution-policy section lands without a restart — the
                     // same "real-time write to .env, real-time enable, no restart"
                     // contract the cockpit families already enjoy. The policy
-                    // carrier IS the env file (no DB face yet), so this runs
+                    // carrier IS SQLite (no `.env` face yet), so this runs
                     // regardless of the cockpit carrier.
                     if let Err(e) = c.reload_execution_policy() {
                         tracing::warn!(

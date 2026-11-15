@@ -441,6 +441,16 @@ impl AccountRiskDb {
         })
     }
 
+    /// 读取所有已删除账户的墓碑（key: `removed_account.<id>`），用于 boot
+    /// 时防止已删除的账户从 .env 补账复活。
+    pub fn load_removed_accounts(&self) -> Vec<String> {
+        self.load_kernel_meta_by_prefix("removed_account.")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, _)| k.strip_prefix("removed_account.").unwrap_or(&k).to_string())
+            .collect()
+    }
+
     /// Full-row upsert — the boot's env-book materialization (issue #1199
     /// 第六轮, 操作者裁决 2026-11-14): when the `accounts` table is empty and
     /// the book came from the read-only `.env` fallback, the boot adopts the

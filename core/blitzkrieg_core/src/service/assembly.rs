@@ -303,15 +303,19 @@ impl Core {
             // 再把 .env 里独有的账户补上。
             if !rows.is_empty() {
                 let mut sql_accounts = Self::ledger_book_from_rows(&rows, s.risk_db(), now_ms());
-                let sql_ids: std::collections::HashSet<String> = sql_accounts
+                let sql_ids: Vec<String> = sql_accounts
                     .account_list()
                     .iter()
                     .map(|a| a.id.as_str().to_string())
                     .collect();
+                let removed = s.risk_db().load_removed_accounts();
                 for acc in accounts.account_list() {
-                    if !sql_ids.contains(acc.id.as_str()) {
-                        let _ = sql_accounts.insert(acc.clone());
+                    if sql_ids.iter().any(|id| id == acc.id.as_str())
+                        || removed.iter().any(|id| id == acc.id.as_str())
+                    {
+                        continue;
                     }
+                    let _ = sql_accounts.insert(acc.clone());
                 }
                 accounts = sql_accounts;
             } else {

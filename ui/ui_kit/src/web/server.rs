@@ -89,6 +89,7 @@ pub(super) struct BindInfo {
 }
 
 /// A trivial, dependency-free HTTP server that always renders a fresh snapshot.
+#[derive(Clone)]
 pub struct WebServer {
     pub(super) snapshot_src: Arc<Mutex<IpcClient>>,
     pub(super) trade_limit: usize,
@@ -235,13 +236,21 @@ Or use a pre-built release archive (the `webui/` dir ships next to the binary).\
                 }
             );
         }
+        let this = self.clone();
         for stream in listener.incoming() {
             match stream {
-                Ok(s) => self.handle(s),
+                Ok(s) => Self::spawn_conn(this.clone(), s),
                 Err(e) => eprintln!("accept: {e}"),
             }
         }
         Ok(())
+    }
+
+    /// Serve one accepted connection on its own thread, so a stalled client
+    /// (read timeout, slowloris) cannot wedge the accept loop and block other
+    /// connections such as /api/snapshot (issue #1224).
+    fn spawn_conn(this: WebServer, stream: TcpStream) {
+        std::thread::spawn(move || this.handle(stream));
     }
 
     pub(super) fn lifecycle_enabled(&self) -> bool {

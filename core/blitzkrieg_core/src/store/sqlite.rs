@@ -25,38 +25,20 @@
 //!     duration, the account-book knobs, the arb legs) — the rows land in
 //!     the tables the importer fills (`account_settings`, `accounts`,
 //!     `strategy_assignments`, `arb_pairs`, `kernel_meta`), which is the
-//!     right durable shape. Their runtime READ side is still the env grammar
-//!     (the account-book loader, the policy loader) — so this store is NOT
-//!     the production backend yet: the default assembly keeps
-//!     [`EnvStore`](super::EnvStore) until that read-side migration lands
-//!     (issue #1199 PR-3). Installing this store as the production backend
-//!     is gated on it; the write methods are implemented and tested so the
-//!     gate is the only thing missing.
+//!     right durable shape.
 //!   * **credentials** — a typed refusal: the table stores per-account
 //!     credential ENV VAR NAMES plus the AES-256-GCM sealed payload, and the
 //!     var-name→account mapping is a PR-3 design decision (the current env
 //!     grammar is global). Values never land in plaintext anywhere; a
 //!     refusal is the honest face until the mapping exists.
 //!
-//! Install state (issue #1199 r2, the honest ledger): the default assembly
-//! still installs [`EnvStore`](super::EnvStore) (`service/assembly.rs`, the
-//! PR-1 line — unchanged here); this backend is constructed nowhere in
-//! production yet. It has passed the three-backend parity proof
+//! Install state (issue #1199 r2, the honest ledger): this backend has passed
+//! the three-backend parity proof
 //! (`tests/store_backend_parity.rs`: one business path — account
 //! create/venue/rounds/status/trading/strategies/remove, the settings cell,
 //! the risk/exit round-trip — asserted fact-for-fact identical across
 //! EnvStore / MemStore / SqliteStore, with the legitimate differences
-//! enumerated, not silenced). The remaining gate is the READ-side loader
-//! migration (PR-3): the account-book loader
-//! (`account::config::load_account_ledgers_single_source` — the boot reads
-//! `ACCOUNT_*` env only), the execution-policy loaders
-//! (`execution_policy::Policy::load_single_source` / `load_for_reload` —
-//! `POLICY_*` env only), the per-account round-duration boot resolution
-//! (`ACCOUNT_<ID>_ROUND_DURATION_SEC` in `service/assembly.rs`), the
-//! credentials status probe (process env, `market/mod.rs`), and the
-//! market-plugin cell read (the launcher's `runtime_config` cell). Until
-//! those read the DB, a settings-family write through this store would be
-//! write-only: the install gate, not a missing write method.
+//! enumerated, not silenced).
 //!
 //! Fail-closed posture (issue #1199 acceptance): the store exists only with
 //! a live database — construction IS the open, and an open failure is an
@@ -401,6 +383,19 @@ impl super::StoreApi for SqliteStore {
                 format!("the store names no account `{account_id}`"),
             ));
         }
+        // 写删除墓碑：boot 时 .env 补账不得把已删除的账户复活。
+        // 墓碑与 accounts 表在同一 SQLite 文件，单写入口，不跨库。
+        self.risk
+            .save_kernel_meta(
+                &format!("removed_account.{}", account_id),
+                &crate::db::now_ms().to_string(),
+            )
+            .map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!("account remove tombstone write failed: {e}"),
+                )
+            })?;
         Ok(())
     }
 

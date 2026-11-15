@@ -136,21 +136,9 @@ pub fn load_market_plugin_from(path: &std::path::Path) -> Option<MarketPluginCel
     Some(MarketPluginCell { plugin: name })
 }
 
-/// Write (or, with `None`, clear) the persisted round duration. Atomic write:
-/// same-directory temp + rename, so a half-written file can never be what the
-/// next startup reads. Best-effort at the call sites — a persist failure is
-/// surfaced in the reply (`persisted: false`-style), never a kernel stop.
-pub fn persist_round_duration(
-    duration_sec: Option<i64>,
-    actor: &str,
-    now_ms: i64,
-) -> std::io::Result<()> {
-    persist_round_duration_to(&state_path(), duration_sec, actor, now_ms)
-}
-
 /// Write (or clear) the persisted market-plugin choice. Same atomic
-/// read-modify-write contract as the round-duration writer: both cells share
-/// one file, so neither write may clobber the other.
+/// read-modify-write contract: both cells share one file, so neither write may
+/// clobber the other.
 pub fn persist_market_plugin(
     plugin: Option<&str>,
     actor: &str,
@@ -178,33 +166,6 @@ pub fn persist_market_plugin_to(
     doc.market_plugin = plugin.map(|p| p.to_string());
     doc.market_plugin_actor = market_plugin_actor;
     doc.market_plugin_at_ms = market_plugin_at_ms;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&doc)?)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
-}
-
-/// Write (or clear) the persisted round duration. issue #1199 第六轮：
-/// `.env` 对内核只读；每账户轮次锚点的家是 SQLite（`account_settings`，
-/// `round_duration.set`），本全局 cell 只服务 config.json 的兼容读面。
-pub fn persist_round_duration_to(
-    path: &std::path::Path,
-    duration_sec: Option<i64>,
-    actor: &str,
-    now_ms: i64,
-) -> std::io::Result<()> {
-    let round_duration_actor = duration_sec.map(|_| actor.to_string());
-    let round_duration_at_ms = duration_sec.map(|_| now_ms);
-    let mut doc: RuntimeConfigDoc = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    doc.round_duration_sec = duration_sec;
-    doc.round_duration_actor = round_duration_actor;
-    doc.round_duration_at_ms = round_duration_at_ms;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -274,26 +235,6 @@ mod tests {
     }
 
     #[test]
-    fn a_written_round_trips_through_load() {
-        let d = tmpdir("roundtrip");
-        let p = d.join("config.json");
-        persist_round_duration_to(&p, Some(300), "uid:test", 1_000).unwrap();
-        assert_eq!(
-            load_round_duration_from(&p, TEST_ALLOWED),
-            Some(RoundDurationCell { duration_sec: 300 })
-        );
-    }
-
-    #[test]
-    fn reset_clears_the_cell_and_load_falls_through() {
-        let d = tmpdir("reset");
-        let p = d.join("config.json");
-        persist_round_duration_to(&p, Some(300), "uid:test", 1_000).unwrap();
-        persist_round_duration_to(&p, None, "uid:test", 2_000).unwrap();
-        assert_eq!(load_round_duration_from(&p, TEST_ALLOWED), None);
-    }
-
-    #[test]
     fn an_off_whitelist_value_is_ignored_not_armed() {
         let d = tmpdir("whitelist");
         let p = d.join("config.json");
@@ -311,19 +252,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load_round_duration_from(&p, &[]), None);
-    }
-
-    #[test]
-    fn a_broken_file_is_overwritten_by_the_next_write() {
-        let d = tmpdir("broken");
-        let p = d.join("config.json");
-        std::fs::write(&p, "{not json").unwrap();
-        assert_eq!(load_round_duration_from(&p, TEST_ALLOWED), None);
-        persist_round_duration_to(&p, Some(900), "uid:test", 3_000).unwrap();
-        assert_eq!(
-            load_round_duration_from(&p, TEST_ALLOWED),
-            Some(RoundDurationCell { duration_sec: 900 })
-        );
     }
 
     #[test]
@@ -351,31 +279,6 @@ mod tests {
                 plugin: "kalshi".into()
             })
         );
-    }
-
-    #[test]
-    fn the_two_cells_share_one_file_without_clobbering() {
-        let d = tmpdir("twocells");
-        let p = d.join("config.json");
-        persist_round_duration_to(&p, Some(300), "uid:test", 1_000).unwrap();
-        persist_market_plugin_to(&p, Some("predictfun"), "uid:test", 2_000).unwrap();
-        // The later market-plugin write must NOT erase the round duration…
-        assert_eq!(
-            load_round_duration_from(&p, TEST_ALLOWED),
-            Some(RoundDurationCell { duration_sec: 300 })
-        );
-        // …and a later round-duration reset must NOT erase the plugin.
-        persist_round_duration_to(&p, None, "uid:test", 3_000).unwrap();
-        assert_eq!(
-            load_market_plugin_from(&p),
-            Some(MarketPluginCell {
-                plugin: "predictfun".into()
-            })
-        );
-        // A plugin reset clears its own fields and leaves the other cell.
-        persist_market_plugin_to(&p, None, "uid:test", 4_000).unwrap();
-        assert_eq!(load_market_plugin_from(&p), None);
-        assert_eq!(load_round_duration_from(&p, TEST_ALLOWED), None);
     }
 
     #[test]

@@ -77,7 +77,7 @@ export function useRoundDuration() {
       if (res.error) {
         err.value = res.error
       } else {
-        msg.value = `下一轮起按 ${res.nextSessionSec}s 运行；当前轮保持出生网格结算。`
+        msg.value = `立即切入 ${res.nextSessionSec}s 网格；当前轮在途单已撤销、仓位已按市价强平。`
         await load()
       }
     } catch (e) {
@@ -101,7 +101,7 @@ export function useRoundDuration() {
       if (res.error) {
         err.value = res.error
       } else {
-        msg.value = `面板设置已清除，下一轮起回落到启动参数解析；当前轮保持出生网格结算。`
+        msg.value = `面板设置已清除，回落到启动参数网格；当前轮在途单已撤销、仓位已按市价强平。`
         await load()
       }
     } catch (e) {

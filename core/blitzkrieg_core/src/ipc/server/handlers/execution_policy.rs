@@ -398,7 +398,7 @@ fn section_from_set_params(
 ///
 /// #1199 PR-1: the durable half runs through the core's store (the carrier
 /// behind the seam); the legacy-toml refusal, the bootstrap-template sweep
-/// and the reset-on-file probe live in [`EnvStore`] now, exactly where the
+/// and the reset-on-file probe live in the store seam, exactly where the
 /// old write face had them. The section's key FOOTPRINT stays here — it is
 /// the loader's spelling (`execution_policy::section_env_state`), a policy
 /// fact, not a storage fact.

@@ -898,7 +898,7 @@ pub fn code_defaults() -> SectionDefaults {
     SectionDefaults {
         budget_ratio: Decimal::ONE,
         min_budget_usd: Decimal::ZERO,
-        max_budget_usd: dec!(1_000_000_000),
+        max_budget_usd: dec!(10_000),
         min_equity_usd: Decimal::ZERO,
         max_positions_per_asset: 1,
         // NO rules. The backstop (`open_positions >= 2 → skip`) is the

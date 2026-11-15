@@ -1,14 +1,12 @@
-//! #1199 acceptance A — the backend-swap proof: one assembly line, three
+//! #1199 acceptance A — the backend-swap proof: one assembly line, two
 //! backends, the SAME business path.
 //!
 //! The acceptance promise: "swap the backend = change ONE assembly line, the
 //! business tests stay green" (issue #1199). This test is the engineering
-//! evidence: ONE set of business-path operations, run against THREE StoreApi
-//! implementations — `EnvStore` (the env backend: real `.env` files through
-//! the kernel's own env-write faces the service layer calls), `MemoryStore`
-//! (the in-memory backend) and `SqliteStore` (the real DB backend over a
-//! tempdir database, PR-2) — with every observable outcome asserted
-//! IDENTICAL fact-for-fact.
+//! evidence: ONE set of business-path operations, run against TWO StoreApi
+//! implementations — `MemoryStore` (the in-memory backend) and `SqliteStore`
+//! (the real DB backend over a tempdir database, PR-2) — with every observable
+//! outcome asserted IDENTICAL fact-for-fact.
 //!
 //! SHAPE CONTRACT (the feat/1199-store-trait-env line): the real trait is
 //! `blitzkrieg_core::store::StoreApi`, grouped by domain. The trait below is
@@ -28,9 +26,9 @@
 //!
 //! LEGAL DIFFERENCES (enumerated, never silenced — issue #1199 r2 P0-2):
 //!   * `market.plugin.set` is NOT a StoreApi domain (the runtime-config cell
-//!     belongs to the launcher): EnvStore/MemoryStore carry it, SqliteStore
+//!     belongs to the launcher): MemoryStore carries it, SqliteStore
 //!     has no face and refuses with a typed error — asserted per backend.
-//!   * `market.credentials.set`: EnvStore writes `.env`, MemoryStore records,
+//!   * `market.credentials.set`: MemoryStore records,
 //!     SqliteStore refuses with a typed error (the per-account var-name
 //!     mapping is PR-3) — asserted per backend.
 //!   * The SqliteStore materializes an `accounts` row on any account-book

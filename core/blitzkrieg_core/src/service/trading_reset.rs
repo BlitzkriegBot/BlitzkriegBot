@@ -285,8 +285,8 @@ impl Core {
         // The ONE durable-write exit (issue #1199 T-03, zeroed): the carrier
         // decision is `persist_risk_bounds` alone — the DB store when one is
         // open (the whole merged row, the pre-seam `AccountRiskDb::save_risk`
-        // write, value for value), the assembled store (EnvStore → the changed
-        // `BK_RISK_*` keys in `.env`) otherwise, memory-only when the core has
+        // write, value for value), the assembled store (the changed
+        // `BK_RISK_*` keys) otherwise, memory-only when the core has
         // no store at all (backtester, in-process tests — honestly
         // `persisted: false`). A persist failure refuses the whole apply in
         // every carrier (file-first ruling — memory may never hold a value the
@@ -459,8 +459,8 @@ impl Core {
         // The ONE durable-write exit (issue #1199 T-03, zeroed): the carrier
         // decision is `persist_exit` alone — the DB store when one is open
         // (the whole merged exit row, the pre-seam `AccountRiskDb::save_exit`
-        // write, byte for byte), the assembled store (EnvStore → the changed
-        // `BK_EXIT_*` keys in `.env`, then the file-first re-derive of the
+        // write, byte for byte), the assembled store (the changed
+        // `BK_EXIT_*` keys, then the file-first re-derive of the
         // working copy) otherwise, memory-only when the core has no store at
         // all (backtester, in-process tests — honestly `persisted: false`).
         // A persist failure refuses the whole apply in every carrier
@@ -525,8 +525,8 @@ impl Core {
     ///     exactly as the pre-seam branch wrote it, and the untouched fields
     ///     keep the working copy's values.
     ///   * **assembled store only** — the changed `BK_RISK_*` keys through
-    ///     [`StoreApi::save_risk_bounds`](crate::store::StoreApi) (EnvStore →
-    ///     `.env`), the pre-seam `.env` upsert, refusal wording byte-equal.
+    ///     [`StoreApi::save_risk_bounds`](crate::store::StoreApi) (the
+    ///     `.env` upsert), the pre-seam `.env` upsert, refusal wording byte-equal.
     ///   * **no store** — the backtester/in-process-test posture:
     ///     `Ok(false)`, the caller's honest `persisted: false` (no error — the
     ///     memory-only apply is the whole story, as before).
@@ -582,7 +582,7 @@ impl Core {
     ///     those to the base, and a base that is not the working copy would
     ///     silently drop them (the divergence this keeps out).
     ///   * **assembled store only** — the changed `BK_EXIT_*` keys through
-    ///     [`StoreApi::save_exit`](crate::store::StoreApi) (EnvStore → `.env`),
+    ///     [`StoreApi::save_exit`](crate::store::StoreApi) (`.env`),
     ///     then the file-first re-derive of the working copy, the pre-seam
     ///     refusal wordings byte-equal.
     ///   * **no store** — the backtester/in-process-test posture: the
@@ -746,7 +746,7 @@ impl Core {
 
         // 撤单 → 市价强平 → 切网格的前两步，fail-closed（一律执行，秒切秒换）。
         self.cancel_and_flatten_account(account_id, now_ms, actor)?;
-        // reset: clear the account's override from memory (already removed from .env above).
+        // reset: clear the account's override from memory (already removed above).
         if patch.reset {
             self.config.account_round_durations.remove(account_id);
             if let Some(engine) = self.engine.as_mut() {

@@ -380,38 +380,7 @@ const needsStrategyHint = computed(() => {
  */
 	const dbEmpty = computed(() => snap.value?.stats?.dbEmpty === true)
 
-	// ── issue 1199 R4: 未核实敞口 ──────────────────────────────────────────
-	// 结算已落但尚未被场馆裁决/兑回的估算金额（fallback 索赔）。读自快照
-	// stats.settlement（网关 render_json_full 现已转发自 engine.stats）。
-	// 内核未带该键、或无未核实索赔时不渲染，绝不冒充“零敞口”——与
-	// dbEmpty 同一“缺省诚实”规则。
-	const settlement = computed(() => snap.value?.stats?.settlement ?? null)
-	const hasUnverifiedSettlement = computed(() => {
-	  const s = settlement.value
-		if (!s) return false
-		  return (
-		    (s.pendingFallbackClaims ?? 0) > 0 ||
-		    s.oldestFallbackClaimAgeMs != null
-		  )
-	})
-	const settlementAgeText = computed(() => {
-	  const a = settlement.value?.oldestFallbackClaimAgeMs
-	  return a != null ? duration(a / 1000) : '—'
-	})
-	const settlementPolicy = computed(() => settlement.value?.unverifiedExpiryPolicy ?? '')
-	const settlementPolicyLabel = computed(() => {
-	  switch (settlementPolicy.value) {
-	    case 'receivable':
-	      return '按应收计（估算入账，待场馆确认）'
-	    case 'cash':
-	      return '按现金计（已兜底价结算）'
-	    default:
-	      return '策略未声明'
-	  }
-	})
-	// §9：此卡读 process-level stats.settlement，不受页面账户/场馆过滤；
-	// 标题如实说出口径，免得单账户页把它误读为该账户敞口。
-	const settlementCardLabel = computed(() => '未核实敞口（全账户合计）')
+		// ── §9：此卡读 process-level stats.settlement，不受页面账户/场馆过滤；
 </script>
 
 <template>
@@ -623,38 +592,10 @@ const needsStrategyHint = computed(() => {
             <RollingNumber :value="signedMoney(unrealized)" />
           </span>
         </div>
-      </Card>
-    </div>
+	      </Card>
+	    </div>
 
-    <!-- issue 1199 R4: 未核实敞口 —— 结算已落但尚未被场馆裁决/兑回的估算
-         金额。仅在内核带该键且存在未核实索赔时渲染，绝不冒充“零敞口”。 -->
-	    <Card v-if="hasUnverifiedSettlement">
-	      <CardHeader :label="settlementCardLabel">
-        <template #action>
-          <Badge variant="default">{{ settlementPolicyLabel }}</Badge>
-        </template>
-      </CardHeader>
-      <div class="grid grid-cols-2 gap-x-5 gap-y-3.5 sm:grid-cols-3">
-        <div>
-          <div class="label-micro">回退应收（估算）</div>
-          <div class="stat-num mt-1 text-[19px] leading-none">
-            <RollingNumber :value="money(settlement?.fallbackReceivableUsd)" />
-          </div>
-        </div>
-        <div>
-          <div class="label-micro">未核实索赔</div>
-          <div class="stat-num mt-1 text-[19px] leading-none num">
-            <RollingNumber :value="settlement?.pendingFallbackClaims ?? 0" />
-          </div>
-        </div>
-        <div>
-          <div class="label-micro">最老索赔等待</div>
-          <div class="stat-num mt-1 text-[19px] leading-none">{{ settlementAgeText }}</div>
-        </div>
-      </div>
-    </Card>
-
-    <!-- rejection attribution + positions -->
+	    <!-- rejection attribution + positions -->
     <div class="mt-3.5 grid gap-3.5 xl:grid-cols-2">
       <Card>
         <CardHeader label="策略拒单原因分布">

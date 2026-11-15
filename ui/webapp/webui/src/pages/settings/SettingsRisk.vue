@@ -389,59 +389,6 @@ async function rollbackPolicy(): Promise<void> {
       </div>
     </Card>
 
-    <!-- 插件与扩展启停（网关写路由补前端入口）：extension.enable/disable 与 market.plugin.set 此前
-         只有后端路由，面板无入口。此处补显式开关，每次操作读回执，成功或失败可见；不与注册态的只读
-         显示混为一谈。 -->
-    <Card class="mt-3.5 mb-4">
-      <CardHeader label="插件与扩展启停">
-        <template #title>
-          <Plug class="size-4 shrink-0 text-primary" />
-        </template>
-      </CardHeader>
-      <p class="mt-3 text-[11px] leading-snug text-muted-fg">
-        扩展插件启用/停用 与 行情插件下次会话选切，走网关已存在的写路由（extension.set / market-plugin.set），
-        每次操作读回执，成功或失败可见；不与注册态的只读显示混为一谈。
-      </p>
-
-      <!-- 扩展插件启停：逐个按钮，点击即调用 extension.enable/disable 并读回执。 -->
-      <div v-if="store.plugins" class="mt-3 flex flex-wrap gap-2">
-        <template v-for="ext in store.plugins.extensions" :key="ext.name">
-          <span class="flex items-center gap-2">
-            <span class="text-[11px] text-muted-fg shrink-0">{{ ext.name }}</span>
-            <Button
-              size="sm"
-              :disabled="extensionOperateId !== null || pluginOperateId !== null"
-              :class="ext.enabled ? 'bg-up/10 text-up' : 'bg-down/10 text-down'"
-              @click="setExtension(ext.name, !ext.enabled)"
-            >{{ ext.enabled ? '停用' : '启用' }}</Button>
-          </span>
-        </template>
-      </div>
-
-      <!-- 行情插件选切：仅在下次会话生效，运行中的会话不受影响。 -->
-      <div v-if="store.plugins" class="mt-3 flex flex-wrap gap-2 items-start">
-        <span class="text-[11px] text-muted-fg shrink-0 mt-0.5">行情插件（下次会话生效）：</span>
-        <template v-for="p in store.plugins.marketPlugins" :key="p.name">
-          <Button
-            size="sm"
-            :disabled="pluginOperateId !== null || extensionOperateId !== null"
-            :class="p.active ? 'bg-up/10 text-up' : 'bg-default/10 text-default'"
-            @click="setMarketPlugin(p.name, false)"
-          >{{ p.name }}</Button>
-        </template>
-        <Button
-          size="sm"
-          :disabled="pluginOperateId !== null || extensionOperateId !== null"
-          @click="setMarketPlugin(undefined, true)"
-        >重置持久格</Button>
-      </div>
-
-      <span v-if="extensionErr" class="mt-1 block text-[10.5px] text-down">{{ extensionErr }}</span>
-      <span v-else-if="extensionMsg" class="mt-1 block text-[10.5px] text-up">{{ extensionMsg }}</span>
-      <span v-if="pluginErr" class="mt-1 block text-[10.5px] text-down">{{ pluginErr }}</span>
-      <span v-else-if="pluginMsg" class="mt-1 block text-[10.5px] text-up">{{ pluginMsg }}</span>
-    </Card>
-
     <!-- 配置态停用账户（不可从面板解冻；来源 account.status === 'frozen'，与风控冻结是两回事） -->
     <Card v-if="configuredFrozenAccounts.length" class="mt-3.5 mb-4">
       <CardHeader label="配置停用的账户">

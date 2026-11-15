@@ -158,6 +158,11 @@ pub fn round_duration_readout(core: &Core) -> crate::schema::RoundDurationResult
             label: None,
         });
     }
+    // `persisted` is `true` when there's a per-account override that was
+    // durably persisted to SQLite (issue #1199: `.env` is read-only, SQLite
+    // is the durable home). When `per_account` is empty, no override was
+    // persisted (either never set, or reset cleared it).
+    let persisted = !per_account.is_empty();
     RoundDurationResult {
         effective_sec: effective,
         // 引擎扫描器实际运行的轮长：per-account 覆盖写入后已通过
@@ -172,7 +177,7 @@ pub fn round_duration_readout(core: &Core) -> crate::schema::RoundDurationResult
         per_account,
         allowed,
         next_session_sec: effective,
-        persisted: false,
+        persisted,
     }
 }
 

@@ -1382,6 +1382,9 @@ pub struct RoundDurationUpdate {
     /// `reset` clears the account's override (falls back to boot resolution)
     /// instead of writing a value.
     pub reset: bool,
+    /// `true` when the write was durably persisted to the SQLite store
+    /// (issue #1199: `.env` is read-only, SQLite is the durable home).
+    pub persisted: bool,
     pub at_ms: i64,
     pub actor: String,
     #[serde(skip_serializing_if = "Option::is_none")]

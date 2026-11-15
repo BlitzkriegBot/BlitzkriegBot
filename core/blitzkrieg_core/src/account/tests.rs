@@ -270,7 +270,10 @@ fn posture_permits_reflects_config_truth() {
         .posture_permits(&AccountId("paper".into()), false)
         .expect_err("read_only refuses entries");
     assert_eq!(err.code, CoreErrorCode::AccountLimit);
-    assert!(err.message.contains("is read_only"), "{}", err.message);
+    assert!(
+        err.message.contains("is read_only"),
+        "the refusal names the read_only posture"
+    );
     let err = book
         .posture_permits(&AccountId("paper".into()), true)
         .expect_err("read_only refuses closes");
@@ -310,8 +313,7 @@ fn trading_switch_refuses_entries_passes_closes() {
     assert_eq!(err.code, CoreErrorCode::AccountLimit);
     assert!(
         err.message.contains("trading-closed"),
-        "the refusal names the switch, not the status: {}",
-        err.message
+        "the refusal names the switch, not the status"
     );
     assert!(
         book.posture_permits(&default_account_id(), true).is_ok(),

@@ -327,6 +327,11 @@ fn decouple_core(accounts_path: Option<&Path>, pot: Option<Decimal>, enable_defa
         // Env-single-source migration (issue 751): point at the per-test .env
         // so the loader reads the fixture data from env (env priority > toml).
         env_file_path: accounts_path.map(|p| accounts_env_path(p).to_string_lossy().into_owned()),
+        // 持久化后端是 SQLite（`.env` 只读）：account.strategies.set 的写面走 store。
+        // 与 accounts_path 同目录、同文件名，并行测试不互冲突。
+        db_path: accounts_path
+            .as_ref()
+            .map(|p| p.with_extension("store.sqlite")),
         virtual_limits,
         ..Default::default()
     };
@@ -336,7 +341,10 @@ fn decouple_core(accounts_path: Option<&Path>, pot: Option<Decimal>, enable_defa
             let book =
                 load_account_ledgers_single_source(p, Some(&env_path), NOW, TEST_ALLOWED_ROUNDS)
                     .expect("accounts fixture parses (env priority)");
-            Core::with_account_book(config, book)
+            let mut c = Core::with_account_book(config, book);
+            c.open_account_risk_db(p.with_extension("store.sqlite"))
+                .expect("risk/exit/settings store opens");
+            c
         }
         None => Core::new(config),
     };
@@ -1062,14 +1070,21 @@ fn account_removal_is_delete_all_but_the_last_account() {
         "paper",
         "the active cell never dangles: it re-activates the first survivor"
     );
-    let env_path = accounts_env_path(&path);
-    let book = load_account_ledgers_single_source(&path, Some(&env_path), now, TEST_ALLOWED_ROUNDS)
-        .expect("the written env re-parses");
+    // `.env` 是内核只读，删户不再写文件；下一次 boot 从 SQL 读，故从 store
+    // 校验 default 已离场。
+    let db = blitzkrieg_core::risk::account_store::AccountRiskDb::open(
+        path.with_extension("store.sqlite"),
+    )
+    .expect("store opens");
+    let rows = db.load_accounts().expect("accounts readable");
     assert!(
-        book.account(&default_account_id()).is_none(),
-        "the `default` row leaves ACCOUNT_LIST (the next boot re-derives it)"
+        !rows.iter().any(|r| r.id == "default"),
+        "the `default` row is removed from the store (next boot re-derives without it)"
     );
-    assert!(book.account(&paper_id()).is_some());
+    assert!(
+        rows.iter().any(|r| r.id == "paper"),
+        "paper survives in the store"
+    );
 
     // 平掉持仓后，paper 成为最后一个账户 ⇒ 拒删（空簿让下一次 boot 拒载）。
     let ids: Vec<String> = c

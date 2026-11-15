@@ -189,6 +189,9 @@ fn arb_core_atomic(accounts_path: &Path, virtual_pot: bool, atomic: bool) -> Cor
                 .to_string_lossy()
                 .into_owned(),
         ),
+        // 持久化后端是 SQLite（`.env` 只读）：arb.config.set 的写面走 store。
+        // 与 accounts_path 同目录、同文件名，并行测试不互冲突。
+        db_path: Some(accounts_path.with_extension("store.sqlite")),
         virtual_limits,
         ..Default::default()
     };

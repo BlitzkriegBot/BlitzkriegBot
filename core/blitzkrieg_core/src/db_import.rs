@@ -275,6 +275,7 @@ pub const INDEXES: &[&str] = &[
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ImportReport {
     pub accounts: usize,
+    pub credentials: usize,
     pub risk_rows: usize,
     pub exit_rows: usize,
     pub settings: usize,
@@ -286,7 +287,7 @@ impl ImportReport {
     // True when this run folded anything in — the second (idempotent)
     // run reports all zeros and the boot log stays quiet.
     pub fn imported_anything(&self) -> bool {
-        self.accounts + self.risk_rows + self.exit_rows + self.settings != 0
+        self.accounts + self.credentials + self.risk_rows + self.exit_rows + self.settings != 0
     }
 }
 
@@ -442,6 +443,7 @@ pub fn import_once(
     let tx = conn.transaction()?;
     for id in &accounts {
         report.accounts += insert_account(&tx, id, &env_lookup)?;
+        report.credentials += insert_account_credentials(&tx, id, &env_lookup)?;
         report.risk_rows += insert_account_risk(&tx, id, &env_lookup)?;
         report.exit_rows += insert_account_exit_policy(&tx, id, &env_lookup)?;
         report.settings += insert_account_settings(&tx, id, &env_lookup)?;
@@ -458,6 +460,7 @@ pub fn import_once(
     )?;
     let detail = serde_json::json!({
         "accounts": report.accounts,
+        "credentials": report.credentials,
         "risk_rows": report.risk_rows,
         "exit_rows": report.exit_rows,
         "settings": report.settings,
@@ -559,6 +562,49 @@ fn insert_account(
             venue,
             trading_enabled,
             rounds_json,
+            now_ms()
+        ],
+    )?)
+}
+
+/// One `account_credentials` row per account: the four credential ENV VAR
+/// NAMES (the VALUES live in the process env or the sealed `kernel_meta`
+/// rows — never here). Only accounts with at least one name get a row; an
+/// account with no credential cells keeps the table absent (the historical
+/// shape).
+fn insert_account_credentials(
+    tx: &Connection,
+    account_id: &str,
+    env: &impl Fn(&str) -> Option<String>,
+) -> anyhow::Result<usize> {
+    let sfx = env_account_suffix(account_id);
+    let api_key_env = env(&format!("ACCOUNT_{sfx}_API_KEY_ENV"));
+    let secret_env = env(&format!("ACCOUNT_{sfx}_SECRET_ENV"));
+    let passphrase_env = env(&format!("ACCOUNT_{sfx}_PASSPHRASE_ENV"));
+    let private_key_env = env(&format!("ACCOUNT_{sfx}_PRIVATE_KEY_ENV"));
+    if api_key_env.is_none()
+        && secret_env.is_none()
+        && passphrase_env.is_none()
+        && private_key_env.is_none()
+    {
+        return Ok(0);
+    }
+    Ok(tx.execute(
+        "INSERT INTO account_credentials \
+         (account_id, api_key_env, secret_env, passphrase_env, private_key_env, updated_at_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT(account_id) DO UPDATE SET \
+            api_key_env = excluded.api_key_env, \
+            secret_env = excluded.secret_env, \
+            passphrase_env = excluded.passphrase_env, \
+            private_key_env = excluded.private_key_env, \
+            updated_at_ms = excluded.updated_at_ms",
+        params![
+            account_id,
+            api_key_env,
+            secret_env,
+            passphrase_env,
+            private_key_env,
             now_ms()
         ],
     )?)

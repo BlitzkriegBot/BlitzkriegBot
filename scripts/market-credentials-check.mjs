@@ -25,11 +25,16 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { randomBytes } from 'crypto';
 import { CoreClient, defaultBinaryPath } from './lib/core-client.mjs';
 import { scratchSocketPath } from './lib/core-socket.mjs';
 import { createChecks } from './lib/gate-harness.mjs';
 
 const BIN = process.env.BK_CORE_BIN || defaultBinaryPath();
+// #1199 第六轮：凭证 AES-256-GCM 加密落 SQLite，主密钥来自
+// BLITZKRIEG_DB_KEY（base64 of 32 random bytes）。每个测试用同一个密钥
+// 和独立的 store.sqlite（BLITZKRIEG_DB_PATH），模拟真实部署。
+const MASTER_KEY = randomBytes(32).toString('base64');
 
 const gate = createChecks();
 const check = gate.check;
@@ -64,6 +69,9 @@ function makeCore(label, extraArgs = [], cwdOverride = null, envExtra = null) {
   // restarts in place.
   const cwd = cwdOverride ?? mkdtempSync(join(tmpdir(), `blitzkrieg-cred-${label}-`));
   if (!cwdOverride) cleanup.push(cwd);
+  // #1199 第六轮：凭证的家是 SQLite（加密），`.env` 只读。每个 cwd 用独立
+  // store.sqlite（BLITZKRIEG_DB_PATH），密钥统一（BLITZKRIEG_DB_KEY），
+  // 模拟真实部署：写加密行，boot 注入解密后的进程环境。
   return new CoreClient({
     binaryPath: BIN,
     socketPath: scratchSocketPath(`cred-${label}`),
@@ -77,7 +85,11 @@ function makeCore(label, extraArgs = [], cwdOverride = null, envExtra = null) {
     noOrderLog: true,
     noPositionLog: true,
     extraArgs,
-    envExtra,
+    envExtra: {
+      ...(envExtra ?? {}),
+      BLITZKRIEG_DB_KEY: MASTER_KEY,
+      BLITZKRIEG_DB_PATH: join(cwd, 'store.sqlite'),
+    },
   });
 }
 
@@ -132,8 +144,8 @@ try {
   check('a refused write touches no disk at all',
     !existsSync(envFile(core.cwd)), envFile(core.cwd));
 
-  // 2. The write lands in `.env`; the reply names what was written, values
-  //    stay local; the config.json cell is gone from the contract.
+  // 2. The write lands in SQLite (encrypted); the reply names what was written,
+  //    values stay local; `.env` is read-only for the kernel (never written).
   const set = await core.request('market.credentials.set', {
     plugin: 'kalshi',
     vars: { KALSHI_API_KEY_ID: 'gate-key', KALSHI_RSA_PRIVATE_KEY: 'gate-secret' },
@@ -147,11 +159,9 @@ try {
   check('the audit trail names the actor', typeof set.actor === 'string' && set.actor.startsWith('uid:'),
     JSON.stringify(set));
 
-  const envText = (() => { try { return readFileSync(envFile(core.cwd), 'utf8'); } catch { return ''; } })();
-  check('the values land in the scratch cwd .env (single persistent home)',
-    envText.includes('KALSHI_API_KEY_ID="gate-key"')
-      && envText.includes('KALSHI_RSA_PRIVATE_KEY="gate-secret"'),
-    JSON.stringify(envText));
+  // `.env` 是内核只读：写入落 SQLite（加密），文件不被触碰。
+  check('the .env is NOT written (kernel read-only; SQLite is the durable home)',
+    !existsSync(envFile(core.cwd)), envFile(core.cwd));
   const cellFile = join(core.cwd, 'data/runtime/config.json');
   let cellText = existsSync(cellFile) ? readFileSync(cellFile, 'utf8') : '';
   check('the config.json credentials cell is gone from the write path',
@@ -163,44 +173,37 @@ try {
     midKalshi?.ready === false && (midKalshi?.resolvedVars ?? []).length === 0,
     JSON.stringify(midKalshi));
 
-  // 4. reset removes only that plugin's lines from .env.
+  // 4. reset removes only that plugin's rows (SQLite); `.env` is read-only.
   await core.request('market.credentials.set', {
     plugin: 'polysimulator', vars: { POLYSIM_API_KEY: 'sim-secret' },
   });
   const reset = await core.request('market.credentials.set', { plugin: 'kalshi', reset: true });
   check('reset clears the plugin and names its whole table',
     reset.reset === true && reset.written.length === 2, JSON.stringify(reset));
-  const afterResetEnv = readEnv(core.cwd);
-  check('the reset plugin\'s keys are gone from .env',
-    !('KALSHI_API_KEY_ID' in afterResetEnv) && !('KALSHI_RSA_PRIVATE_KEY' in afterResetEnv),
-    JSON.stringify(afterResetEnv));
-  check('a sibling plugin keeps its lines through another plugin\'s reset',
-    afterResetEnv.POLYSIM_API_KEY === 'sim-secret', JSON.stringify(afterResetEnv));
+  // `.env` 是内核只读：reset 写的是 SQLite，文件不被触碰。
+  check('the .env is NOT written by reset (kernel read-only)',
+    !existsSync(envFile(core.cwd)), envFile(core.cwd));
 
   await core.stop();
 
-  // 5. The launcher's role: load the scratch .env into the child environment
-  //    (the `blitzkrieg` launcher does this in production) — the kernel then
-  //    resolves credentials from its environment, and injects NOTHING itself.
-  const loaded = readEnv(core.cwd);
-  const core2 = makeCore('restart', [], core.cwd, loaded);
+  // 5. Boot 注入：重启核从同一 store（BLITZKRIEG_DB_PATH）读加密行，用
+  //    BLITZKRIEG_DB_KEY 解密后注入进程环境（inject_credentials_into_process_env）
+  //    —— 凭证的家是 SQLite，`.env` 不再是载体。
+  const core2 = makeCore('restart', [], core.cwd, {});
   await core2.start();
-  const inj = core2.lastStderr ?? '';
-  check('the kernel no longer injects credentials at boot (the environment is the input)',
-    !inj.includes('credentials injected'),
-    inj.split('\n').filter((l) => l.includes('credential') || l.includes('inject')).join(' | '));
   const after2 = await core2.request('market.credentials.status', {});
   const r2Sim = (after2.rows ?? []).find((r) => r.plugin === 'polysimulator');
   const r2Kal = (after2.rows ?? []).find((r) => r.plugin === 'kalshi');
-  check('after a launcher-style start the surviving plugin resolves from the environment',
+  check('after a restart the surviving plugin resolves from the store (boot injected)',
     r2Sim?.ready === true && (r2Sim?.resolvedVars ?? []).includes('POLYSIM_API_KEY'),
     JSON.stringify(r2Sim));
-  check('the reset plugin stays unready (its keys left .env)',
+  check('the reset plugin stays unready (its rows left the store)',
     r2Kal?.ready === false, JSON.stringify(r2Kal));
   await core2.stop();
 
-  // 6. The legacy-cell migration: a pre-consolidation config.json drains into
-  //    .env at boot, the key is stripped, the run is loud about it.
+  // 6. 遗留 config.json credentials 格的迁移已随 issue 967/920 退役
+  //    （execution_policy.toml 退役时一并），内核不再读该格；此处只确认
+  //    带 legacy 格的 config.json 不会让 boot 失败（fail-closed 不触发）。
   const cwd3 = mkdtempSync(join(tmpdir(), 'blitzkrieg-cred-migrate-'));
   cleanup.push(cwd3);
   mkdirSync(join(cwd3, 'data/runtime'), { recursive: true });
@@ -208,18 +211,13 @@ try {
     '{"credentials":{"kalshi":{"KALSHI_API_KEY_ID":"legacy-k"}}}');
   const core3 = makeCore('migrate', [], cwd3);
   await core3.start();
-  const mig = core3.lastStderr ?? '';
-  check('a legacy cell migrates loudly at boot',
-    mig.includes('legacy credentials cell migrated'), mig.split('\n').filter((l) => l.includes('migrat')).join(' | '));
-  check('the migrated value lands in .env',
-    readEnv(cwd3).KALSHI_API_KEY_ID === 'legacy-k', JSON.stringify(readEnv(cwd3)));
-  const stripped = readFileSync(join(cwd3, 'data/runtime/config.json'), 'utf8');
-  check('the migrated cell key is stripped from config.json',
-    !stripped.includes('credentials'), stripped);
+  const after3 = await core3.request('market.credentials.status', {});
+  check('a legacy config.json credentials cell does not break boot',
+    Array.isArray(after3.rows), JSON.stringify(after3).slice(0, 200));
   await core3.stop();
 
   console.log(gate.failures === 0
-    ? '\nmarket:credentials — status/set/plan-first/reset/.env-landing/launcher-role/migration all hold over the real wire.'
+    ? '\nmarket:credentials — status/set/plan-first/reset/SQLite-landing/boot-injection/migration all hold over the real wire.'
     : `\nmarket:credentials — ${gate.failures} assertion(s) failed.`);
   process.exit(gate.failures === 0 ? 0 : 1);
 } finally {

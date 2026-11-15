@@ -862,8 +862,7 @@ fn zero_feed_fallback_is_cost_recovery_not_profit() {
     // net_pnl at cost recovery is ~0 (minus fees), never a positive payout.
     assert!(
         closed.net_pnl_usd <= Decimal::ZERO,
-        "cost recovery never books profit: net={}",
-        closed.net_pnl_usd
+        "cost recovery never books profit"
     );
     assert_eq!(
         closed.source, "fallback",

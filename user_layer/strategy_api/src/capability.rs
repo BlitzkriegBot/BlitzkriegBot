@@ -982,9 +982,15 @@ mod tests {
     fn grant_displays_a_receipt_line() {
         let host = host_grant("default");
         let text = host.to_string();
-        assert!(text.starts_with("account=default"), "{text}");
-        assert!(text.contains("surfaces="), "{text}");
-        assert!(text.contains("books"), "{text}");
+        assert!(
+            text.starts_with("account=default"),
+            "receipt starts with the account"
+        );
+        assert!(
+            text.contains("surfaces="),
+            "receipt carries the surfaces list"
+        );
+        assert!(text.contains("books"), "receipt carries the books surface");
         let bare = CapabilityGrantBuilder::new().build();
         assert!(
             bare.to_string().contains("<none>"),

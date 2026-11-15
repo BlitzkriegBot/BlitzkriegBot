@@ -460,8 +460,7 @@ fn venue_scoped_freeze_does_not_touch_sibling_venues() {
     assert!(
         c.account_freeze_reason("poly-acct", now_ms())
             .is_some_and(|r| r.contains("self-check failed on polymarket")),
-        "the failed polymarket self-check must freeze the account bound to it: {:?}",
-        c.account_freeze_reason("poly-acct", now_ms())
+        "the failed polymarket self-check must freeze the account bound to it"
     );
     assert!(
         c.account_freeze_reason("polysim-acct", now_ms()).is_none(),
@@ -556,8 +555,7 @@ fn venue_scoped_freeze_does_not_touch_sibling_venues() {
             .is_some_and(
                 |r| r.contains("reconciliation sweep failed 3 times in a row on polysimulator")
             ),
-        "polysimulator's own 3rd failure must freeze ITS account: {:?}",
-        c.account_freeze_reason("polysim-acct", now_ms())
+        "polysimulator's own 3rd failure must freeze ITS account"
     );
     // Both venues are now frozen per-account — and the global switch is
     // STILL quiet: two account freezes are not a kill switch.

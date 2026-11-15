@@ -58,6 +58,10 @@ function makeCore(label, extraArgs = [], cwdOverride = null) {
     noTradeLog: true,
     noOrderLog: true,
     noPositionLog: true,
+    // #1199 第六轮：覆盖的家是 SQLite（`.env` 只读）。每个 cwd 用自己的
+    // store.sqlite —— 全新 cwd = 全新库（无残留），同一 cwd 重启 = 同一库
+    // （读回持久覆盖），与生产「按部署目录独立」同构。
+    envExtra: { BLITZKRIEG_DB_PATH: join(cwd, 'store.sqlite') },
     // 门禁要断言“引擎侧实际变化”，必须让核安装扫描引擎（--engine），
     // 否则 round_duration.set 的 engine 同步无对象可写。
     extraArgs: [...(extraArgs ?? []), '--engine'],

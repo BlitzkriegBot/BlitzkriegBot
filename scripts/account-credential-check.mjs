@@ -177,11 +177,12 @@ function makeCore() {
     noOrderLog: true,
     noPositionLog: true,
     extraArgs: ['--no-auto-exits'],
-    // The launcher's role: load the scratch .env into the child's environment
-    // (production loads it exactly this way), plus the sentinel VALUES for the
-    // credential vars the book names — planted in the child process ONLY.
+    // #1199 第六轮：SQLite 是唯一持久化后端，默认库路径按安装根锚定会被
+    // 其他 gate 的残留污染（账户簿被替换、凭证键丢失）。每个 cwd 用独立
+    // store.sqlite —— 全新 cwd = 全新库，本 gate 的账户簿就是 .env 的簿。
     envExtra: {
       ...ACCOUNT_ENV,
+      BLITZKRIEG_DB_PATH: join(cwd, 'store.sqlite'),
       [KEY_ENV.api_key_env]: SENTINEL,
       [KEY_ENV.secret_env]: SENTINEL,
       [KEY_ENV.passphrase_env]: SENTINEL,

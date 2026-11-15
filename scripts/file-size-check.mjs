@@ -67,12 +67,29 @@ const ALLOW = [
   // may shrink or die, never grow past atAuthoring. 1543→1546: the issue
   // 1199 R2 comment-honesty pass (+3 comment lines). 1546→1552: the R2
   // T-03 zeroing (+6 lines: the two single-exit helpers' docblocks).
-  { path: 'core/blitzkrieg_core/src/service/trading_reset.rs', atAuthoring: 1552 },
+  // 1552→1570: the #1199 第六轮 round_duration persisted flag (+5) and
+  // the env→SQL migration of the set/reset write path (+13).
+  { path: 'core/blitzkrieg_core/src/service/trading_reset.rs', atAuthoring: 1570 },
   // #1186: max_order_notional_usd folded into AccountRiskLimits grew
   // schema/mod.rs past the limit. Debt marker — the file may shrink or die,
   // never grow past atAuthoring. 1501→1505: the issue 1199 R2
-  // persistence-doc pass (+4 comment lines, zero logic).
-  { path: 'core/blitzkrieg_core/src/schema/mod.rs', atAuthoring: 1505 },
+  // persistence-doc pass (+4 comment lines, zero logic). 1505→1508: the
+  // #1199 第六轮 RoundDurationUpdate persisted field (+3 lines).
+  { path: 'core/blitzkrieg_core/src/schema/mod.rs', atAuthoring: 1508 },
+  // #1199 第六轮: env 写入路径根除 + SQLite 独占后端。boot 物化、toml 门、
+  // 账户簿合并把 assembly.rs 从 1221 涨到 1697（+476 行：env 写分支删除、
+  // boot 物化、账户簿 SQL 权威、凭证注入、策略集合回读、arb 段 store 回读）。
+  // Debt marker — 拆分另开轮次，此处先记债。
+  { path: 'core/blitzkrieg_core/src/service/assembly.rs', atAuthoring: 1697 },
+  // #1199 第六轮：tests_risk_rounds.rs 新增 round_duration 落 SQLite 与
+  // 下一会话读回的往返用例，1479→1562（+83 行）。
+  { path: 'core/blitzkrieg_core/src/ipc/server/tests/tests_risk_rounds.rs', atAuthoring: 1562 },
+  // #1199 第六轮：dispatch_boot_enablement_tests.rs 的 fixture 补 db_path
+  // 与 env 断言迁 SQL，1483→1547（+64 行）。
+  {
+    path: 'core/blitzkrieg_core/src/service/tests/strategy_dispatch_tests/dispatch_boot_enablement_tests.rs',
+    atAuthoring: 1547,
+  },
 ];
 
 const checks = [];

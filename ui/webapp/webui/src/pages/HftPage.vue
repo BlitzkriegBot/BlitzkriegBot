@@ -728,20 +728,16 @@ const roundDurLabel = computed(() => {
  */
 const roundSwitch = useRoundDuration()
 
-// 本单（「立即结束当前轮」）：有在途仓位时必弹确认框（N 仓位 + 滑点警告），
-// 无仓位直接切；flagLocked 时整条路径禁用。
-const hftRoundImmediate = ref(false)
+// 本单（立即生效）：先查当前账户在途仓位，有则必弹确认框（N 仓位 + 滑点警告），
+// 无仓位直接切；flagLocked 时整条路径禁用。切换一律立即撤单+市价强平+切网格，
+// 不存在「下次会话生效」。
 const hftRoundConfirmOpen = ref(false)
 const hftRoundConfirmN = ref(0)
 const hftRoundConfirmSec = ref(0)
 
 async function doSaveRound(): Promise<void> {
   const accountId = store.activeAccount ?? 'default'
-  if (!hftRoundImmediate.value) {
-    await roundSwitch.save(accountId)
-    return
-  }
-  // 立即切换：先查当前账户在途仓位，有则必弹确认框，不静默；无仓位直接切。
+  // 先查当前账户在途仓位，有则必弹确认框，不静默；无仓位直接切。
   try {
     const snap = await api.snapshot()
     const n = (snap.positions ?? []).filter(
@@ -757,12 +753,7 @@ async function doSaveRound(): Promise<void> {
     roundSwitch.err.value = e instanceof Error ? e.message : String(e)
     return
   }
-  await roundSwitch.save(accountId, { immediate: true })
-}
-
-async function doSaveRoundImmediate(): Promise<void> {
-  hftRoundConfirmOpen.value = false
-  await roundSwitch.save(store.activeAccount ?? 'default', { immediate: true })
+  await roundSwitch.save(accountId)
 }
 
 // 清除该账户的轮次设置，回落到启动参数解析（issue 1155：设置页轮次卡删除后，
@@ -1031,7 +1022,7 @@ const journalOpen = ref(false)
             v-if="!switcherLocked"
             :content="roundSwitch.flagLocked.value
               ? `轮次由启动参数（--round-sec / BK_ROUND_SEC）显式指定，面板切换不会赢。当前档位 ${roundDurLabel}。`
-              : `轮次周期坐标系：切换立即作用于当前账户（在途轮保持原网格结算）；其他账户的周期族在账户卡配置。`"
+              : `轮次周期坐标系：切换立即撤单该账户在途单、按市价真实强平其仓位，再切入新网格；其他账户的周期族在账户卡配置。`"
           >
             <div class="flex items-center gap-1.5">
               <Timer class="size-3.5 text-faint-fg" />
@@ -1052,17 +1043,11 @@ const journalOpen = ref(false)
               <span class="text-[12px] font-medium tabular-nums text-faint-fg">{{ roundDurLabel }}</span>
             </div>
           </Tooltip>
-          <Switch
-            v-if="roundSwitch.dirty.value && !roundSwitch.flagLocked.value"
-            v-model="hftRoundImmediate"
-            :disabled="roundSwitch.busy.value"
-            label="立即结束当前轮（市价平掉在途仓位）"
-          />
           <Button
             v-if="roundSwitch.dirty.value"
             size="sm"
             :disabled="roundSwitch.busy.value"
-            title="把选中的轮次周期写入当前账户；开启「立即结束当前轮」时会先平掉在途仓位再切网格"
+            title="把选中的轮次周期写入当前账户；立即撤单该账户在途单、按市价真实强平其仓位，再切入新网格（有在途仓位时先弹此确认）"
             @click="doSaveRound"
           >
             <Check class="size-3.5" />保存
@@ -1089,7 +1074,7 @@ const journalOpen = ref(false)
             action-label="确认立即切换"
             :busy="roundSwitch.busy.value"
             :error="roundSwitch.err.value"
-            @confirm="doSaveRoundImmediate"
+            @confirm="roundSwitch.save(store.activeAccount ?? 'default')"
           />
 
           <Tooltip :content="sound ? '关闭提示音' : '开启提示音'">

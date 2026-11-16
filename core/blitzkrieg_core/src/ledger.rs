@@ -54,7 +54,9 @@ pub enum JournalKind {
 }
 
 /// One cash movement: the audit-trail row and the boot-replay unit. Money is
-/// serialized through `crate::decimal` (strings on the wire/file).
+/// serialized through `crate::decimal` (JSON **numbers** on the wire/file —
+/// finite values as f64, ≤17 significant digits lossless; strings only for
+/// non-finite values).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JournalEntry {

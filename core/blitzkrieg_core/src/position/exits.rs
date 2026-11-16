@@ -426,13 +426,11 @@ impl PositionManager {
                     now_ms,
                 }
             };
-            // Issue #464: the operator's explicit ladder runs on EVERY priceable
-            // tick — not only where the policy's own TP/SL verdict fired —
-            // because its stop floor (raised by `move_stop_to`) must patrol
-            // quiet ticks too: a +2.5% drift below a raised 0.42 floor over a
-            // 0.40 entry fires nothing in the policy, and the floor would be
-            // dead. A TP/SL verdict that DID fire is absorbed (the ladder owns
-            // this position's profit-taking discipline — it either acted or is
+            // Issue #464: the exit ladder runs on EVERY priceable tick — not
+            // only where the policy's own TP/SL verdict fired — because its
+            // stop floor (raised by `move_stop_to`) must patrol quiet ticks too.
+            // A TP/SL verdict that DID fire is absorbed (the ladder owns this
+            // position's profit-taking discipline — it either acted or is
             // exhausted); every other verdict, and every no-ladder run, keeps
             // the original single ExitRequest below, byte-identical.
             let ladder_owns_verdicts = !self.config.exit_ladder.is_empty();
@@ -522,43 +520,13 @@ impl PositionManager {
         out
     }
 
-    /// Issue #464: the exit ladder overlay — the ordered `[[risk.ladder]]`
-    /// steps over this position's own TP/SL verdict. Runs ONLY when a ladder
-    /// is configured and the underlying verdict is a TakeProfit or StopLoss;
-    /// the caller then suppresses the verdict's own whole-position request.
+    /// Issue #464: the exit ladder overlay — per-position stepped profit-taking
+    /// and stop-floor discipline that runs on every priceable tick.
     ///
-    /// A free function rather than a method on purpose: the exit sweep walks
-    /// `self.open` through `iter_mut()`, so a `&mut self` call inside the loop
-    /// is a second borrow of the manager. Everything the overlay touches is
-    /// passed in as disjoint slices instead (`done`/`floor` are the position's
-    /// own entries in the manager's ledgers, default-seeded by the caller).
-    ///
-    /// Semantics, in order:
-    ///
-    /// 1. The protective stop is judged FIRST, on the raised floor: the
-    ///    effective stop price is `max(policy stop, ladder floor)` — a
-    ///    `move_stop_to` only ever lifts the stop, never lowers it. A breach
-    ///    closes the ENTIRE remaining position (a stop is not a tranche) and
-    ///    the reason stays `StopLoss`.
-    /// 2. Otherwise the next un-executed step (`*done`) is the only one that
-    ///    may fire — no skipping ahead of an untriggered predecessor, one
-    ///    step per tick. When the position's pnl% has reached that step's
-    ///    `at_pct`, it sells `close_ratio × current shares`, floored to the
-    ///    venue's 0.01 share grid; a floor of zero (a dust remainder) leaves
-    ///    the step un-executed and pushes nothing this tick.
-    /// 3. A fired step with `move_stop_to` above the current floor raises it
-    ///    before the request goes out, and `*done` advances.
-    ///
-    /// The trigger reads the SAME price the verdict judged on — the
-    /// executable bid (`exit_price`) — so the overlay and the policy cannot
-    /// disagree about what the market said. `None` = this tick's verdict is
-    /// absorbed by the ladder (the fired step was dust, or the next step has
-    /// not triggered yet) and no request is produced.
-    /// `verdict` is the policy's own (reason, use_maker) when a TP/SL verdict
-    /// fired this tick — the step inherits it. On a quiet tick (None) the step
-    /// derives its own identity: a profit step IS a take-profit (maker-first
-    /// like the policy's), a loss-side step (negative `at_pct`) IS a stop
-    /// (taker, always exitable).
+    /// Returns `Some(ExitRequest)` when this step fires, `None` when the ladder
+    /// is exhausted or not yet triggered. A fired step consumes its index; an
+    /// exhausted ladder absorbs the TP/SL verdict that woke this tick so the
+    /// caller does not double-emit.
     #[allow(clippy::too_many_arguments)]
     fn apply_exit_ladder_step(
         pos: &mut OpenPosition,

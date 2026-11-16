@@ -51,6 +51,11 @@ impl Core {
         let default_id = crate::model::default_account_id();
         if let Some(row) = risks.get(default_id.as_str()) {
             self.risk.config_mut().systemic.account = row.clone();
+            // issue #1199 P1-6: 矩阵 max_daily_drawdown_usd 即日亏熔断预算（risk/limits.rs §4.2：
+            // "THE SAME BUDGET … no second daily-loss counter exists"）。库里的行到位后同步进
+            // PositionConfig，使日亏熔断器（daily_loss_gate.rs）读到持久化后的真实值；0 = off，
+            // 语义与熔断器一致。
+            self.config.positions.max_daily_loss_usd = row.max_daily_drawdown_usd.value();
         }
         if let Some(exit) = exits.get(default_id.as_str()) {
             self.config.positions.exit = exit.clone();
@@ -867,24 +872,56 @@ impl Core {
         // book load cannot fail semantically — "unconfigured" is the honest
         // answer when no keys are present.
         let arb_leg_config = if let Some(store) = &store {
-            store
-                .load_arb_config()
-                .map_err(|e| {
-                    tracing::warn!(
-                        error = %e.message,
-                        "cross_venue_arb store section invalid at boot — running unconfigured"
+            match store.load_arb_config() {
+                // P2-10 (#1199): a store is open but `arb_pairs` has no row —
+                // the `.env` single-source is NOT consulted in this
+                // configuration, so any leftover ACCOUNT_ARB_* keys there are
+                // silently dead. Still ignored (SQLite is the authoritative
+                // carrier), but the operator must be told, once, loudly.
+                Ok(None) => {
+                    let env_lookup = crate::account::config::env_lookup_from_sources(
+                        config.env_file_path.as_deref().map(std::path::Path::new),
                     );
-                })
-                .ok()
-                .flatten()
-                .inspect(|cfg| {
-                    tracing::info!(
-                        leg_a = %format!("{}/{}", cfg.leg_a_venue, cfg.leg_a_account),
-                        leg_b = %format!("{}/{}", cfg.leg_b_venue, cfg.leg_b_account),
-                        pairs = ?cfg.pairs,
-                        "cross-venue arb legs configured (SQLite arb_pairs row)"
-                    );
-                })
+                    let env_arb_present = [
+                        "ACCOUNT_ARB_LEG_A_VENUE",
+                        "ACCOUNT_ARB_LEG_A_ACCOUNT",
+                        "ACCOUNT_ARB_LEG_B_VENUE",
+                        "ACCOUNT_ARB_LEG_B_ACCOUNT",
+                        "ACCOUNT_ARB_PAIRS",
+                    ]
+                    .into_iter()
+                    .any(|key| {
+                        env_lookup(key)
+                            .map(|v| !v.trim().is_empty())
+                            .unwrap_or(false)
+                    });
+                    if env_arb_present {
+                        tracing::warn!(
+                            ".env arb config present but ignored — SQLite arb_pairs \
+                             is the authoritative carrier (issue #1199); run \
+                             arb.config.set to migrate"
+                        );
+                    }
+                    None
+                }
+                other => other
+                    .map_err(|e| {
+                        tracing::warn!(
+                            error = %e.message,
+                            "cross_venue_arb store section invalid at boot — running unconfigured"
+                        );
+                    })
+                    .ok()
+                    .flatten()
+                    .inspect(|cfg| {
+                        tracing::info!(
+                            leg_a = %format!("{}/{}", cfg.leg_a_venue, cfg.leg_a_account),
+                            leg_b = %format!("{}/{}", cfg.leg_b_venue, cfg.leg_b_account),
+                            pairs = ?cfg.pairs,
+                            "cross-venue arb legs configured (SQLite arb_pairs row)"
+                        );
+                    }),
+            }
         } else {
             crate::account::config::read_cross_venue_arb_from_env(
                 &crate::account::config::env_lookup_from_sources(
@@ -1142,8 +1179,14 @@ impl Core {
         // snapshot is no longer consulted for these keys, so a file edit made
         // after the launcher started is what a (re)booted core runs. A read
         // failure warns and keeps the snapshot-resolved values (last known
-        // good).
-        if let Err(e) = core.refresh_cockpit_from_env_file() {
+        // good). 与 watcher 对齐：DB 已开时 cockpit carrier 是 SQLite，
+        // 文件再派生会把陈旧 BK_* / BK_EXIT_* 键压回 DB-sourced 的
+        // 工作副本——与安装 DB 行（install_risk_db, 约 30 行之上）的
+        // 权威矛盾，故 DB 开时跳过，与 watcher 同一门禁
+        // (cockpit_env_rederive_allowed, 约 190 行之上)。
+        if core.cockpit_env_rederive_allowed()
+            && let Err(e) = core.refresh_cockpit_from_env_file()
+        {
             tracing::warn!(
                 "cockpit boot derivation from the env file failed ({e}); the                  launcher-snapshot values stand for this boot"
             );

@@ -13,3 +13,18 @@
 # implementations. It is the exact list PR-1/PR-2 retire.
 # The session.rs .env watcher is a READ path — not a violation, and part of
 # the PR-2 retirement face (map §3.2 A2): do not delete it.
+core/blitzkrieg_core/src/ledger.rs:633 json-direct if !crate::jsonl::rewrite_atomic(&path, &bytes) {
+core/blitzkrieg_core/src/order_db.rs:64 json-direct crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes());
+core/blitzkrieg_core/src/position/mod.rs:566 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
+core/blitzkrieg_core/src/position/mod.rs:635 json-direct if !crate::jsonl::rewrite_atomic(std::path::Path::new(path), text.as_bytes()) {
+core/blitzkrieg_core/src/position_db.rs:77 json-direct if crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
+core/blitzkrieg_core/src/position_db.rs:91 json-direct if !crate::jsonl::rewrite_atomic(&self.recon_path, ms.to_string().as_bytes()) {
+core/blitzkrieg_core/src/service/config.rs:1281 json-direct if !crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
+core/blitzkrieg_core/src/service/risk_admission/persist.rs:128 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
+core/blitzkrieg_core/src/service/trading_reset.rs:579 risk-direct return db.save_risk(target, row).map(|_| true).map_err(|e| {
+core/blitzkrieg_core/src/service/trading_reset.rs:648 risk-direct return db.save_exit(target, &exit).map(|_| true).map_err(|e| {
+core/blitzkrieg_core/src/trade_db.rs:308 json-direct crate::jsonl::rewrite_atomic(&self.summary_path, text.as_bytes());
+core/blitzkrieg_core/src/trade_db.rs:349 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
+core/blitzkrieg_core/src/trade_db.rs:379 json-direct let _ = crate::jsonl::rewrite_atomic(&self.jsonl_path, b"");
+core/blitzkrieg_core/src/trade_db.rs:434 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
+core/blitzkrieg_core/src/trade_db.rs:486 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {

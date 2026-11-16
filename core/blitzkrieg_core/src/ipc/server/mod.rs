@@ -354,6 +354,7 @@ async fn handle_line(
     // arm: a new write verb must be added HERE, the same discipline as the
     // method table itself.
     const READONLY_REFUSED: &[&str] = &[
+        method::RISK_SET_LIMITS,
         method::RISK_SET_SYSTEMIC,
         method::RISK_SET_EXIT,
         method::EXECUTION_POLICY_SET,
@@ -376,6 +377,10 @@ async fn handle_line(
         method::UNIFIED_CONFIRM,
         method::UNIFIED_REVOKE,
         method::ARB_CONFIG_SET,
+        method::EXTENSION_ENABLE,
+        method::SE_ENABLE,
+        method::SE_SET_AUTO,
+        method::SYSTEM_UPDATE_STAGE,
     ];
     if READONLY_REFUSED.contains(&method) && core.lock().await.mode() == Mode::ReadOnly {
         return fail(

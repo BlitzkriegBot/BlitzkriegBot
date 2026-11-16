@@ -96,7 +96,7 @@ function syncBuffers(d: RiskLimitsDoc): void {
 }
 
 /** 下一笔策略开仓就被这个 bound 约束（live）；其余三项重启后武装。 */
-const NEXT_SESSION_FIELDS = new Set(['maxDailyDrawdownUsd', 'maxConsecutiveLosses', 'cooldownMinutes'])
+const NEXT_SESSION_FIELDS = new Set(['maxConsecutiveLosses', 'cooldownMinutes'])
 function effectLabel(effect: string): string {
   return effect === 'live' ? '立即生效' : effect === 'next_session' ? '重启后生效' : effect
 }
@@ -113,12 +113,14 @@ function fieldUnit(field: string): string {
 const EXIT_BOOL_FIELDS = new Set(['trailingEnabled', 'strategyExitMakerFirst'])
 function changeText(c: { field: string; from: string; to: string }): string {
   if (EXIT_BOOL_FIELDS.has(c.field)) {
-    const u = fieldUnit(c.field)
-    const f = c.from === '0' ? '关闭' : c.from
-    const t = c.to === '0' ? '关闭' : c.to
-    return `${f}${u} → ${t}${u}`
+    // 布尔字段（trailingEnabled / strategyExitMakerFirst）：'true'/'false' → '开'/'关'
+    return `${c.from === 'true' ? '开' : '关'} → ${c.to === 'true' ? '开' : '关'}`
   }
-  return `${c.from === 'true' ? '开' : '关'} → ${c.to === 'true' ? '开' : '关'}`
+  // 数字字段（stopLossPct / takeProfitPct / forceExitSec）：'0' → '关闭'，否则显示真实值+单位
+  const u = fieldUnit(c.field)
+  const f = c.from === '0' ? '关闭' : c.from
+  const t = c.to === '0' ? '关闭' : c.to
+  return `${f}${u} → ${t}${u}`
 }
 
 /** 只发改动过的字段；空串=保持不变。非法输入就地拒绝保存。 */

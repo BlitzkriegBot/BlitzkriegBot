@@ -88,8 +88,7 @@ pub trait DataSink {
 
 /// Append-only JSONL archive of the events the engine consumed.
 ///
-/// Two independent bounds, both of which only ever *stop writing* — nothing is
-/// ever deleted or truncated, an operator decides what to do with old data:
+/// Three bounds:
 ///
 /// * `max_bytes` — session cap. `0` means unlimited. Reached → recording stops
 ///   and `dropped` counts the rest.
@@ -97,8 +96,11 @@ pub trait DataSink {
 ///   Reached → the current file is renamed to a UTC-stamped sibling
 ///   (`events.jsonl` → `events.20260914T210000Z.jsonl`) and a fresh `path` is
 ///   opened, so a long-running archive stays in replayable chunks instead of
-///   either growing unbounded or hitting the session cap and going dark. Renames
-///   only: the number of segments is unbounded and no segment is ever removed.
+///   either growing unbounded or hitting the session cap and going dark.
+/// * `min_free_bytes` — volume floor. `0` means no guard. Once segments have
+///   been rotated away, the oldest ones are deleted while the volume holds fewer
+///   free bytes than the floor; recording stops only when the floor cannot be
+///   restored by deletion. The segment currently being written is never deleted.
 pub struct EventArchive {
     path: PathBuf,
     file: BufWriter<File>,
@@ -113,6 +115,13 @@ pub struct EventArchive {
     /// Current segment totals (reset by rotation).
     segment_bytes: u64,
     segments: u64,
+    /// Rotated segments awaiting reuse, oldest first — candidates for deletion
+    /// when the `min_free_bytes` floor is breached. Populated at open from
+    /// on-disk siblings (so a restart cleans legacy segments) and by `rotate`.
+    /// The segment currently being written is never in this list.
+    rotated_segments: Vec<PathBuf>,
+    /// How many rotated segments were deleted to restore the disk floor.
+    segments_deleted: u64,
     /// Venue time of the last recorded event, used to name rotated segments.
     last_at_ms: i64,
     stopped: bool,
@@ -136,6 +145,9 @@ pub struct ArchiveStatus {
     pub segment_bytes: u64,
     /// How many segments were completed by rotation (0 = still the first).
     pub segments: u64,
+    /// How many rotated segments were deleted to restore the disk floor
+    /// (`0` when `min_free_bytes` is 0 or never breached).
+    pub segments_deleted: u64,
     /// Free bytes on the archive's filesystem, re-read after each rotation and
     /// whenever the guard trips (`0` = not measured, e.g. non-unix).
     pub free_bytes: u64,
@@ -162,9 +174,11 @@ impl EventArchive {
     /// Full form: also refuse to spend the last `min_free_bytes` of the volume.
     ///
     /// A 24/7 capture writes tens of GB/day, so "cap the file" is not enough — a
-    /// rotating archive with no session cap would happily fill the disk. The guard
-    /// is checked once per rotation (cheap: one `statvfs`), and stops recording
-    /// before the volume runs out rather than after some other process fails.
+    /// rotating archive with no session cap would happily fill the disk. Once a
+    /// rotation has happened, the guard deletes the oldest rotated segments while
+    /// the volume holds fewer free bytes than the floor, and stops recording only
+    /// when the floor cannot be restored by deletion. The check runs once per
+    /// rotation (cheap: one `statvfs`), never on the hot path.
     pub fn open_full(
         path: &Path,
         max_bytes: u64,
@@ -203,12 +217,20 @@ impl EventArchive {
             stopped: false,
             stopped_reason: None,
             last_flush_ms: i64::MIN / 2,
+            rotated_segments: Self::rotated_siblings(path),
+            segments_deleted: 0,
         };
         if !owned {
             archive.stop(
                 "locked",
                 "another process is already recording this archive",
             );
+        }
+        // A restart inherits every old segment left on disk. If the volume is
+        // already below the floor, delete the oldest ones before recording a
+        // single new byte of the new session.
+        if !archive.stopped {
+            archive.enforce_min_free();
         }
         Ok(archive)
     }
@@ -223,6 +245,7 @@ impl EventArchive {
             rotate_bytes: self.rotate_bytes,
             segment_bytes: self.segment_bytes,
             segments: self.segments,
+            segments_deleted: self.segments_deleted,
             free_bytes: free_bytes_at(&self.path).unwrap_or(0),
             stopped_reason: self.stopped_reason.clone(),
         }
@@ -255,6 +278,8 @@ impl EventArchive {
             );
             return;
         }
+        // Remember the closed segment so the disk floor can delete it later.
+        self.rotated_segments.push(rotated.clone());
         // 3. Reopen the configured path for the next segment.
         match OpenOptions::new()
             .create(true)
@@ -297,6 +322,85 @@ impl EventArchive {
             Some(free) => free > self.min_free_bytes,
             None => true,
         }
+    }
+
+    /// Delete the oldest rotated segments while the volume holds fewer free
+    /// bytes than `min_free_bytes`. Only closed, rotated siblings are
+    /// candidates — the segment currently being written is never deleted.
+    /// Returns how many segments were removed; a guard that cannot read the
+    /// filesystem deletes nothing.
+    fn enforce_min_free(&mut self) -> u64 {
+        if self.min_free_bytes == 0 || self.stopped || self.rotated_segments.is_empty() {
+            return 0;
+        }
+        let mut removed = 0u64;
+        while !self.rotated_segments.is_empty() {
+            let free = match free_bytes_at(&self.path) {
+                Some(free) => free,
+                None => return removed,
+            };
+            if free >= self.min_free_bytes {
+                return removed;
+            }
+            let oldest = self.rotated_segments.remove(0);
+            match std::fs::remove_file(&oldest) {
+                Ok(()) => {
+                    removed += 1;
+                    self.segments_deleted += 1;
+                    tracing::info!(
+                        path = %oldest.display(),
+                        free_mb = free / (1024 * 1024),
+                        min_free_mb = self.min_free_bytes / (1024 * 1024),
+                        "event archive: deleted old segment for the disk floor"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %oldest.display(),
+                        error = %e,
+                        "event archive: cannot delete old segment for the disk floor"
+                    );
+                    return removed;
+                }
+            }
+        }
+        removed
+    }
+
+    /// This archive's already-rotated siblings in the same directory, oldest
+    /// first (name sort is write order because the UTC stamps are
+    /// zero-padded). The live path itself is never included; a restart inherits
+    /// whatever old segments were left on disk.
+    fn rotated_siblings(path: &Path) -> Vec<PathBuf> {
+        let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+            return Vec::new();
+        };
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            return Vec::new();
+        };
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let ext_suffix = if ext.is_empty() {
+            String::new()
+        } else {
+            format!(".{ext}")
+        };
+        let live = path.file_name().unwrap().to_string_lossy();
+        let mut out: Vec<PathBuf> = std::fs::read_dir(parent)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && p.file_name().and_then(|s| s.to_str()).is_some_and(|name| {
+                        name != live
+                            && name.starts_with(&format!("{stem}."))
+                            && name.ends_with(&ext_suffix)
+                    })
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     /// Record `ev` at an explicit replay timestamp (`at`), overriding the event's
@@ -403,7 +507,10 @@ fn free_bytes_at(path: &Path) -> Option<u64> {
 
 /// `events.jsonl` + venue time 1757851200123 → `events.20250914T140000Z.jsonl`
 /// (UTC). Falls back to a numeric stamp when the time cannot be decoded.
-fn next_segment_path(path: &Path, at_ms: i64) -> PathBuf {
+///
+/// `pub(crate)` so the intent-audit sink can name its rotated segments with
+/// the same disambiguation discipline (`arbitration/audit.rs`).
+pub(crate) fn next_segment_path(path: &Path, at_ms: i64) -> PathBuf {
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -507,6 +614,9 @@ impl DataSink for EventArchive {
         // growing until the session cap silences it.
         if self.rotate_bytes > 0 && self.segment_bytes >= self.rotate_bytes {
             self.rotate();
+            // Floor first: a breached volume deletes the oldest rotated
+            // segments (never the live one) before recording continues.
+            self.enforce_min_free();
             // The free-space guard is evaluated at the one cheap boundary we have.
             if !self.disk_ok() {
                 let free = free_bytes_at(&self.path).unwrap_or(0);

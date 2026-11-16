@@ -5,9 +5,9 @@
 //! 删除——任何写回 `.env` 的代码都是违约。
 //!
 //! Why a trait on `Core` (`Option<Box<dyn StoreApi>>`) and not an enum:
-//! the implementation set grows by ADDING a backend (SQLite next), and the
-//! dispatch never needs to inspect the variant — call sites stay blind to
-//! the carrier, which is the whole point of the ruling.
+//! the implementation set is one backend (SqliteStore) — SQLite is the sole
+//! durable carrier now — and the dispatch never needs to inspect a variant —
+//! call sites stay blind to the carrier, which is the whole point of the ruling.
 //!
 //! `None` = persistence disabled for this core (backtester, most
 //! in-process tests) — the same honest refusal the writers gave when their
@@ -178,6 +178,27 @@ pub trait StoreApi: Send + Sync {
         vars: &BTreeMap<String, String>,
         reset_keys: &[&str],
     ) -> Result<(), CoreError>;
+}
+
+/// Test-only seam for the carrier decision (the same gating pattern as
+/// `strategies::test_support`: compiled for in-process tests or with the
+/// `test-support` feature, never in the production binary). Production
+/// assembly wires exactly one backend — the `SqliteStore` from
+/// `config.db_path` — so a non-SQLite `StoreApi` implementation has no way
+/// in; the backend-swap proof (`tests/store_backend_parity.rs`) drives the
+/// SAME seam the production writers use with a `MemoryStore` carrier, and
+/// this face exists for that alone.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use super::StoreApi;
+
+    /// Install an arbitrary [`StoreApi`] backend on a core (replacing any
+    /// assembly-wired store). The caller keeps its own read-back handle —
+    /// the core has no store getter, by design: production reads go through
+    /// the domain faces, not the carrier.
+    pub fn install_store(core: &mut crate::service::Core, store: Box<dyn StoreApi>) {
+        core.store = Some(store);
+    }
 }
 
 #[cfg(test)]

@@ -1415,7 +1415,13 @@ impl Backtester for EventBacktester {
         for b in hasher.finalize() {
             let _ = write!(trades_sha256, "{b:02x}");
         }
-        debug_assert_eq!(
+        // 端到端保真度只在本会话内成立：同一次回放里，来源投递的事件数
+        // 与引擎统计的 events 必须逐位相等。这是一条 release 生效的完整性断言。
+        // 「采集→重放逐位相等」的跨会话端到端断言（已归档 live 快照 vs 回放）
+        // 目前没有替代品（DEV §5.2）：回放器是纯会话内内存重放（Mode::Dry，
+        // 不持久化、不发现、不行情、不影子进化），不对真实 live 快照做
+        // 跨会话对账，因此本断言不得被读作跨 live 快照校验。
+        assert_eq!(
             delivered, stats.events,
             "source delivered a different event count"
         );

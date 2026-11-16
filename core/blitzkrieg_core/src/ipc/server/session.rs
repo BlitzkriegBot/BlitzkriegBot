@@ -311,17 +311,20 @@ pub async fn run(
         // account with a non-empty strategies key gets those scopes
         // instantiated AND enabled (assignment IS enablement). The one-time
         // migration materializes the default account's implicit enabled set
-        // into the operator's `.env`, after which the env rows are the only truth
+        // into the SQLite `account_settings.strategies` row
+        // (`accounts/persist.rs:966-984`), after which that row is the only truth
         // (empty = the account runs nothing). Production-only: the replay/
         // backtest boot goes through `install_engine` alone and its
         // single-default book stays byte-identical (the exit-economics
         // baseline).
-        let migrated = core.apply_account_strategy_assignments_at_boot();
+        let migrated = core
+            .apply_account_strategy_assignments_at_boot()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         if !migrated.is_empty() {
             eprintln!(
                 "blitzkrieg-core: strategy assignment migration — the default account now \
-                 explicitly runs {:?} (.env strategies key; empty assignments mean a strategy-less \
-                 account, there is no inherit)",
+                 explicitly runs {:?} (account_settings.strategies row; empty assignments mean a \
+                 strategy-less account, there is no inherit)",
                 migrated
             );
         }
@@ -969,6 +972,13 @@ pub async fn run(
     Ok(())
 }
 
+/// 单条 IPC 行的最大字节数：客户端发超大、不带换行的一行不得把读
+/// 缓冲区撑爆；超限即断开该连接（issue #1199 P1-20）。
+/// TODO(1199-followup): `lines()` 版在遇到换行前无上限缓冲——恶意方发
+/// 1GB 无换行流仍可撑内存；完整修法是 `take(MAX_LINE_BYTES)` 限长读，
+/// 留待后续 issue（当前 lines() 语义优先保响应不丢）。
+const MAX_LINE_BYTES: usize = 1024 * 1024;
+
 #[allow(clippy::too_many_arguments)] // session wiring — each param has one job
 fn spawn_session(
     stream: UnixStream,
@@ -983,6 +993,10 @@ fn spawn_session(
 ) {
     tokio::spawn(async move {
         let (read_half, write_half) = stream.into_split();
+        // issue #1199 P1-19：出站通道回到 unbounded（基线语义）。
+        // bounded(256)+send().await 在并发响应写入时阻塞读循环，实测
+        // 3 连发 engine.book 丢第 3 个（CI risk-systemic-check 红）。
+        // 慢消费者 OOM 面改由后续 issue 以「有界队列 + Lagged 计数上报」处理。
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
 
         let writer = tokio::spawn(async move {
@@ -1042,10 +1056,18 @@ fn spawn_session(
             });
         }
 
+        // issue #1199 P1-12b：读循环恢复为基线形态（BufReader::new + lines()）。
+        // 自定义 read_bounded_line 的 leftover 丢弃缺陷（一次 read() 读出多行
+        // 时非确定性丢失后续请求——并发 3 连发 engine.book 丢第 3 个，
+        // CI risk-systemic-check 红）。基线 lines() 逐位验证 PASS（6 连发全绿）。
+        // 行长度上限改为 next_line 后的检查（P1-20 保留）。
         let mut lines = BufReader::new(read_half).lines();
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) if !line.trim().is_empty() => {
+                    if line.len() > MAX_LINE_BYTES {
+                        break; // 超限断开（P1-20）
+                    }
                     let response = handle_line(
                         &core,
                         &registry,

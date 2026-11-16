@@ -118,9 +118,9 @@ defineProps<{
 
     <Card>
       <CardHeader label="今日表现" />
-      <StatRow label="最佳单笔" :value="signedPct(cumStats.best)" tone="up" />
-      <StatRow label="最差单笔" :value="signedPct(cumStats.worst)" tone="down" />
-      <StatRow label="持仓浮动" :value="signedPct(positionUnrealized)" :tone="positionUnrealized >= 0 ? 'up' : 'down'" />
+      <StatRow label="最佳单笔" :value="signedMoney(cumStats.bestTradePnl)" tone="up" />
+      <StatRow label="最差单笔" :value="signedMoney(cumStats.worstTradePnl)" tone="down" />
+      <StatRow label="持仓浮动" :value="signedMoney(positionUnrealized)" :tone="positionUnrealized >= 0 ? 'up' : 'down'" />
       <StatRow label="平均持仓" :value="cumStats.avgHold ? duration(cumStats.avgHold) : '—'" tone="dim" />
       <!-- Words, not figures: DRY / LIVE never rolls, so it stays plain text. -->
       <StatRow label="运行模式" :value="mode.toUpperCase()" :tone="isDry ? 'gold' : 'up'" :roll="false" />

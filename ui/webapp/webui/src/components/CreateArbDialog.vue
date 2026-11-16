@@ -728,7 +728,7 @@ function credLabel(leg: LegCredStatus | null): string {
                 <span class="label-micro">创建动作</span>
               </div>
               <div class="mt-1.5 rounded-md border border-line bg-panel-2/40 px-2.5 py-2 text-[11.5px] leading-relaxed text-muted-fg">
-                提交后：先写入双腿配置（内核持久化进 durable 存储——DB 开库时为 SQLite，env-only 后端时为 .env；重启保留），再以 A 腿账户作用域启用所选套利策略（{{ selectedArbStrategy }}）。
+                提交后：先写入双腿配置（内核持久化进 SQLite；重启保留），再以 A 腿账户作用域启用所选套利策略（{{ selectedArbStrategy }}）。
                 两腿各按其交易所的全局凭证（env）签名；凭证就绪见确认页披露。
               </div>
             </div>
@@ -854,7 +854,7 @@ function credLabel(leg: LegCredStatus | null): string {
               <div class="mt-1.5 rounded-md border border-line bg-panel-2/40 px-2.5 py-2 text-[12px]">
                 提交后启用 {{ selectedArbStrategy }}（arb.config.set 成功 → strategy {{ selectedArbStrategy }} on，A 腿账户作用域）。
                 <div class="mt-1 text-[11px] text-faint-fg">
-                  双腿配置由内核持久化（durable 存储——DB 或 .env，按装配；重启保留）；启用失败时配置已落盘，修复原因后无需重写配置。
+                  双腿配置由内核持久化（SQLite，重启保留）；启用失败时配置已落盘，修复原因后无需重写配置。
                 </div>
               </div>
             </div>

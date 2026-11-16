@@ -563,7 +563,7 @@ fn assignment_rebuilds_at_boot_from_the_file() {
 
     // boot 1：文件指派 → scope 起来 → 交易。
     let mut c = decouple_core(Some(&path), Some(dec!(1000)), false);
-    let migrated = c.apply_account_strategy_assignments_at_boot();
+    let migrated = c.apply_account_strategy_assignments_at_boot().unwrap();
     assert!(
         migrated.is_empty(),
         "no strategy-state file is configured: nothing may migrate"
@@ -588,7 +588,7 @@ fn assignment_rebuilds_at_boot_from_the_file() {
 
     // boot 2：全新内核、同一份文件——重启恢复必须逐字节同形。
     let mut c2 = decouple_core(Some(&path), Some(dec!(1000)), false);
-    let migrated2 = c2.apply_account_strategy_assignments_at_boot();
+    let migrated2 = c2.apply_account_strategy_assignments_at_boot().unwrap();
     assert!(
         migrated2.is_empty(),
         "the migration is one-time and nothing else persists an enabled set here"

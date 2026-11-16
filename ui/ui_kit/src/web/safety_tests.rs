@@ -272,6 +272,13 @@ fn full_stats_view() -> EngineStatsView {
             net_pnl_usd: 12.5,
             rejection_causes: None,
             gate_exemptions: vec![],
+            // 与 render.rs 新转发字段同步：非缺省值，否则“网关没转发”的回归不可见。
+            gate_exemption_timing_floor_sec: Some(30),
+            arb_net_pnl_usd: 7.5,
+            arb_wins: 3,
+            arb_losses: 1,
+            arb_closed_trades: 4,
+            arb_active_pairs: 2,
         }],
         venue_rejected: 3,
         last_error: Some(LastErrorView {
@@ -409,4 +416,28 @@ fn snapshot_stats_keys_are_subset_of_output_keys() {
     assert_eq!(st["selfCheck"]["ok"], true, "selfCheck 须转发");
     assert_eq!(st["venueRejected"], 3, "venueRejected 须转发");
     assert_eq!(st["placeRejected"], 2, "placeRejected 须转发");
+    // 每行策略的新增字段也须随行到达（RFC-645 arb* + D-31 时机 floor）。
+    assert_eq!(
+        st["strategies"][0]["gateExemptionTimingFloorSec"],
+        serde_json::json!(30),
+        "gateExemptionTimingFloorSec 须随策略行到达",
+    );
+    assert_eq!(
+        st["strategies"][0]["arbNetPnlUsd"],
+        serde_json::json!(7.5),
+        "arbNetPnlUsd 须随策略行到达",
+    );
+    assert_eq!(st["strategies"][0]["arbWins"], 3, "arbWins 须随策略行到达");
+    assert_eq!(
+        st["strategies"][0]["arbLosses"], 1,
+        "arbLosses 须随策略行到达"
+    );
+    assert_eq!(
+        st["strategies"][0]["arbClosedTrades"], 4,
+        "arbClosedTrades 须随策略行到达",
+    );
+    assert_eq!(
+        st["strategies"][0]["arbActivePairs"], 2,
+        "arbActivePairs 须随策略行到达",
+    );
 }

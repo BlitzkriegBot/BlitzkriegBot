@@ -318,6 +318,23 @@ pub struct StrategyStatsRow {
     pub rejection_causes: Option<std::collections::BTreeMap<String, u64>>,
     #[serde(default)]
     pub gate_exemptions: Vec<String>,
+    /// 该策略声明的时机闸门豁免 floor（`time_left_sec`），`None` = 沿用全局窗口。
+    /// 内核 `engine.stats` 行带 `gateExemptionTimingFloorSec`；缺失回落 `None`。
+    #[serde(default)]
+    pub gate_exemption_timing_floor_sec: Option<i64>,
+    /// 套利面两腿合计净 PnL（USD）：仅「声明并被受理」的行携带，缺失回落 0。
+    #[serde(default)]
+    pub arb_net_pnl_usd: f64,
+    /// 两腿合计的胜 / 负 / 平仓计数（与 arb_net_pnl_usd 同批；缺失回落 0）。
+    #[serde(default)]
+    pub arb_wins: u64,
+    #[serde(default)]
+    pub arb_losses: u64,
+    #[serde(default)]
+    pub arb_closed_trades: u64,
+    /// 当前配置里激活的套利币对数（两腿合计视角；缺失 = 0，前端据此不渲染徽标）。
+    #[serde(default)]
+    pub arb_active_pairs: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

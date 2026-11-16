@@ -5,7 +5,7 @@ use super::*;
 use crate::socket_served;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -455,6 +455,14 @@ impl Supervisor {
             // the restart budget runs out. A reader thread re-emits every line to
             // our stderr (so the run log is unchanged) while keeping the tail.
             .stderr(Stdio::piped());
+        // P1-22: 子进程进自己的进程组（进程组隔离，父进程崩溃后按进程组回收）。
+        // 注：曾试过 prctl(PR_SET_PDEATHSIG, SIGTERM) 做「父死亡即 SIGTERM」，
+        // 但 PR_SET_PDEATHSIG 的触发条件是父 THREAD 死亡而非父进程死亡——在
+        // tokio 多线程 runtime 下 spawn 所在 worker 线程的生命周期与父进程
+        // 不一致，导致内核被 SIGTERM 误杀（CI core-gates E5 实测：start ok
+        // 后 0.8ms 内核即 stopped，见 #1199 审计记录）。已移除，改为内核侧
+        // getppid()==1 轮询方案（后续 issue）。
+        cmd.process_group(0);
         if let Some(dir) = &self.cfg.cwd {
             cmd.current_dir(dir);
         }

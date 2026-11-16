@@ -681,7 +681,7 @@ onBeforeUnmount(() => {
       title="停止交易"
       :lines="[
         `账户 ${tradingConfirmTarget?.id ?? ''} 将停止开仓——已有的挂单与持仓继续由策略管理到平完（关 = 拒开仓、放平仓）。`,
-        '恢复交易随时可点同一开关；开关状态持久化进内核的 durable 存储（DB 或 .env，按装配），重启后保持。',
+        '恢复交易随时可点同一开关；开关状态持久化进内核的 SQLite 存储，重启后保持。',
       ]"
       action-label="确认停止"
       :busy="tradingConfirmBusy"

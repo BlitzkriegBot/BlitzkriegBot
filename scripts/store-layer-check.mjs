@@ -120,6 +120,8 @@ const PATTERNS = [
   { re: /\bstd::env::(set_var|remove_var)\s*\(|\benv::(set_var|remove_var)\s*\(/, rule: 'env-direct', why: 'process-global env mutation (set_var/remove_var) — runtime state writes belong behind the store seam' },
   { re: /\brusqlite\b/, rule: 'sql-direct', why: 'direct rusqlite use — business code talks to db::/the store seam; only store implementations connect' },
   { re: /\bConnection::open\w*\s*\(/, rule: 'sql-direct', why: 'direct Connection::open — only store implementations open the database' },
+  { re: /\bdb\.(save_risk|save_exit)\s*\(/, rule: 'risk-direct', why: 'db.save_risk / db.save_exit write the AccountRiskDb handle directly, bypassing the StoreApi trait seam' },
+  { re: /\bjsonl::rewrite_atomic\s*\(/, rule: 'json-direct', why: 'jsonl::rewrite_atomic writes a JSON state carrier directly, outside the store seam' },
 ];
 
 // Comment lines are not code: a doc comment that MENTIONS a forbidden call
@@ -356,6 +358,11 @@ function selfTest() {
     s('let mut conn = Connection::open(db_path)').some((h) => h.rule === 'sql-direct'));
   expect('Connection::open_with_flags reds (sql-direct)',
     s('let conn = Connection::open_with_flags(db_path, flags)').some((h) => h.rule === 'sql-direct'));
+  // 8b. direct AccountRiskDb writes are intercepted too.
+  expect('db.save_risk call reds (risk-direct)',
+    s('let _ = db.save_risk("alpha", &row);').some((h) => h.rule === 'risk-direct'));
+  expect('db.save_exit call reds (risk-direct)',
+    s('let _ = db.save_exit("alpha", &exit);').some((h) => h.rule === 'risk-direct'));
 
   // ── the compliant arms: a gate that cannot pass is the same defect as
   // one that cannot fail.
@@ -375,9 +382,12 @@ function selfTest() {
     s('let msg = "no set_var here, only a diagnostic";').length === 0);
   expect('error message mentioning rusqlite passes',
     s('return Err(format!("rusqlite constraint failed: {e}"));').length === 0);
-  // 11. the jsonl::rewrite_atomic namesake is NOT env_file::write_atomic.
-  expect('jsonl::rewrite_atomic passes (namesake guard)',
-    s('crate::jsonl::rewrite_atomic(&path, buf.as_bytes());').length === 0);
+  // 11. jsonl::rewrite_atomic is now intercepted as json-direct.
+  expect('jsonl::rewrite_atomic call reds (json-direct)',
+    s('crate::jsonl::rewrite_atomic(&path, buf.as_bytes());').some((h) => h.rule === 'json-direct'));
+  //    the old namesake guard: it must not be misflagged as env-direct.
+  expect('jsonl::rewrite_atomic is not env-direct',
+    s('crate::jsonl::rewrite_atomic(&path, buf.as_bytes());').every((h) => h.rule !== 'env-direct'));
   // 12. a char literal and a lifetime do not eat the rest of the line.
   expect("char literal + lifetime parse without eating the line",
     s("let c = 'x'; let s: &'static str = \"set_var\";").length === 0);

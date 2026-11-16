@@ -402,7 +402,7 @@ const needsStrategyHint = computed(() => {
     <div class="grid gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
       <StatTile
         :label="balanceTitle"
-        :value="money(accountBalance.cash)"
+        :value="accountBalance.equity === null ? '—' : money(accountBalance.cash)"
         :tone="isDry ? 'gold' : 'default'"
       >
         <template #sub>
@@ -433,7 +433,7 @@ const needsStrategyHint = computed(() => {
             </span>
           </Tooltip>
           <template v-else>
-            可用 <RollingNumber :value="money(accountBalance.available)" /> · 预留 <RollingNumber :value="money(accountBalance.reserved)" />
+            可用 <RollingNumber :value="accountBalance.equity === null ? '—' : money(accountBalance.available)" /> · 预留 <RollingNumber :value="accountBalance.equity === null ? '—' : money(accountBalance.reserved)" />
           </template>
         </template>
 

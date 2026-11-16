@@ -499,7 +499,15 @@ async function waitFor(desc, ms, step, probe) {
 /** The child env: ours minus any `BK_RISK_*` / `BK_EXIT_*` the operator exported,
  * so "factory posture" means what it says no matter who runs the gate. Since
  * issue #967 those keys are the ONLY arming path (no TOML layer), so this is
- * what the retired `--no-config` pin used to buy. */
+ * what the retired `--no-config` pin used to buy.
+ *
+ * #1199 (tenth audit): the env isolation no longer suffices alone — since the
+ * StoreApi migration the risk bounds live in the SQLite store resolved from
+ * `BLITZKRIEG_DB_PATH` / the install root (NOT cwd), so a developer machine
+ * whose repo-root `data/blitzkrieg.sqlite` carries historical env-sourced
+ * bounds would fail the factory readout no matter how clean the env is. Pin
+ * the store per boot: each scenario's cwd gets its own fresh database. On CI
+ * (fresh checkout, no db) this is a no-op. */
 function coreEnv(extra = {}) {
   const out = { ...process.env };
   for (const k of Object.keys(out)) {
@@ -511,9 +519,15 @@ function coreEnv(extra = {}) {
 /** One boot: spawn, wait for the socket, connect, answer core.ready. */
 async function boot({ args, cwd, stderr, env = {} }) {
   const sock = join(cwd, `bk-e26-${Math.random().toString(36).slice(2, 8)}.sock`);
+  // #1199 (tenth audit): the StoreApi migration anchors the risk-bounds store
+  // to the install root (BLITZKRIEG_DB_PATH / exe walk — NOT cwd), so env-only
+  // isolation leaks a developer machine's historical bounds into the factory
+  // readout. Pin the store inside this scenario's cwd: fresh db, full isolation,
+  // no-op on CI (fresh checkout has no db at all).
+  const dbPath = join(cwd, 'bk-e26.sqlite');
   try { unlinkSync(sock); } catch { /* fresh */ }
   const proc = spawn(CORE, [...args, '--socket', sock], {
-    stdio: ['ignore', 'ignore', 'pipe'], cwd, env: coreEnv(env),
+    stdio: ['ignore', 'ignore', 'pipe'], cwd, env: coreEnv({ ...env, BLITZKRIEG_DB_PATH: dbPath }),
   });
   proc.stderr?.on('data', (d) => { if (stderr) stderr.buf = (stderr.buf + String(d)).slice(-32768); });
   await waitForSocket(sock, { timeoutMs: 15000 });

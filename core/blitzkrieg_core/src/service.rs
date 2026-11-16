@@ -1439,6 +1439,7 @@ mod tests {
     mod audit_fix_tests;
     mod balance_trust_749_tests;
     mod books_mirror_tests;
+    mod boot_carrier_gate_tests;
     mod exit_reason_table_tests;
     mod expiry_fallback_tests;
     mod fee_quote_tests;

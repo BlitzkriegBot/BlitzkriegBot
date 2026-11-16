@@ -882,9 +882,11 @@ pub struct CloseFilledResult {
     pub closed: usize,
 }
 
-/// Ledger balance readout. Wire = camelCase; every Decimal travels as a string
-/// via `crate::decimal` (no f64 precision loss), optional fields are omitted
-/// when absent so older cores read "unknown", never zero.
+/// Ledger balance readout. Wire = camelCase; every Decimal travels via
+/// `crate::decimal` as a JSON **number**: finite values serialize as f64
+/// (≤17 significant digits round-trip losslessly; only non-finite values
+/// fall back to a string), optional fields are omitted when absent so
+/// older cores read "unknown", never zero.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BalanceResult {
@@ -1013,7 +1015,7 @@ pub const RISK_LIMIT_UPDATE_NOTE: &str = "hot-applied; persisted to the risk-sta
 /// picks the `account_risk` row (absent = default). USD / shares / counts /
 /// minutes, decimal-STRING wire; `0` = off.
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetSystemicLimitsParams {
     #[serde(default)]
     pub account_id: Option<String>,

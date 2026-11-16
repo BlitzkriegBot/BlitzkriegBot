@@ -901,9 +901,14 @@ impl Core {
     ///
     /// Returns the migrated default enablement set (empty when nothing
     /// migrated) so the caller can report it on stderr.
-    pub fn apply_account_strategy_assignments_at_boot(&mut self) -> Vec<String> {
+    ///
+    /// Fail-closed: a SQLite `account_settings` read failure (table gone,
+    /// file unreadable, lock contention) is an `Err` — it must not be
+    /// silently grown into "no row" and then into "use the .env default",
+    /// which would silently widen any grid.
+    pub fn apply_account_strategy_assignments_at_boot(&mut self) -> Result<Vec<String>, String> {
         let Some(db) = self.account_risk_db.clone() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         // The persisted enabled-set (strategy-state.json) drives the one-time
         // migration of the default account. Read BEFORE any write.
@@ -918,16 +923,17 @@ impl Core {
         // not brick a boot or widen any grid.
         for account in self.accounts.account_list() {
             let id = account.id.as_str();
-            let rd = db.db().with_connection(|conn| {
-                crate::db::account_setting_get(
-                    conn,
-                    id,
-                    crate::risk::account_store::ROUND_DURATION_SETTING,
-                )
-                .ok()
-                .flatten()
-                .and_then(|raw| raw.trim().parse::<i64>().ok())
-            });
+            let rd: Option<i64> = db
+                .db()
+                .with_connection(|conn| {
+                    crate::db::account_setting_get(
+                        conn,
+                        id,
+                        crate::risk::account_store::ROUND_DURATION_SETTING,
+                    )
+                    .map(|opt| opt.and_then(|raw| raw.trim().parse::<i64>().ok()))
+                })
+                .map_err(|e| format!("account_setting_get for account {id}: {e}"))?;
             if let Some(sec) = rd {
                 if self.config.allowed_round_secs.contains(&sec) {
                     self.config
@@ -1004,7 +1010,7 @@ impl Core {
             // registered set is what the strategy dir loaded this boot).
             self.set_account_scopes_at_boot(&account, &strategies);
         }
-        migrated
+        Ok(migrated)
     }
 
     /// The boot-flavoured scope application: instantiate `strategies` for

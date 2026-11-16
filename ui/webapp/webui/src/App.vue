@@ -17,6 +17,7 @@ import { hasToken, getToken, logout, ping } from './api/client'
 import { readEventStream } from './lib/sse'
 import { SESSION_EXPIRED_REASON } from './lib/session'
 import { useTheme } from './lib/theme'
+import { useAlertSounds } from './composables/useAlertSounds'
 import { clockTime } from './lib/format'
 import { NAV, groupOf, type TabId } from './lib/nav'
 import brandMark from './assets/logo.png'
@@ -33,6 +34,15 @@ import {
 
 const store = usePanelStore()
 const { theme, isDark, cycleTheme, sound, toggleSound } = useTheme()
+
+// ── alert sounds（issue 1199 D10 声音链断①）：壳层常驻挂载 ──────────────────
+// 唯一挂载点曾是 HftPage（页签切换即卸载 —— 无 KeepAlive），总览/设置页全程
+// 无声。挂到这里：快照差分随 store.snapshot 走，任何页签下成交/冻结/日亏/
+// 账户冻结都有声；静音开关就是上面的 sound / toggleSound（App 顶栏那颗铃铛）。
+// 行源仍是 store.tradeRows 原始读数（未经账户/venue 过滤 —— 与搬出前逐字节
+// 一致），回调时才读。
+const snap = computed(() => store.snapshot)
+useAlertSounds(snap, () => store.tradeRows)
 
 /**
  * One button, three states — the accessible name has to say which one is next,
@@ -203,21 +213,29 @@ onUnmounted(() => { stopPoll() })
  * re-login must feed the NEXT reconnect, not a captured stale token.
  */
 const sseRunning = ref(false)
-watch(authed, (on) => {
-  if (!on) { sseRunning.value = false; return }
-  if (sseRunning.value) return
-  sseRunning.value = true
-  void (async () => {
-    while (sseRunning.value && hasToken()) {
-      const delivered = await readEventStream(getToken(), (frame) => {
-        if (frame.kind === 'snapshot') store.applySseSnapshot(frame.doc)
-      })
-      if (!delivered) break // never delivered: polling owns this session
-      await new Promise((r) => setTimeout(r, 3000)) // brief, bounded backoff
-    }
-    sseRunning.value = false
-  })()
-})
+// issue 1199 P1-12（无井号前缀：design-language 门禁把井号+1199 误判为 hex 色值）：
+// 有存量 token 时 authed 出生即 true，watch 不加 immediate
+// 则首屏 SSE 永不启动，面板退化为纯轮询。immediate 让首屏有 token 时立刻
+// 建 SSE 流；无 token 时立刻置 false，与既有行为一致。
+watch(
+  authed,
+  (on) => {
+    if (!on) { sseRunning.value = false; return }
+    if (sseRunning.value) return
+    sseRunning.value = true
+    void (async () => {
+      while (sseRunning.value && hasToken()) {
+        const delivered = await readEventStream(getToken(), (frame) => {
+          if (frame.kind === 'snapshot') store.applySseSnapshot(frame.doc)
+        })
+        if (!delivered) break // never delivered: polling owns this session
+        await new Promise((r) => setTimeout(r, 3000)) // brief, bounded backoff
+      }
+      sseRunning.value = false
+    })()
+  },
+  { immediate: true }
+)
 onUnmounted(() => { sseRunning.value = false })
 
 onMounted(() => {

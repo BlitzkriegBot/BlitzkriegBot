@@ -508,6 +508,16 @@ pub fn render_json_full(
             "gateExemptions": r.gate_exemptions,
             "closedTrades": r.closed_trades, "wins": r.wins, "losses": r.losses,
             "netPnlUsd": r.net_pnl_usd,
+            // D-31: 声明的时机豁免 floor（秒），None = 沿用全局窗口；null 与 0
+            // 语义不同（0 即「到 0s 就豁免」，None 即「不设 floor」）。
+            "gateExemptionTimingFloorSec": r.gate_exemption_timing_floor_sec,
+            // RFC-645 套利合计：两腿合计口径，与行自身 netPnlUsd/wins/losses/
+            // closedTrades 不同源；未受理行缺省 0，前端 feature-detect 回落。
+            "arbNetPnlUsd": r.arb_net_pnl_usd,
+            "arbWins": r.arb_wins,
+            "arbLosses": r.arb_losses,
+            "arbClosedTrades": r.arb_closed_trades,
+            "arbActivePairs": r.arb_active_pairs,
             "rejectionCauses": r.rejection_causes,
         })).collect::<Vec<_>>(),
         // E9-g: engine counters for the overview page (older cores omit).
@@ -562,6 +572,12 @@ pub fn render_json_full(
                         "gateExemptions": r.gate_exemptions,
                         "closedTrades": r.closed_trades, "wins": r.wins, "losses": r.losses,
                         "netPnlUsd": r.net_pnl_usd,
+                        "gateExemptionTimingFloorSec": r.gate_exemption_timing_floor_sec,
+                        "arbNetPnlUsd": r.arb_net_pnl_usd,
+                        "arbWins": r.arb_wins,
+                        "arbLosses": r.arb_losses,
+                        "arbClosedTrades": r.arb_closed_trades,
+                        "arbActivePairs": r.arb_active_pairs,
                         "rejectionCauses": r.rejection_causes,
                     })
                 })

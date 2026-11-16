@@ -1,13 +1,24 @@
-//! `data/runtime/config.json` — the runtime settings cell the WebUI writes
-//! through `round_duration.set` (the round-duration card). Same model as
-//! `data/update/state.json`: a small durable JSON doc that survives restarts
-//! and outranks the factory TOML, but never an explicit CLI flag.
+//! `data/runtime/config.json` — the runtime settings file holding ONE live
+//! cell: the market-plugin override (`marketPlugin`). The WebUI writes it
+//! through `market.plugin.set` (via `persist_market_plugin_to`); the boot
+//! resolution and the `market.plugin.get` readout read it back (via
+//! `load_market_plugin`). Same model as `data/update/state.json`: a small
+//! durable JSON doc that survives restarts. It outranks the
+//! first-registered fallback but never an explicit `--market-plugin` or the
+//! accounts' venue bindings.
 //!
-//! Next-session semantics by construction: the ONLY consumer of this cell is
-//! the boot resolution in `main.rs`, so a write cannot move the running
-//! session's round grid — the grid is a coordinate system (`round_slot` is a
-//! UTC grid index derived with the session's duration), and live
-//! positions/orders were slotted under the old length.
+//! The file's other historical cell — the round-duration override — is
+//! retired: `round_duration.set` persists per-account to SQLite
+//! (`account_settings`, key `round.duration_sec`) and boot reads it back
+//! from there, never from this file. The round-duration reader below is the
+//! retired cell's read-back path, kept only for its tests.
+//!
+//! Next-session semantics by construction: a write to this file cannot move
+//! the running session's feed/discovery/executor — they were all built
+//! around the plugin choice at ITS boot (the same reason the retired round
+//! grid could not move: the grid is a coordinate system — `round_slot` is a
+//! UTC grid index derived with the session's duration — and live
+//! positions/orders were slotted under the old length).
 
 use std::path::PathBuf;
 
@@ -42,11 +53,14 @@ struct RuntimeConfigDoc {
     #[serde(skip_serializing_if = "Option::is_none")]
     market_plugin_at_ms: Option<i64>,
     // The legacy credentials cell (`plugin` → `env var name` → value) lived
-    // here until the .env consolidation (operator ruling: `.env` is the single
-    // persistent home for UI-submitted credentials). The field is gone from
-    // the struct — serde ignores the unknown key on read, and
-    // `migrate_credentials_cell_to_env` drains any legacy values into `.env`
-    // before the next sibling-cell write would silently drop them.
+    // here until the credentials consolidation; the field is gone from the
+    // struct — serde ignores the unknown key on read, and the next
+    // sibling-cell write drops it. UI-submitted credentials now live in the
+    // encrypted `kernel_meta.credential.*` rows of the SQLite store
+    // (`db/credentials.rs`, prefix `CREDENTIAL_META_PREFIX`), injected into
+    // the process environment at boot (`inject_credentials_into_process_env`)
+    // — memory only, never a file write (`.env` stays read-only for the
+    // kernel).
 }
 
 /// What the boot resolution needs to know about the cell.

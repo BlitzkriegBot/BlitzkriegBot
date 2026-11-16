@@ -5,7 +5,8 @@
  * 以及 hft.html 的提示音（盈/亏/开仓/熔断）。数据全部来自 /api/snapshot。
  *
  * issue 781：脚本按职责拆成四个 domain composable（useAlertSounds /
- * useTradeBook / useEngineControl / useOrders）。**身份与 venue 跟随链留在
+ * useTradeBook / useEngineControl / useOrders；issue 1199 D10 后 useAlertSounds
+ * 的挂载点在 App.vue 壳层，本页不再调用）。**身份与 venue 跟随链留在
  * 本页**：identityVenue / activeVenue / venue* 门 / visiblePrices /
  * visibleBooks / venueRound / identityDurSec / balanceAccount* 被
  * hft-venue-switch、account-venue、round-header、display-account、
@@ -28,7 +29,6 @@ import { filterByAccount, filterByVenue } from '@/lib/account-filter'
 import { newestFirst, positionExpired, isKnownPnl } from '@/lib/trades'
 import { feedStaleness } from '@/lib/feed'
 import { useRoundDuration } from '@/lib/round-duration'
-import { useAlertSounds } from '@/composables/useAlertSounds'
 import { useTradeBook } from '@/composables/useTradeBook'
 import { useEngineControl } from '@/composables/useEngineControl'
 import { useOrders } from '@/composables/useOrders'
@@ -61,12 +61,11 @@ const { pause: stopFast } = useIntervalFn(() => {
 }, 2_000)
 onUnmounted(() => { stopFast() })
 
-// ── alert sounds: diff each snapshot against the previous one ────────────────
-// issue 781：快照差分（成交行计数增长 → 盈/亏声、持仓行增长 → 开仓声、
-// 交易冻结翻转 → 熔断/恢复声）搬到了 composables/useAlertSounds.ts；首帧只
-// 建基线，不补放历史。行源仍是 store.tradeRows 原始读数（未经账户/venue
-// 过滤 —— 与搬出前逐字节一致），回调时才读。
-useAlertSounds(snap, () => store.tradeRows)
+// ── alert sounds ─────────────────────────────────────────────────────────────
+// issue 1199 D10：挂载点已提升到 App.vue 壳层（本页无 KeepAlive，切页即卸
+// 载 —— 唯一挂载点留在这页时总览/设置页全程无声）。差分逻辑仍在
+// composables/useAlertSounds.ts（成交/持仓/交易冻结/日亏熔断/账户冻结门），
+// 本页不再调用。
 
 // ── market identity ─────────────────────────────────────────────────────────
 // 倒计时卡的身份行（徽章/名字/slot/已过秒数）的身份唯一源（issue 559，随
@@ -447,8 +446,8 @@ const cumStats = computed(() => {
       // （未知盈亏的行根本不进 summary 的 fold，是内核侧职责）。
       unknownPnlCount: 0,
       avgHold: s.avgHoldTimeSec,
-      best: s.best,
-      worst: s.worst,
+      bestTradePnl: s.bestTradePnl,
+      worstTradePnl: s.worstTradePnl,
       fromSummary: true,
     }
   }
@@ -459,10 +458,11 @@ const cumStats = computed(() => {
   const unknownPnlCount = rows.length - known.length
   const net = known.reduce((x, t) => x + Number(t.netPnlUsd), 0)
   const wins = known.filter((t) => Number(t.netPnlUsd) > 0).length
-  const pcts = known
-    .map((t) => (isKnownPnl(t) ? Number(t.netPnlPct) : null))
-    .filter((v): v is number => v != null && Number.isFinite(v))
   const fees = known.reduce((x, t) => x + (Number(t.feesUsd) || 0), 0)
+  // 最佳/最差单笔与 summary 同口径（USD 净额），不再折叠 netPnlPct 百分数：
+  // 百分数与美元金额不是同一量纲，折叠口径混用会把「最佳单笔」读成百分数，
+  // 与 trade_summary 的 bestTradePnl/worstTradePnl 对不上。
+  const usds = known.map((t) => Number(t.netPnlUsd)).filter((v): v is number => Number.isFinite(v))
   return {
     total: rows.length,
     // `netPnlUsd` is already after fees, so gross is net plus the fees back —
@@ -476,8 +476,8 @@ const cumStats = computed(() => {
     winRate: winRateOf(wins, known.length - wins),
     unknownPnlCount,
     avgHold: undefined as number | undefined,
-    best: pcts.length ? Math.max(...pcts) : undefined,
-    worst: pcts.length ? Math.min(...pcts) : undefined,
+    bestTradePnl: usds.length ? Math.max(...usds) : undefined,
+    worstTradePnl: usds.length ? Math.min(...usds) : undefined,
     fromSummary: false,
   }
 })
@@ -746,7 +746,7 @@ async function confirmThenWrite(kind: 'set' | 'reset'): Promise<void> {
   try {
     const snap = await api.snapshot()
     const n = (snap.positions ?? []).filter(
-      (p: Position) => (p.accountId ?? accountId) === accountId && (p.shares ?? 0) > 0,
+      (p: Position) => p.accountId === accountId && (p.shares ?? 0) > 0,
     ).length
     if (n > 0) {
       hftRoundConfirmN.value = n
@@ -940,7 +940,10 @@ const {
 
 const expiredOrderRows = computed(() => orderRows.value.filter((o) => o.status === 'LIVE' || o.status === 'PARTIALLY_FILLED' || o.status === 'PENDING').filter(orderExpired))
 const positionUnrealized = computed(() =>
-  positions.value.reduce((a, p) => a + (Number(p.unrealizedPct) || 0), 0),
+  positions.value.reduce(
+    (a, p) => a + ((Number(p.currentPrice) - Number(p.entryPrice)) * (Number(p.shares) || 0) || 0),
+    0,
+  ),
 )
 
 // ── 现金流水卡（account.journal）—— 卡体与九类标签映射拆到
@@ -1146,7 +1149,7 @@ const journalOpen = ref(false)
       </div>
 
       <!-- 轮次周期切换的落定反馈（与设置 · 通用 卡同一组横幅；next_session
-           写入后 10s 自动重启，可立即/取消 —— useRestartCore 组件级约定）。 -->
+           写入后 10s 自动重启，可立即/取消）。 -->
       <AlertBanner v-if="roundSwitch.err.value" class="mt-3" tone="warn">{{ roundSwitch.err.value }}</AlertBanner>
       <AlertBanner v-if="roundSwitch.msg.value" class="mt-3" tone="info">{{ roundSwitch.msg.value }}</AlertBanner>
 

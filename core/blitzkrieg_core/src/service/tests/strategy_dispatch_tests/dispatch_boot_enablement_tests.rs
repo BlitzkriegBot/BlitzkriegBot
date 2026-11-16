@@ -476,7 +476,7 @@ fn boot_applies_assignments_and_migrates_the_implicit_default_once() {
 
     // ①+③: the default migrates (file gains the key), probe2's key is
     // honored (its book spelling is already explicit).
-    let migrated = c.apply_account_strategy_assignments_at_boot();
+    let migrated = c.apply_account_strategy_assignments_at_boot().unwrap();
     assert_eq!(
         migrated,
         vec!["spread_arb".to_string(), "trend_follow".to_string()],
@@ -497,7 +497,7 @@ fn boot_applies_assignments_and_migrates_the_implicit_default_once() {
 
     // Idempotence: a SECOND boot call does not re-report (the file now
     // carries the key — the migration is one-time by construction).
-    let again = c.apply_account_strategy_assignments_at_boot();
+    let again = c.apply_account_strategy_assignments_at_boot().unwrap();
     assert!(
         again.is_empty(),
         "the migration never runs twice: the file is the truth now"
@@ -528,7 +528,7 @@ fn boot_applies_assignments_and_migrates_the_implicit_default_once() {
         EngineConfig::default().trend,
         EngineConfig::default().spread_arb,
     );
-    let migrated2 = c2.apply_account_strategy_assignments_at_boot();
+    let migrated2 = c2.apply_account_strategy_assignments_at_boot().unwrap();
     assert!(migrated2.is_empty(), "no state file, no migration");
     // probe2's assignment names spread_arb, but the test adapter is a
     // non-Lua source: build_lua_scope declines, the ADD phase warns and
@@ -597,7 +597,7 @@ fn boot_keeps_the_production_default_enablement_shape_byte_identical() {
         EngineConfig::default().spread_arb,
     );
     // The migration NEVER runs: the file's default row is already explicit.
-    let migrated = c.apply_account_strategy_assignments_at_boot();
+    let migrated = c.apply_account_strategy_assignments_at_boot().unwrap();
     assert!(
         migrated.is_empty(),
         "an explicit key means no migration: {migrated:?}"
@@ -747,7 +747,7 @@ fn scoped_enablement_persists_and_boots_back_exactly() {
         EngineConfig::default().trend,
         EngineConfig::default().spread_arb,
     );
-    let migrated = c2.apply_account_strategy_assignments_at_boot();
+    let migrated = c2.apply_account_strategy_assignments_at_boot().unwrap();
     assert!(migrated.is_empty(), "paper's explicit key = no migration");
     // The book remembers the set; the reply echo of a fresh read matches.
     assert_eq!(
@@ -811,7 +811,11 @@ fn default_toggle_persists_and_boot_does_not_resurrect() {
         EngineConfig::default().spread_arb,
     );
     // The file is explicit: no migration.
-    assert!(c.apply_account_strategy_assignments_at_boot().is_empty());
+    assert!(
+        c.apply_account_strategy_assignments_at_boot()
+            .unwrap()
+            .is_empty()
+    );
     let default_id = crate::account::default_account_id();
 
     // The operator turns spread_arb off (the scoped write is what the
@@ -857,7 +861,7 @@ fn default_toggle_persists_and_boot_does_not_resurrect() {
         EngineConfig::default().trend,
         EngineConfig::default().spread_arb,
     );
-    let migrated = c2.apply_account_strategy_assignments_at_boot();
+    let migrated = c2.apply_account_strategy_assignments_at_boot().unwrap();
     assert!(migrated.is_empty(), "explicit key ⇒ no migration");
     assert!(
         !c2.enabled_strategy_names()

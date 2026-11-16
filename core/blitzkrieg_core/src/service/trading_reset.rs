@@ -185,8 +185,8 @@ impl Core {
     ///
     /// Atomic：patch 先全量校验（非负）再落笔，被拒的 patch 不留半点痕迹。
     /// 持久化走 store seam，载体由装配决定（issue #966/#965，#1199 PR-2）：
-    /// DB 开库（默认）时改动先落 SQLite 的 account_risk 行；env-only 后端时
-    /// `BK_RISK_*` 键 upsert 进 `.env`。重启后按同一载体重新武装 ——
+    /// DB 开库（默认）时改动先落 SQLite 的 account_risk 行；重启后按同一
+    /// 载体重新武装 ——
     /// 这里只做内存矩阵热写，所以回执里的 `persisted` 恒为 false，写路径
     /// 会用真实落盘结果覆写它（并给出 persistence=store|none）。
     pub fn apply_systemic_limits(
@@ -243,7 +243,7 @@ impl Core {
             "maxDailyDrawdownUsd",
             &matrix.max_daily_drawdown_usd,
             patch.max_daily_drawdown_usd,
-            "next_session",
+            "live",
         )?;
         plan(
             "maxPositionSize",
@@ -282,15 +282,25 @@ impl Core {
         // plan/persist orchestration only.
         let row = self.install_account_risk_row(&target, &matrix, patch);
 
+        // issue #1199 P1-6: max_daily_drawdown_usd 是日亏熔断预算，与
+        // PositionConfig.max_daily_loss_usd 为同一预算；setSystemic 写入后
+        // 同步进内存，使本会话立即按新值裁决（live，与 maxSingleLossUsd 一致）。
+        if changes.iter().any(|c| c.field == "max_daily_drawdown_usd") {
+            self.config.positions.max_daily_loss_usd = row.max_daily_drawdown_usd.value();
+            let positions = self.config.positions.clone();
+            self.positions.set_config(positions);
+        }
+
         // The ONE durable-write exit (issue #1199 T-03, zeroed): the carrier
-        // decision is `persist_risk_bounds` alone — the DB store when one is
-        // open (the whole merged row, the pre-seam `AccountRiskDb::save_risk`
-        // write, value for value), the assembled store (the changed
-        // `BK_RISK_*` keys) otherwise, memory-only when the core has
-        // no store at all (backtester, in-process tests — honestly
-        // `persisted: false`). A persist failure refuses the whole apply in
-        // every carrier (file-first ruling — memory may never hold a value the
-        // carrier does not have).
+        // decision is `persist_risk_bounds` alone — the StoreApi seam when a
+        // store is open (production: the SqliteStore wired at assembly, which
+        // writes the same whole merged row through the shared AccountRiskDb
+        // connection, value for value), the direct AccountRiskDb handle when
+        // no store is open (`open_account_risk_db` path), memory-only when
+        // the core has no carrier at all (backtester, in-process tests —
+        // honestly `persisted: false`). A persist failure refuses the whole
+        // apply in every carrier (file-first ruling — memory may never hold a
+        // value the carrier does not have).
         let persisted: bool = self.persist_risk_bounds(&target, &row, &changes)?;
         for c in &changes {
             tracing::info!(
@@ -457,15 +467,15 @@ impl Core {
         }
 
         // The ONE durable-write exit (issue #1199 T-03, zeroed): the carrier
-        // decision is `persist_exit` alone — the DB store when one is open
-        // (the whole merged exit row, the pre-seam `AccountRiskDb::save_exit`
-        // write, byte for byte), the assembled store (the changed
-        // `BK_EXIT_*` keys, then the file-first re-derive of the
-        // working copy) otherwise, memory-only when the core has no store at
-        // all (backtester, in-process tests — honestly `persisted: false`).
-        // A persist failure refuses the whole apply in every carrier
-        // (file-first ruling — memory may never hold a value the carrier does
-        // not have).
+        // decision is `persist_exit` alone — the StoreApi seam when a store
+        // is open (production: the SqliteStore wired at assembly, which
+        // serialises the full merged ExitConfig into `policy_json`, byte for
+        // byte), the direct AccountRiskDb handle when no store is open
+        // (`open_account_risk_db` path), memory-only when the core has no
+        // carrier at all (backtester, in-process tests — honestly
+        // `persisted: false`). A persist failure refuses the whole apply in
+        // every carrier (file-first ruling — memory may never hold a value
+        // the carrier does not have).
         let exit_persisted: bool = self.persist_exit(&target, &current, patch, &changes)?;
 
         for c in &changes {
@@ -519,15 +529,23 @@ impl Core {
     /// zeroed — the pre-seam `if let Some(db) … else env` dual branch is gone
     /// from the write port; the carrier decision lives here alone):
     ///
-    ///   * **DB store open** — the WHOLE merged row (`AccountRiskDb::save_risk`,
-    ///     value for value): the six bounds are the whole row, so an
-    ///     env-derived value the operator just changed becomes DB-durable
-    ///     exactly as the pre-seam branch wrote it, and the untouched fields
-    ///     keep the working copy's values.
-    ///   * **assembled store only** — the changed `BK_RISK_*` keys through
-    ///     [`StoreApi::save_risk_bounds`](crate::store::StoreApi) (the
-    ///     `.env` upsert), the pre-seam `.env` upsert, refusal wording byte-equal.
-    ///   * **no store** — the backtester/in-process-test posture:
+    /// The ONE durable-write exit for the systemic bounds: the write port is
+    /// the [`StoreApi`] seam (`self.store`, the carrier assembly wires — in
+    /// production the [`SqliteStore`](crate::store::SqliteStore) at
+    /// `service/assembly.rs:267-279`, which shares the `AccountRiskDb`
+    /// connection behind `self.account_risk_db`: one file, one write surface,
+    /// so 换后端=改一处装配 on the risk domain too).
+    ///
+    ///   * **store open** — the changed `BK_RISK_*` keys through
+    ///     [`StoreApi::save_risk_bounds`](crate::store::StoreApi): the merge
+    ///     (fields onto the stored row) mirrors the in-memory merge already
+    ///     applied by [`install_account_risk_row`](crate::risk::account_store::install_account_risk_row),
+    ///     so the six bounds land byte-for-byte as the pre-seam whole-row
+    ///     write did, and untouched fields keep the working copy's values.
+    ///   * **no store, `account_risk_db` open** — the direct
+    ///     `AccountRiskDb::save_risk` write (the `open_account_risk_db`
+    ///     boot/test path), same refusal wording.
+    ///   * **no carrier** — the backtester/in-process-test posture:
     ///     `Ok(false)`, the caller's honest `persisted: false` (no error — the
     ///     memory-only apply is the whole story, as before).
     ///
@@ -540,6 +558,23 @@ impl Core {
         row: &crate::risk::limits::AccountRiskLimits,
         changes: &[crate::schema::SystemicLimitChange],
     ) -> CoreResult<bool> {
+        // Store seam first: production's durable carrier. Falls through to the
+        // direct AccountRiskDb handle when no store is open, then to the
+        // honest memory-only posture.
+        if let Some(store) = self.store.as_deref() {
+            let fields: crate::store::FieldChanges = changes
+                .iter()
+                .map(|c| (c.field.to_string(), c.to.clone()))
+                .collect();
+            return store.save_risk_bounds(Some(target), &fields).map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!(
+                        "systemic limits NOT applied: the account_risk store write failed ({e})"
+                    ),
+                )
+            });
+        }
         if let Some(db) = &self.account_risk_db {
             return db.save_risk(target, row).map(|_| true).map_err(|e| {
                 CoreError::new(
@@ -550,44 +585,34 @@ impl Core {
                 )
             });
         }
-        let Some(store) = self.store.as_deref() else {
-            return Ok(false);
-        };
-        let fields: crate::store::FieldChanges = changes
-            .iter()
-            .map(|c| (c.field.to_string(), c.to.clone()))
-            .collect();
-        store.save_risk_bounds(Some(target), &fields).map_err(|e| {
-            CoreError::new(
-                CoreErrorCode::Internal,
-                format!(
-                    "the .env persist failed ({}) — the configured carrier is the source of truth, \
-                         so a write that cannot land there changes nothing (fix the carrier \
-                         and retry)",
-                    e.message
-                ),
-            )
-        })
+        Ok(false)
     }
 
     /// The ONE durable-write exit for the exit discipline (issue #1199 T-03,
     /// zeroed — the pre-seam `if let Some(db) … else env` dual branch is gone
     /// from the write port; the carrier decision lives here alone):
     ///
-    ///   * **DB store open** — the WHOLE merged exit row
-    ///     (`AccountRiskDb::save_exit`, byte for byte): the `ExitConfig` carries
-    ///     calibration fields the wire audit never names (holder stop, ratchet,
-    ///     the trailing widths), so the full-row write is the exact pre-seam
-    ///     semantics — the store's five-field `save_exit` merge would reset
-    ///     those to the base, and a base that is not the working copy would
-    ///     silently drop them (the divergence this keeps out).
-    ///   * **assembled store only** — the changed `BK_EXIT_*` keys through
-    ///     [`StoreApi::save_exit`](crate::store::StoreApi) (`.env`),
-    ///     then the file-first re-derive of the working copy, the pre-seam
-    ///     refusal wordings byte-equal.
-    ///   * **no store** — the backtester/in-process-test posture: the
-    ///     working-copy install (the account's row + the default mirror + the
-    ///     live `PositionConfig`), honestly `persisted: false`.
+    /// The ONE durable-write exit for the exit discipline: memory install
+    /// first (the engine reads exit discipline from memory live), then the
+    /// write port is the [`StoreApi`] seam (`self.store`, the carrier
+    /// assembly wires — in production the
+    /// [`SqliteStore`](crate::store::SqliteStore) at
+    /// `service/assembly.rs:267-279`, sharing the `AccountRiskDb` connection
+    /// behind `self.account_risk_db`). The full merged `ExitConfig` is
+    /// serialised into `policy_json` (`save_exit` writes the whole row), so
+    /// calibration fields the wire audit never names (holder stop, ratchet,
+    /// trailing widths) survive byte-for-byte exactly as the pre-seam
+    /// `AccountRiskDb::save_exit` write did.
+    ///
+    ///   * **store open** — [`StoreApi::save_exit`](crate::store::StoreApi)
+    ///     with the changed `BK_EXIT_*` keys; the merge (fields onto the
+    ///     stored row) mirrors `install_account_exit_row`'s in-memory merge,
+    ///     so nothing is reset that the working copy still holds.
+    ///   * **no store, `account_risk_db` open** — the direct
+    ///     `AccountRiskDb::save_exit` write (the `open_account_risk_db`
+    ///     boot/test path), same refusal wording.
+    ///   * **no carrier** — the memory-only install above, honestly
+    ///     `persisted: false`.
     ///
     /// A write failure refuses the whole apply in every carrier (operator
     /// ruling 2026-11-08: memory may never hold a value the carrier does not
@@ -599,8 +624,27 @@ impl Core {
         patch: &crate::schema::SetExitParams,
         changes: &[crate::schema::ExitSetChange],
     ) -> CoreResult<bool> {
-        if let Some(db) = self.account_risk_db.clone() {
-            let exit = self.install_account_exit_row(target, current, patch);
+        // Memory first: the working copy must carry the patch whatever the
+        // carrier does (live entry binding and the exit scan both read it).
+        let exit = self.install_account_exit_row(target, current, patch);
+        // Store seam first: production's durable carrier. Falls through to the
+        // direct AccountRiskDb handle when no store is open, then keeps the
+        // memory-only install with `persisted: false`.
+        if let Some(store) = self.store.as_deref() {
+            let fields: crate::store::FieldChanges = changes
+                .iter()
+                .map(|c| (c.field.to_string(), c.to.clone()))
+                .collect();
+            return store.save_exit(Some(target), &fields).map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!(
+                        "exit discipline NOT applied: the account_exit_policy store write failed ({e})"
+                    ),
+                )
+            });
+        }
+        if let Some(db) = &self.account_risk_db {
             return db.save_exit(target, &exit).map(|_| true).map_err(|e| {
                 CoreError::new(
                     CoreErrorCode::Internal,
@@ -610,37 +654,6 @@ impl Core {
                 )
             });
         }
-        if let Some(store) = self.store.as_deref() {
-            let fields: crate::store::FieldChanges = changes
-                .iter()
-                .map(|c| (c.field.to_string(), c.to.clone()))
-                .collect();
-            store.save_exit(Some(target), &fields).map_err(|e| {
-                CoreError::new(
-                    CoreErrorCode::Internal,
-                    format!(
-                        "exit discipline NOT applied: the .env persist failed ({}) — \
-                         the configured carrier is the source of truth, so a write that cannot land \
-                         there changes nothing (fix the carrier and retry)",
-                        e.message
-                    ),
-                )
-            })?;
-            return self
-                .refresh_cockpit_from_env_file()
-                .map(|_| true)
-                .map_err(|e| {
-                    CoreError::new(
-                        CoreErrorCode::Internal,
-                        format!(
-                            "exit discipline written to the file but the re-derive failed ({e}); \
-                         the file stands, the cache keeps its last known good values"
-                        ),
-                    )
-                });
-        }
-        // Memory-only posture: the patch moves the account's row directly.
-        self.install_account_exit_row(target, current, patch);
         Ok(false)
     }
 

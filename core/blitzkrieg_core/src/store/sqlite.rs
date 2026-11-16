@@ -683,10 +683,27 @@ impl super::StoreApi for SqliteStore {
                 });
                 match row {
                     Ok((leg_a_venue, leg_a_account, leg_b_venue, leg_b_account, pairs_json)) => {
-                        let pairs: Vec<String> = pairs_json
-                            .as_deref()
-                            .map(|s| serde_json::from_str(s).unwrap_or_default())
-                            .unwrap_or_default();
+                        // NULL pairs_json is the legal "never configured / cleared"
+                        // state (save_arb_config always serializes a parseable
+                        // payload). A non-NULL payload that fails to parse is row
+                        // corruption: it still reads as an empty pairs list — a
+                        // damaged row must not panic the boot — but it must be
+                        // loud, or corruption silently reads as "unconfigured"
+                        // (issue #1199 P2-11).
+                        let pairs: Vec<String> = match pairs_json.as_deref() {
+                            None => Vec::new(),
+                            Some(raw) => match serde_json::from_str(raw) {
+                                Ok(pairs) => pairs,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "arb_pairs row id=1 holds malformed pairs_json — the \
+                                         pairs list is ignored (row corruption, NOT the legal \
+                                         unconfigured NULL): {e}"
+                                    );
+                                    Vec::new()
+                                }
+                            },
+                        };
                         Ok(Some(crate::account::CrossVenueArbConfig {
                             leg_a_venue,
                             leg_a_account,

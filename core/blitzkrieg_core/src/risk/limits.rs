@@ -131,7 +131,9 @@ pub struct AccountRiskLimits {
     pub max_single_loss_usd: Bound,
     /// Daily drawdown ceiling (USD). THE SAME BUDGET as the existing
     /// `PositionConfig::max_daily_loss_usd` — configuring this writes the
-    /// existing field; no second daily-loss counter exists.
+    /// existing field; no second daily-loss counter exists. Boot copies the
+    /// stored row into `PositionConfig::max_daily_loss_usd` (assembly.rs);
+    /// `risk.setSystemic` syncs it live (trading_reset.rs).
     pub max_daily_drawdown_usd: Bound,
     /// Per-account, per-token position-size ceiling (shares).
     pub max_position_size: Bound,

@@ -368,6 +368,203 @@ impl StoreApi for MemoryStore {
     }
 }
 
+// ── the kernel's REAL StoreApi seam, driven by the core-seam proof ──────────
+
+/// The core-seam refusal: the proof drives the RISK/EXIT domain through the
+/// core's store seam; every other domain keeps its local-trait face above
+/// and refuses the core-seam call by name — enumerated, never silenced.
+#[cfg(feature = "test-support")]
+fn seam_not_driven(op: &str) -> blitzkrieg_core::model::CoreError {
+    blitzkrieg_core::model::CoreError::new(
+        blitzkrieg_core::model::CoreErrorCode::Internal,
+        format!(
+            "the core-seam proof does not drive `{op}` through the kernel's store trait (the local faces above cover that domain)"
+        ),
+    )
+}
+
+/// The kernel's REAL `blitzkrieg_core::store::StoreApi` over the same
+/// `MemoryStore` maps — the carrier the core-seam proof installs on a `Core`
+/// (`install_store`). A local newtype over a shared `Arc` (the orphan rule
+/// forbids `impl ForeignTrait for Arc<...>`), so the test keeps its
+/// read-back handle while the core owns the boxed carrier: the core has no
+/// store getter, by design.
+///
+/// This is the branch the audit called "tested in vain" (#1199 batch E, T2):
+/// `Core::persist_risk_bounds` consults `self.store` FIRST, so the trait
+/// write face below is what a store-carrying core hits — but before this
+/// impl no test ever drove `apply_systemic_limits` through it.
+#[cfg(feature = "test-support")]
+struct CoreSeamCarrier(std::sync::Arc<MemoryStore>);
+
+#[cfg(feature = "test-support")]
+impl blitzkrieg_core::store::StoreApi for CoreSeamCarrier {
+    fn account_writes_enabled(&self) -> bool {
+        true
+    }
+
+    fn save_risk_bounds(
+        &self,
+        account_id: Option<&str>,
+        fields: &blitzkrieg_core::store::FieldChanges,
+    ) -> Result<bool, blitzkrieg_core::model::CoreError> {
+        let default_id = default_account_id();
+        let account = account_id.unwrap_or(default_id.as_str());
+        let owned: Vec<(&str, &str)> = fields
+            .iter()
+            .map(|(field, value)| (field.as_str(), value.as_str()))
+            .collect();
+        self.0
+            .risk_exit()
+            .set_risk(account, &owned)
+            .map(|_| true)
+            .map_err(|e| {
+                blitzkrieg_core::model::CoreError::new(
+                    blitzkrieg_core::model::CoreErrorCode::Internal,
+                    e,
+                )
+            })
+    }
+
+    fn save_exit(
+        &self,
+        account_id: Option<&str>,
+        fields: &blitzkrieg_core::store::FieldChanges,
+    ) -> Result<bool, blitzkrieg_core::model::CoreError> {
+        let default_id = default_account_id();
+        let account = account_id.unwrap_or(default_id.as_str());
+        let owned: Vec<(&str, &str)> = fields
+            .iter()
+            .map(|(field, value)| (field.as_str(), value.as_str()))
+            .collect();
+        self.0
+            .risk_exit()
+            .set_exit(account, &owned)
+            .map(|_| true)
+            .map_err(|e| {
+                blitzkrieg_core::model::CoreError::new(
+                    blitzkrieg_core::model::CoreErrorCode::Internal,
+                    e,
+                )
+            })
+    }
+
+    fn save_account_venue(
+        &self,
+        _id: &str,
+        _venue: &str,
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_account_venue"))
+    }
+
+    fn save_account_create(
+        &self,
+        _id: &str,
+        _name: Option<&str>,
+        _venue: Option<&str>,
+        _keys: &CredentialKeys,
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_account_create"))
+    }
+
+    fn remove_account(&self, _id: &str) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("remove_account"))
+    }
+
+    fn save_account_trading(
+        &self,
+        _id: &str,
+        _on: bool,
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_account_trading"))
+    }
+
+    fn save_account_status(
+        &self,
+        _id: &str,
+        _status: &AccountStatus,
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_account_status"))
+    }
+
+    fn save_account_active(&self, _id: &str) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_account_active"))
+    }
+
+    fn save_display_account(&self, _id: &str) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_display_account"))
+    }
+
+    fn save_account_strategies(
+        &self,
+        _id: &str,
+        _strategies: &[String],
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_account_strategies"))
+    }
+
+    fn save_account_rounds(
+        &self,
+        _id: &str,
+        _rounds: &[i64],
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_account_rounds"))
+    }
+
+    fn save_account_opening_equity(
+        &self,
+        _id: &str,
+        _equity: rust_decimal::Decimal,
+        _at_ms: i64,
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_account_opening_equity"))
+    }
+
+    fn save_arb_config(
+        &self,
+        _cfg: &blitzkrieg_core::account::CrossVenueArbConfig,
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_arb_config"))
+    }
+
+    fn clear_arb_config(&self) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("clear_arb_config"))
+    }
+
+    fn load_arb_config(
+        &self,
+    ) -> Result<
+        Option<blitzkrieg_core::account::CrossVenueArbConfig>,
+        blitzkrieg_core::model::CoreError,
+    > {
+        Err(seam_not_driven("load_arb_config"))
+    }
+
+    fn save_policy_section(
+        &self,
+        _id: &str,
+        _state: &BTreeMap<String, Option<String>>,
+    ) -> Result<(), String> {
+        Err(seam_not_driven("save_policy_section").message)
+    }
+
+    fn save_account_round_duration(
+        &self,
+        _id: &str,
+        _seconds: Option<i64>,
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_account_round_duration"))
+    }
+
+    fn save_credentials(
+        &self,
+        _vars: &BTreeMap<String, String>,
+        _reset_keys: &[&str],
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_credentials"))
+    }
+}
+
 // ── SqliteStore: the real DB backend over a tempdir database ────────────────
 
 /// The SQLite backend: the PRODUCTION `blitzkrieg_core::store::SqliteStore`
@@ -1135,4 +1332,82 @@ fn sqlite_risk_exit_match_the_raw_account_risk_db_pair() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The core-seam proof (issue #1199 batch E, T2): `apply_systemic_limits`
+/// drives the REAL `StoreApi::save_risk_bounds` branch of
+/// `Core::persist_risk_bounds`. The core is assembled with
+/// `config.db_path = None` — no `account_risk_db`, no assembly-wired
+/// `SqliteStore` — and a `MemoryStore` carrier installed through
+/// `store::test_support::install_store`: the trait seam is the ONLY durable
+/// carrier on this core. `persisted: true` pins that the store seam answered
+/// (a memory-only core answers `false`; the direct `AccountRiskDb` branch is
+/// closed on a core with no DB), and the value in the carrier's read-back
+/// pins that the write actually landed there — not merely in the in-memory
+/// matrix.
+#[cfg(feature = "test-support")]
+#[test]
+fn apply_systemic_limits_drives_the_store_seam_branch() {
+    use blitzkrieg_core::account::{Account, AccountId, AccountLedgers};
+    use blitzkrieg_core::model::Mode;
+    use blitzkrieg_core::schema::SetSystemicLimitsParams;
+    use blitzkrieg_core::service::{Core, CoreConfig};
+    use blitzkrieg_core::store::test_support::install_store;
+
+    let book = AccountLedgers::new(
+        vec![Account {
+            id: AccountId::from("default"),
+            name: "default".into(),
+            market_type: blitzkrieg_market_api::MarketType::Prediction,
+            status: AccountStatus::Active,
+            credential_keys: Default::default(),
+            venue: String::new(),
+            trading_enabled: true,
+            strategies: Vec::new(),
+            rounds: Vec::new(),
+            opening_equity: None,
+            updated_at_ms: 1_000,
+        }],
+        default_account_id(),
+    );
+    let core_cfg = CoreConfig {
+        mode: Mode::Dry,
+        // Isolation: a test core must not inherit the shipped `data/` log
+        // spellings (the same fixture discipline the risk-read tests use).
+        trade_log_path: None,
+        order_log_path: None,
+        position_log_path: None,
+        ..Default::default()
+    };
+    let mut core = Core::with_account_book(core_cfg, book);
+    assert!(
+        !core.account_risk_db_open(),
+        "precondition: no account_risk_db on this core — the trait seam is \
+         the only durable carrier"
+    );
+
+    let mem = std::sync::Arc::new(MemoryStore::new());
+    install_store(&mut core, Box::new(CoreSeamCarrier(mem.clone())));
+
+    let reply = core
+        .apply_systemic_limits(
+            &SetSystemicLimitsParams {
+                max_position_size: Some(dec!(5)),
+                ..Default::default()
+            },
+            "core-seam-proof",
+            1_000,
+        )
+        .expect("systemic apply succeeds");
+    assert!(
+        reply.persisted,
+        "the store seam answered the write — persisted=false would mean the \
+         memory-only posture (no carrier), i.e. the trait branch was skipped"
+    );
+    assert_eq!(
+        mem.risk_exit().get_risk(default_account_id().as_str()),
+        vec![("maxPositionSize".to_string(), "5".to_string())],
+        "the bound landed in the carrier's own maps — the write went through \
+         StoreApi::save_risk_bounds, not merely the in-memory matrix"
+    );
 }

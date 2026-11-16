@@ -342,18 +342,24 @@ pub struct CoreConfig {
     /// replays.
     pub event_archive_path: Option<String>,
     /// Stop recording once the archive reaches this size (MiB); 0 = unlimited.
-    /// Nothing is ever deleted — a full archive just stops growing. This is the
+    /// The cap never deletes data — a full archive just stops growing. Old
+    /// segments are only removed by the disk floor
+    /// (`event_archive_min_free_mb`), never by the cap. This is the
     /// whole-session bound; `event_archive_rotate_mb` bounds one segment.
     pub event_archive_max_mb: u64,
     /// Rotate the archive into a new segment every this many MiB (0 = never).
-    /// A 24/7 capture needs this: `≈11 MB/min` reaches any sane session cap within
-    /// hours, and an un-rotated archive that hits the cap goes dark silently.
-    /// Rotation renames the finished segment (UTC-stamped) and opens a fresh one;
-    /// nothing is ever deleted.
+    /// Default 256 MiB: a 24/7 capture needs this — `≈11 MB/min` reaches any sane
+    /// session cap within hours, and an un-rotated archive that hits the cap goes
+    /// dark silently. Rotation renames the finished segment (UTC-stamped) and
+    /// opens a fresh one. When `event_archive_min_free_mb` is set, the oldest
+    /// rotated segments are deleted once the volume floor is breached; nothing
+    /// is ever deleted without that floor being configured.
     pub event_archive_rotate_mb: u64,
     /// Stop recording rather than let the archive's volume drop below this many
-    /// MiB free (0 = no guard). Checked once per rotation, so it costs nothing on
-    /// the hot path.
+    /// MiB free (0 = no guard). Once segments have been rotated away, the oldest
+    /// ones are deleted while the floor is breached; recording stops only when
+    /// the floor cannot be restored by deletion. Checked once per rotation, so it
+    /// costs nothing on the hot path.
     pub event_archive_min_free_mb: u64,
     /// How old an orderbook may be before the engine refuses to price off it,
     /// in milliseconds (issue #205). `0` = the check is OFF (any age accepted).
@@ -1145,7 +1151,7 @@ impl Default for CoreConfig {
             fill_model: crate::sim::FillModel::default(),
             event_archive_path: None,
             event_archive_max_mb: 512,
-            event_archive_rotate_mb: 0,
+            event_archive_rotate_mb: 256,
             event_archive_min_free_mb: 0,
             // #205: the shipped freshness budget, unchanged.
             max_orderbook_stale_ms: crate::engine::DEFAULT_MAX_ORDERBOOK_STALE_MS,

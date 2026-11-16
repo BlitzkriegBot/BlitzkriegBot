@@ -113,7 +113,7 @@ async fn risk_set_systemic_binds_next_order_without_restart() {
 async fn risk_set_systemic_writes_the_matrix_and_names_each_effect() {
     let (core, registry, peer) = hot_reload_fixture().await;
 
-    // Arm ONE live bound + the drawdown row, which must carry next_session.
+    // Arm ONE live bound + the drawdown row, which carries live (issue #1199 P1-6).
     let applied = rpc(
         &core,
         &registry,
@@ -152,8 +152,8 @@ async fn risk_set_systemic_writes_the_matrix_and_names_each_effect() {
     );
     assert_eq!(
         effect_of("maxDailyDrawdownUsd").as_deref(),
-        Some("next_session"),
-        "the drawdown budget must state its next-session arming: {audit}"
+        Some("live"),
+        "the drawdown budget must state its live arming: {audit}"
     );
     let from_of = |field: &str| {
         audit["applied"]

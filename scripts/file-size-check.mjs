@@ -75,20 +75,28 @@ const ALLOW = [
   // never grow past atAuthoring. 1501→1505: the issue 1199 R2
   // persistence-doc pass (+4 comment lines, zero logic). 1505→1508: the
   // #1199 第六轮 RoundDurationUpdate persisted field (+3 lines).
-  { path: 'core/blitzkrieg_core/src/schema/mod.rs', atAuthoring: 1508 },
+  // 1508→1510: the #1199 第十次审计 P1-7 phantom-field rename (+2 lines).
+  { path: 'core/blitzkrieg_core/src/schema/mod.rs', atAuthoring: 1510 },
   // #1199 第六轮: env 写入路径根除 + SQLite 独占后端。boot 物化、toml 门、
   // 账户簿合并把 assembly.rs 从 1221 涨到 1697（+476 行：env 写分支删除、
   // boot 物化、账户簿 SQL 权威、凭证注入、策略集合回读、arb 段 store 回读）。
-  // Debt marker — 拆分另开轮次，此处先记债。
-  { path: 'core/blitzkrieg_core/src/service/assembly.rs', atAuthoring: 1697 },
+  // 1697→1732: the #1199 第十次审计 fixes (+35 lines: StoreApi seam routing,
+  // honest docblocks). Debt marker — 拆分另开轮次，此处先记债。
+  { path: 'core/blitzkrieg_core/src/service/assembly.rs', atAuthoring: 1732 },
+  // #1199 第十次审计: strategies.rs crossed the limit on the reload-rollback
+  // fix (P1-15/16) — a failed reload now restores the old instance instead of
+  // blanking the dispatch (+21 lines). Debt marker — the file may shrink or
+  // die, never grow past atAuthoring.
+  { path: 'core/blitzkrieg_core/src/service/strategies.rs', atAuthoring: 1509 },
   // #1199 第六轮：tests_risk_rounds.rs 新增 round_duration 落 SQLite 与
   // 下一会话读回的往返用例，1479→1562（+83 行）。
   { path: 'core/blitzkrieg_core/src/ipc/server/tests/tests_risk_rounds.rs', atAuthoring: 1562 },
   // #1199 第六轮：dispatch_boot_enablement_tests.rs 的 fixture 补 db_path
-  // 与 env 断言迁 SQL，1483→1547（+64 行）。
+  // 与 env 断言迁 SQL，1483→1547（+64 行）。1547→1551: the #1199 第十次
+  // 审计 T1-T3 测试盲区补钉（+4 行）。
     {
       path: 'core/blitzkrieg_core/src/service/tests/strategy_dispatch_tests/dispatch_boot_enablement_tests.rs',
-      atAuthoring: 1547,
+      atAuthoring: 1551,
     },
 ];
 

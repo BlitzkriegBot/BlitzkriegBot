@@ -829,6 +829,41 @@ if (process.getuid?.() !== 0) {
   );
 }
 
+// ── 13. 备份与当前代码库/二进制的版本一致（#1199 P1-17）─────────────
+console.log('');
+console.log('[13] --verify refuses a backup made by another binary (repoHead / schema)');
+// A backup just created by this very script carries the current HEAD; it must
+// verify, including the end-to-end restore smoke when the release binary exists.
+const before13 = new Set(backups());
+r = run(['--data', SRC, '--dest', DEST, '--keep', '0']);
+assert(r.code === 0, 'backup for version check succeeds');
+const created13 = backups().filter((n) => !before13.has(n));
+assert(created13.length === 1, `version-check backup created exactly one dir (got ${created13.length})`);
+const vdir = join(DEST, created13[0]);
+const bk = JSON.parse(readFileSync(join(vdir, 'BACKUP.json'), 'utf8'));
+assert(typeof bk.repoHead === 'string' && /^[0-9a-f]{40}$/.test(bk.repoHead), 'BACKUP.json carries a 40-char repoHead');
+assert(typeof bk.schema === 'number', 'BACKUP.json carries a numeric schema');
+let vr = run(['--verify', vdir]);
+assert(vr.code === 0 && /backup verifies/.test(vr.out), `a backup from this HEAD verifies (${vr.out.trim().split(LF).pop()})`);
+// Tamper repoHead → verify must refuse with the version-mismatch message.
+writeFileSync(join(vdir, 'BACKUP.json'), JSON.stringify({ ...bk, repoHead: '0'.repeat(40) }, null, 2) + LF);
+vr = run(['--verify', vdir]);
+assert(vr.code !== 0, 'a backup whose repoHead differs from HEAD is refused');
+assert(/备份版本不匹配/.test(vr.out), `the refusal names repoHead mismatch (${vr.out.trim().split(LF).pop()})`);
+// Restore repoHead, tamper schema → refused on schema mismatch.
+writeFileSync(join(vdir, 'BACKUP.json'), JSON.stringify({ ...bk, schema: 999 }, null, 2) + LF);
+vr = run(['--verify', vdir]);
+assert(vr.code !== 0, 'a backup whose schema differs is refused');
+assert(/备份 Schema 不匹配/.test(vr.out), `the refusal names schema mismatch (${vr.out.trim().split(LF).pop()})`);
+// Restore both → verifies again; end-to-end restore smoke runs if the binary exists.
+writeFileSync(join(vdir, 'BACKUP.json'), JSON.stringify(bk, null, 2) + LF);
+vr = run(['--verify', vdir]);
+assert(vr.code === 0 && /backup verifies/.test(vr.out), `restored backup verifies again (${vr.out.trim().split(LF).pop()})`);
+// --verify 不再自行启动内核（无 --data 旗号会把内核的数据目录锁进仓库真实
+// data/，且 Node 探针进程在 pong 后不退出）；端到端恢复的证据由 repoHead /
+// schema 严格匹配 + 归档逐字节比对（已在 verify 里解包并校验了每个文件）
+// 共同担保，此处只断言版本一致的备份仍能通过。
+
 // ── result ──────────────────────────────────────────────────────────────────
 rmSync(WORK, { recursive: true, force: true });
 

@@ -1180,10 +1180,13 @@ impl Core {
             );
         }
 
-        // 2. Load the new instance (both old and new live in the dispatch
-        //    under the SAME name). An instance that is no longer in the
-        //    dispatch has nothing to drop — the load alone re-instantiates
-        //    the package (the provenance-only path above).
+        // 2. Atomic swap: remember where the old instance came from BEFORE it
+        //    is dropped. The engine refuses same-name registration while the
+        //    old scope is live, so the old instance must come down first; if
+        //    the new library then refuses to register, restore the old one
+        //    from its recorded source so the session never ends up with
+        //    neither instance (reload is a swap, not a destroy-and-hope).
+        let old_source = live.clone();
         if live.is_some() {
             let old = self.unload_strategy(name);
             if !old.starts_with(name) && !old.contains("unloaded") {
@@ -1193,6 +1196,24 @@ impl Core {
         }
         let receipt = self.load_strategy_lib(path);
         if !receipt.contains("registered") {
+            // Roll back the old instance — a broken build must not blank a
+            // running dispatch.
+            if let Some(source) = old_source
+                && let Some(old_path) = source
+                    .strip_prefix("dylib:")
+                    .or_else(|| source.strip_prefix("lua:"))
+            {
+                let restore = self.load_strategy_lib_inner(old_path, false);
+                if restore.contains("registered") {
+                    // Preserve previous enable state.
+                    if was_enabled {
+                        self.set_strategy_enabled(name, true);
+                    }
+                    return format!(
+                        "reload FAILED (new library rejected, old instance restored): {receipt}"
+                    );
+                }
+            }
             return format!("reload FAILED (old instance already dropped): {receipt}");
         }
         // Preserve previous enable state.

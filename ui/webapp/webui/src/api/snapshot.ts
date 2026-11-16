@@ -151,7 +151,7 @@ export interface EngineStats {
     openingEquityUsd: string
     equityBasis?: string | null
     tripped: boolean
-    trippedAtMs: number
+    trippedAtMs: number | null
     anyTripped: boolean
     accounts: {
       account: string
@@ -357,8 +357,8 @@ export interface CumulativeTradeSummary {
   totalFees?: number
   attributedNetPnl?: number
   avgHoldTimeSec?: number
-  best?: number
-  worst?: number
+  bestTradePnl?: number
+  worstTradePnl?: number
 }
 
 /** One venue's own round clock (`round.venueRounds` row, issue 550 症状②)：

@@ -20,6 +20,15 @@
 //!   its last bar open; the empty buckets that were skipped on the way to the
 //!   next tick are counted in `stats().no_data_bars` so a chart's gaps are
 //!   explainable rather than mysterious.
+//!
+//! Persistence: NONE — by design for 0.4. The aggregator is pure in-memory
+//! state: there is no writer, no `fsync`, no rotation and no disk floor
+//! (`data/` has no kline subdirectory). `history()` serves the bounded closed
+//! tail (`CLOSED_HISTORY_CAP` per bucket) plus the currently growing bar, and
+//! a restart loses every bar — aggregation starts from the next tick. Bar
+//! history is session state, not durable evidence. If durable kline storage
+//! is wanted later it goes through the StoreApi seam (DEV §2), not a bespoke
+//! writer here.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -82,6 +91,7 @@ pub struct KlineAggregator {
     intervals: Vec<KlineInterval>,
     bars: HashMap<(String, KlineInterval), Kline>,
     /// Bounded CLOSED tail per bucket, oldest first — the `kline.history` body.
+    /// In-memory only: dropped on restart, never written to disk.
     closed: HashMap<(String, KlineInterval), VecDeque<Kline>>,
     /// Bars closed but not yet taken by the host (events/callbacks drain these).
     pending_closed: Vec<Kline>,

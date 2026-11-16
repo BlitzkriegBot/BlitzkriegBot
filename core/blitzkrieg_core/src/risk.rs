@@ -130,15 +130,6 @@ pub const HOT_RELOADABLE: &[&str] = &[
 /// end.
 pub const HOT_RELOAD_REFUSED: &[(&[&str], &str)] = &[
     (
-        &[
-            "maxOrderNotional",
-            "max_order_notional",
-            "max-order-notional",
-        ],
-        "folded into the account-level systemic matrix — use risk.setSystemic with \
-         maxOrderNotionalUsd (persists to .env, hot-loads without restart)",
-    ),
-    (
         &["maxDailyLossUsd", "max_daily_loss_usd", "max-daily-loss"],
         "the daily-loss breaker is judged against the day's accumulated realized-loss \
          book; re-arming it mid-day silently changes what is already spent",

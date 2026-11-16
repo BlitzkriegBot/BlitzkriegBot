@@ -23,7 +23,7 @@ export interface CumStats {
    */
   unknownPnlCount: number
   avgHold: number | undefined
-  best: number | undefined
-  worst: number | undefined
+  bestTradePnl: number | undefined
+  worstTradePnl: number | undefined
   fromSummary: boolean
 }

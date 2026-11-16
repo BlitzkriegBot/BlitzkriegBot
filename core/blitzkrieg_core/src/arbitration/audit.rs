@@ -2,20 +2,32 @@
 //! lands as ONE line in `data/audit/intents.jsonl`.
 //!
 //! Rules the design fixes here:
-//! * write through the existing `crate::jsonl::append` (one implementation,
-//!   append-only, failures never fatal) — a failed write costs one
+//! * one JSON line per intent, appended with `O_APPEND` so concurrent
+//!   appenders can never fuse two records (#386); a failed write costs one
 //!   `tracing::warn!`, never a trade;
-//! * NO rotation in 0.3 — JSONL + the ops-side `data-backup-*` archiving
-//!   already cover it; a rotator waits for a real size problem;
+//! * rotation at 256 MB per segment: the full segment is renamed to a
+//!   UTC-stamped sibling (`intents.jsonl` → `intents.20261116T210000Z.jsonl`)
+//!   and the next intent starts a fresh file, so the log cannot grow without
+//!   bound (#1199 P1-11). Rotated segments are kept on disk; the audit sink
+//!   itself has no disk floor — the event archive owns deletion policy;
 //! * `INTENT_DECISION` pushes are THROTTLED, per `(strategy, gate, reason)`
 //!   key, to at most one per second — a rejection storm can produce thousands
 //!   of intents a second, and the push is folded, never the audit (the audit
 //!   stays one line per intent).
 
 use super::{Decision, GateTrace};
+use crate::data_source::next_segment_path;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::path::PathBuf;
+
+/// 256 MB per intent-audit segment — mirrors the event archive's segment
+/// discipline (`config.event_archive_rotate_mb`, DEV §5.3). Fixed, not a knob:
+/// an un-rotated 566 MB audit log is exactly what #1199 P1-11 found in
+/// production.
+const INTENT_ROTATE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// One audited suggestion, exactly the §3.4 shape. The serde spelling here is
 /// load-bearing: `intent.audit.tail` filters on `accountId` / `strategy` /
@@ -56,6 +68,14 @@ pub struct AuditSink {
     pub account_id: String,
     next_seq: u64,
     throttles: HashMap<(String, String, String), ThrottleState>,
+    /// Size of the segment currently being written, in bytes. Lazily seeded
+    /// from the actual file on the first write (a pre-oversized file rotates
+    /// on the very first record), and updated on every successful append.
+    segment_bytes: u64,
+    /// Whether `segment_bytes` has been seeded from disk yet.
+    segment_seeded: bool,
+    /// Per-segment ceiling: 256 MB (see `INTENT_ROTATE_BYTES`).
+    rotate_bytes: u64,
 }
 
 /// The one push the throttle lets through, ready for the `INTENT_DECISION`
@@ -81,6 +101,9 @@ impl AuditSink {
             account_id: account_id.into(),
             next_seq: 0,
             throttles: HashMap::new(),
+            segment_bytes: 0,
+            segment_seeded: false,
+            rotate_bytes: INTENT_ROTATE_BYTES,
         }
     }
 
@@ -118,14 +141,88 @@ impl AuditSink {
             gates: gates.to_vec(),
             latency_us,
         };
-        if self.enabled && !crate::jsonl::append(&self.path, &record) {
-            tracing::warn!(
-                target: "strategy",
-                "intent audit append failed (trading continues): {}",
-                self.path.display()
-            );
+        if self.enabled {
+            let mut buf = match serde_json::to_vec(&record) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "strategy",
+                        error = %e,
+                        "intent audit: record failed to serialize (trading continues)"
+                    );
+                    return record;
+                }
+            };
+            buf.push(b'\n');
+            let n = buf.len() as u64;
+            // Lazily seed the segment size from the actual file before this
+            // write (a pre-oversized segment rotates on the very first record);
+            // seeding in `new` would stat the default relative path, which a
+            // test may override afterwards.
+            if !self.segment_seeded {
+                self.segment_bytes = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+                self.segment_seeded = true;
+            }
+            if let Some(parent) = self.path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let appended = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .and_then(|mut f| f.write_all(&buf));
+            if let Err(e) = appended {
+                tracing::warn!(
+                    target: "strategy",
+                    error = %e,
+                    path = %self.path.display(),
+                    "intent audit append failed (trading continues): {}",
+                    self.path.display()
+                );
+                return record;
+            }
+            // Same O_APPEND single-write contract as `crate::jsonl::append`
+            // (#386): one write() lands at the current end atomically. We write
+            // directly instead of via `jsonl::append` so the byte count feeds
+            // the rotation ceiling below without a second serialization.
+            // Lazily seed the segment size from the actual file on the first
+            // write (a pre-oversized segment rotates on the very first record);
+            // seeding in `new` would stat the default relative path, which a
+            // test may override afterwards.
+            if !self.segment_seeded {
+                self.segment_bytes = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+                self.segment_seeded = true;
+            }
+            self.segment_bytes += n;
+            if self.rotate_bytes > 0 && self.segment_bytes >= self.rotate_bytes {
+                self.rotate(ts_ms);
+            }
         }
         record
+    }
+
+    /// Close the current segment under a UTC-stamped sibling name and let the
+    /// next record start a fresh `path`. The rotated file is never altered — it
+    /// is only renamed away.
+    fn rotate(&mut self, stamp_ms: i64) {
+        let rotated = next_segment_path(&self.path, stamp_ms);
+        if let Err(e) = std::fs::rename(&self.path, &rotated) {
+            tracing::warn!(
+                path = %self.path.display(),
+                target = %rotated.display(),
+                error = %e,
+                "intent audit: rotate failed; keeping the current segment"
+            );
+            return;
+        }
+        let wrote = self.segment_bytes;
+        self.segment_bytes = 0;
+        tracing::info!(
+            path = %self.path.display(),
+            rotated = %rotated.display(),
+            bytes = wrote,
+            "intent audit rotated"
+        );
     }
 
     /// Fold pushes for `(strategy, gate, reason)`: at most ONE per second per
@@ -318,6 +415,73 @@ mod tests {
         );
         let line = std::fs::read_to_string(&sink.path).unwrap();
         assert!(line.contains("\"price\":\"0.40\""), "{line}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1199 P1-11: a segment that reaches the per-segment ceiling is rotated
+    /// to a UTC-stamped sibling and the next record starts a fresh file; no
+    /// intent line is lost and ids keep flowing across the rotation.
+    #[test]
+    fn audit_rotates_the_full_segment_and_streams_keep_flowing() {
+        let mut sink = AuditSink::new("default");
+        sink.rotate_bytes = 400; // force rotation inside the test
+        // Unique scratch dir: `a_rejection_storm` uses `bk-e25-audit-{pid}`,
+        // tests in the same binary run in parallel and must not share it.
+        let dir = std::env::temp_dir().join(format!("bk-e25-audit-rot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        sink.path = dir.join("intents.jsonl");
+        let base: i64 = 1_757_851_200_000;
+        let mut ids = Vec::new();
+        for i in 0..7u64 {
+            let ts = base + (i as i64) * 1000;
+            let record = sink.record(
+                ts,
+                "default",
+                "probe",
+                &serde_json::json!({"token": "UP", "i": i}),
+                &rejected_record(ts).decision,
+                &rejected_record(ts).gates,
+                3,
+            );
+            ids.push(record.intent_id.clone());
+        }
+        // The live file plus three rotated siblings (a rotation happens every
+        // other record at this size).
+        let mut segs: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        segs.sort();
+        assert_eq!(
+            segs.len(),
+            4,
+            "live file + three rotated segments: {segs:?}"
+        );
+        let mut live = String::new();
+        let mut all = String::new();
+        for seg in &segs {
+            let content = std::fs::read_to_string(seg).unwrap();
+            all.push_str(&content);
+            if *seg == sink.path {
+                live = content;
+            }
+        }
+        assert!(!live.is_empty(), "the fresh segment receives new records");
+        assert_eq!(
+            all.lines().count(),
+            7,
+            "no intent line is lost across rotation"
+        );
+        for id in &ids {
+            assert!(
+                all.contains(&format!("\"intentId\":\"{id}\"")),
+                "intent id {id} survived rotation"
+            );
+        }
+        // The tail contract names the live path, which exists right after
+        // rotation (ipc/server/handlers/intent.rs reads via jsonl::tail_filtered).
+        assert!(sink.path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

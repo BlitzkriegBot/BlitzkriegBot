@@ -501,28 +501,90 @@ fn disk_guard_stops_before_the_volume_fills() {
         "events after the stop are counted as dropped"
     );
 
-    // Nothing was deleted: every event written before the stop still replays,
-    // across the rotated segment and the (now idle) live path.
-    let mut segments: Vec<_> = std::fs::read_dir(&dir)
+    // The floor is unsatisfiable, so every rotated segment was deleted and
+    // recording stopped — but whatever survived on disk is still intact.
+    assert_eq!(st.segments, 1, "one rotation happened: {}", st.segments);
+    assert_eq!(
+        st.segments_deleted, 1,
+        "the floor deleted the old segment: {}",
+        st.segments_deleted
+    );
+    let files: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
         .collect();
-    segments.sort();
+    assert_eq!(files.len(), 1, "only the live file survived: {files:?}");
+    assert_eq!(files[0], path, "the live path is the survivor");
     let mut n = 0u64;
-    for seg in &segments {
+    for seg in &files {
         let mut src = ReplaySource::open(seg).unwrap();
         while src.next_event().is_some() {
             n += 1;
         }
+        assert_eq!(
+            src.skipped_lines(),
+            0,
+            "survivor {} is intact",
+            seg.display()
+        );
     }
     assert!(
-        n > 0,
-        "the segments written before the stop are intact: {segments:?}"
+        n <= st.events,
+        "replay of survivors cannot exceed what was recorded: {n} > {}",
+        st.events
     );
-    assert!(n <= st.events, "replay cannot exceed what was recorded");
-    assert_eq!(n, st.events, "every recorded event is still readable");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The disk floor also deletes at open: a restart inherits old segments left on
+/// disk, and an unsatisfiable floor removes them before the new session writes
+/// a byte — recording itself stays on.
+#[test]
+fn archive_open_cleans_legacy_segments_before_recording() {
+    let dir = std::env::temp_dir().join(format!("bk-archive-legacy-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("events.jsonl");
+    let _ = std::fs::remove_file(&path);
+
+    // A legacy rotated segment from a previous run.
+    std::fs::write(
+        dir.join("events.20250914T120000Z.jsonl"),
+        "{\"at\":1,\"k\":\"spot\",\"s\":\"BTC\",\"p\":\"1\"}\n",
+    )
+    .unwrap();
+
+    let mut a = EventArchive::open_full(&path, 0, 200, u64::MAX).unwrap();
+    let st = a.status();
+    assert!(
+        st.recording,
+        "an unsatisfiable floor still lets a fresh archive open"
+    );
+    assert_eq!(
+        st.segments_deleted, 1,
+        "the legacy segment was deleted at open"
+    );
+    assert!(
+        !dir.join("events.20250914T120000Z.jsonl").exists(),
+        "legacy segment is gone"
+    );
+
+    // Recording works on the fresh live path.
+    let ev = DataEvent::Spot {
+        asset: "BTC".into(),
+        price: dec!(1),
+        now_ms: 1,
+    };
+    a.record(&ev);
+    a.flush();
+    let mut src = ReplaySource::open(&path).unwrap();
+    assert_eq!(
+        src.next_event().map(|te| te.at_ms),
+        Some(1),
+        "the new session's events are intact"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

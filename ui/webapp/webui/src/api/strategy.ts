@@ -68,9 +68,7 @@ export const strategyApi = {
    * schema 源是策略自己的 manifest tunables —— 内核不发明域。
    */
   strategyParams: (name: string) =>
-    request<StrategyParamsReadoutDoc>(
-      `/strategy-params?name=${encodeURIComponent(name)}`,
-    ),
+    request<StrategyParamsReadoutDoc>('/strategy-params', undefined, { name }),
   /**
    * 策略 tunables 编辑卡的写路径（`strategy.params.set`，issue 481）：
    * `risk.setExit` 同款姿态 —— 内核对每个旋钮按声明域校验（plan-first，

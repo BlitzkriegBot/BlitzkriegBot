@@ -130,3 +130,8 @@ dhat = "0.3"
 [[bench]]
 name = "hot_path"
 harness = false
+# The bench imports `strategies::test_support` (hosted adapters), which is
+# gated behind the opt-in `test-support` feature — without this line
+# `cargo clippy --all-targets` compiles the bench without the feature and
+# fails on the unresolved import (issue #1199 CI red).
+required-features = ["test-support"]

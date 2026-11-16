@@ -15,7 +15,11 @@ use crate::schema::*;
 /// logged but does NOT fail the RPC: the in-memory apply already succeeded;
 /// the operator sees the change immediately and the log tells them
 /// persistence failed.
-fn persist_changes_to_env(c: &Core, account_id: Option<&str>, changes: &[(&str, String)]) -> bool {
+fn persist_changes_to_store(
+    c: &Core,
+    account_id: Option<&str>,
+    changes: &[(&str, String)],
+) -> bool {
     let store = match c.store.as_deref() {
         Some(s) => s,
         None => return false,
@@ -33,8 +37,8 @@ fn persist_changes_to_env(c: &Core, account_id: Option<&str>, changes: &[(&str, 
     }
 }
 
-/// Same as [`persist_changes_to_env`] but for exit-discipline field names.
-fn persist_exit_changes_to_env(
+/// Same as [`persist_changes_to_store`] but for exit-discipline field names.
+fn persist_exit_changes_to_store(
     c: &Core,
     account_id: Option<&str>,
     changes: &[(&str, String)],
@@ -108,10 +112,10 @@ pub(crate) async fn handle_risk(
             // overlay here would resurrect the file's STALE `BK_*` /
             // `BK_EXIT_*` keys over them on every query. The overlay is the
             // env-carrier backend's readout face only — with the DB open the
-            // snapshot IS the answer; on the env-only backend the cockpit
-            // sections come from the `.env` file at QUERY time, so the panel
-            // reads the file (through the kernel), never a cache that can
-            // diverge from it (the 2026-11-08 panel-ON/file-OFF class).
+            // snapshot IS the answer; the env backend is deleted, so no `.env`
+            // overlay is consulted while the DB is open. Only when no carrier is
+            // open (backtester, in-process tests) does the readout fall back to
+            // reading the `.env` file directly, which is read-only for the kernel.
             let file = if c.account_risk_db_open() {
                 None
             } else {
@@ -185,10 +189,9 @@ pub(crate) async fn handle_risk(
                 Err(e) => Err((
                     Failure::INVALID_PARAMS,
                     format!(
-                        "{e} — nothing was applied; the nine systemic fields are \
+                        "{e} — nothing was applied; the six systemic fields are \
                          maxSingleLossUsd, maxDailyDrawdownUsd, maxPositionSize, \
-                         maxConsecutiveLosses, cooldownMinutes, maxTotalPosition, \
-                         maxTotalExposureUsd, maxCorrelationUsd, globalKillSwitchLossUsd"
+                         maxConsecutiveLosses, cooldownMinutes, maxOrderNotionalUsd"
                     ),
                     None,
                 )),
@@ -220,7 +223,7 @@ pub(crate) async fn handle_risk(
                                 true
                             } else {
                                 let c = core.lock().await;
-                                persist_changes_to_env(&c, p.account_id.as_deref(), &changes)
+                                persist_changes_to_store(&c, p.account_id.as_deref(), &changes)
                             };
                             Ok(with_persisted(
                                 serde_json::to_value(update).unwrap_or(Value::Null),
@@ -266,7 +269,7 @@ pub(crate) async fn handle_risk(
                             true
                         } else {
                             let c = core.lock().await;
-                            persist_exit_changes_to_env(&c, p.account_id.as_deref(), &changes)
+                            persist_exit_changes_to_store(&c, p.account_id.as_deref(), &changes)
                         };
                         Ok(with_persisted(
                             serde_json::to_value(update).unwrap_or(Value::Null),

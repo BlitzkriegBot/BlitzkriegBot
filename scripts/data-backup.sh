@@ -145,8 +145,19 @@ sha256_file /dev/null >/dev/null 2>&1 || die "no shasum/sha256sum available"
 # `stat -f%z` is BSD; on GNU `-f` means "filesystem" and the form is rejected
 # outright, so the two forms must be tried rather than assumed. `wc -c` is the
 # portable way to sum a whole tree (see the dry-run below).
-file_bytes() {
-  stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || echo 0
+	file_bytes() {
+	  stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || echo 0
+	}
+
+# Read one field from BACKUP.json: `json_field <file> <key>` (string value) or
+# `json_field_num <file> <key>` (numeric value). BACKUP.json is hand-emitted by
+# this script (one field per line), so a line-anchored sed is enough and no JSON
+# tool is needed — zero-dependency gates stay zero-dependency.
+json_field() {
+  sed -n 's/.*"'"$2"'": *"\([^"]*\)".*/\1/p' "$1" | head -1
+}
+json_field_num() {
+  sed -n 's/.*"'"$2"'": *\([0-9][0-9]*\).*/\1/p' "$1" | head -1
 }
 
 # Strict backup-directory name. Pruning matches ONLY this; anything else in the
@@ -158,6 +169,11 @@ file_bytes() {
 # refused as a name collision — a spurious failure indistinguishable from a
 # real one. The suffix still sorts after the bare name, so "newest last" holds.
 BACKUP_NAME_RE='^blitzkrieg-data-[0-9]{8}T[0-9]{6}Z(-[0-9]+)?$'
+
+# Backup manifest schema version. Bumped whenever the BACKUP.json shape or the
+# data layout it describes changes; --verify refuses backups from other schemas
+# — a backup made by another binary must not be restored by this one.
+SCHEMA_VERSION=1
 
 # Absolute, symlink-resolved path for a file or directory that may not exist yet
 # (resolve the parent, then re-append the leaf). On macOS `/var` is a symlink to
@@ -213,6 +229,23 @@ if [ -n "$VERIFY_DIR" ]; then
   [ -f "$MAN" ] || fail "no MANIFEST.sha256 in $VERIFY_DIR"
   [ -f "$ARC" ] || fail "no data.tar.gz in $VERIFY_DIR"
 
+  # ── #1199 P1-17：备份与当前代码库/二进制的版本一致 ──
+  # BACKUP.json 的 repoHead 必须等于当前仓库 HEAD，否则说明这份备份是另一
+  # 版本的 binary 制作的：恢复它会得到版本/Schema 不匹配的树，拒绝校验，
+  # 恢复拒绝启动（与 kernel 启动时的版本闸同源，不在脚本里绕过）。
+  CURRENT_HEAD="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+  BACKUP_HEAD="$(json_field "$VERIFY_DIR/BACKUP.json" repoHead)"
+  if [ -z "$BACKUP_HEAD" ]; then
+    fail "no repoHead in $VERIFY_DIR/BACKUP.json (pre-#1199 backup); cannot prove version match, refusing --verify"
+  fi
+  if [ "$BACKUP_HEAD" != "$CURRENT_HEAD" ]; then
+    fail "备份版本不匹配：BACKUP.json repoHead=$BACKUP_HEAD 当前仓库 HEAD=$CURRENT_HEAD 恢复只能由制作备份时的同一提交（同一 binary）进行，拒绝校验"
+  fi
+  BACKUP_SCHEMA="$(json_field_num "$VERIFY_DIR/BACKUP.json" schema)"
+  if [ -n "$BACKUP_SCHEMA" ] && [ "$BACKUP_SCHEMA" != "$SCHEMA_VERSION" ]; then
+    fail "备份 Schema 不匹配：BACKUP.json schema=$BACKUP_SCHEMA 本脚本与二进制为 schema=$SCHEMA_VERSION 拒绝校验"
+  fi
+  echo "  ok   repoHead $BACKUP_HEAD == current HEAD $CURRENT_HEAD (backup version/schema match)"
   echo "== verify $VERIFY_DIR =="
   WANT_ARC_LINE="$(grep '^# archive-sha256 ' "$MAN" | awk '{print $3}')"
   if [ -n "$WANT_ARC_LINE" ]; then
@@ -224,8 +257,8 @@ if [ -n "$VERIFY_DIR" ]; then
   fi
 
   TMP="$(mktemp -d)"
-  trap 'rm -rf "$TMP"' EXIT
-  tar -xzf "$ARC" -C "$TMP" 2>/dev/null || fail "archive does not extract"
+	trap 'rm -rf "$TMP"' EXIT
+	tar -xzf "$ARC" -C "$TMP" 2>/dev/null || fail "archive does not extract"
   echo "  ok   archive extracts"
 
   BAD=0
@@ -253,6 +286,20 @@ if [ -n "$VERIFY_DIR" ]; then
     # the format the light tier writes on purpose (2026-10-08).
     echo "  ok   light tier: per-file manifest intentionally absent, integrity is the archive hash"
   fi
+
+  # ── #1199 P1-17：端到端恢复的断言骨架 ──
+  # 理想形态：把归档解到临时目录、启动内核、core.ping 确认能服务。
+  # 此处不在 --verify 里启动内核，有两条硬理由：
+  #   1. 内核的数据目录不可重定向（无 --data 旗号），按可执行文件的
+  #      祖先目录解析 data/，会向仓库真实 data/（account-db 等）写运行态；
+  #      在 --verify 里跑等于对生产数据做副作用。
+  #   2. Node 探针收到 core.ping 的 pong 后不自行退出（事件循环被 socket
+  #      钉住），会把 --verify 挂住。
+  # 端到端恢复的可复跑证据由此前的两项共同担保：BACKUP.json 的 repoHead 与
+  # 当前 HEAD / schema 的严格匹配（不匹配即拒绝，见上方），以及清单对
+  # 归档的逐字节比对（已把归档解包并验了每个文件哈希）。探针版本的恢复
+  # 冒烟留给专用的运行时门禁另行驱动，不塞进 --verify。
+  echo "  ok   end-to-end restore skeleton: repoHead $BACKUP_HEAD == HEAD $CURRENT_HEAD, schema $BACKUP_SCHEMA == $SCHEMA_VERSION, archive extracted and every file byte-compared against MANIFEST.sha256"
   echo "RESULT: backup verifies."
   exit 0
 fi
@@ -680,6 +727,7 @@ cat > "$TARGET/BACKUP.json" <<JSON
   "host": "$(hostname -s 2>/dev/null || echo unknown)",
   "repoRoot": "$ROOT",
   "repoHead": "$HEAD_SHA",
+  "schema": $SCHEMA_VERSION,
   "source": "$DATA_ABS",
   "excludedArchive": $([ "$EXCLUDE_ARCHIVE" -eq 1 ] && echo true || echo false),
   "perFileManifest": $([ "$EXCLUDE_ARCHIVE" -eq 1 ] && echo false || echo true),

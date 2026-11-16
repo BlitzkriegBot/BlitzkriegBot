@@ -510,10 +510,29 @@ export const usePanelStore = defineStore('panel', () => {
    * computed over the snapshot, so banners (lastError) and order terminal
    * states refresh with no extra code — the two event-shaped readings the
    * stream exists for.
+   *
+   * issue 1199 D10：写回也要过 `displayEpoch` 仲裁 —— 与 refresh() 的
+   * isCurrent（issue 781）同一机制，此前这条路径完全绕开它。网关在处理
+   * `display.account.set` **之前**构建的帧，可能在操作者乐观写
+   * （setDisplayAccount，世代自增）**之后**才送达：直接写回会把旧账户的读数
+   * 闪回新身份之上，下方的 display 镜像甚至会把乐观身份回退成旧账户（账户
+   * 切换回闪）。流没有「请求时刻」可捕获世代，捕获点取上一帧**被接受**时的
+   * 世代（sseEpoch）：仅在「自上一被接受帧后发生过切换 且 该帧仍说着旧身份」
+   * 时丢弃。已携带新身份的帧、以及无切换在途时的一切帧（含内核侧改显示账户
+   * 的采纳路径）照常通过；被丢的帧由下一个 1s tick 或轮询自愈。老内核缺
+   * display 字段（frameDisplay 空）无从判定 —— 放行，与全站 feature-detect
+   * 降级同一规则。
    */
+  let sseEpoch = 0
   function applySseSnapshot(doc: Record<string, unknown>): void {
     if (!hasToken()) return
     const snap = doc as unknown as Snapshot
+    // Epoch arbitration (issue 1199 D10, mirrors refresh()'s isCurrent): an
+    // overtaken frame that still speaks the pre-switch account must not
+    // rewrite `snapshot` or the display mirror below.
+    const frameDisplay = typeof snap.displayAccount === 'string' ? snap.displayAccount : ''
+    if (sseEpoch !== displayEpoch && frameDisplay && frameDisplay !== displayAccount.value) return
+    sseEpoch = displayEpoch
     snapshot.value = snap
     // issue 561 mirror, verbatim from refresh(): the snapshot's top-level
     // displayAccount/displayVenue are the kernel's account facts; a mismatch
@@ -530,6 +549,10 @@ export const usePanelStore = defineStore('panel', () => {
       }
       displayAccount.value = snapDisplay
       displayVenue.value = nextVenue
+      // The adoption above advanced the epoch — re-sync the SSE capture point
+      // so the invariant「每次被接受的帧结束时 sseEpoch === displayEpoch」holds
+      // and the next frame is not misjudged as overtaken by this very bump.
+      sseEpoch = displayEpoch
     }
     const progress = feedProgress(snap.stats?.books, snap.stats?.tops)
     if (progress !== lastProgress) {

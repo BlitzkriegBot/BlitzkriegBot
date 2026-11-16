@@ -34,6 +34,11 @@ pub(crate) async fn handle_blueprint(
             typed(params, |p: BlueprintSaveParams| async move {
                 let receipt = blueprint_save(&p, &core_cfg)
                     .map_err(|e| CoreError::new(CoreErrorCode::InvalidParams, e))?;
+                // Persisted on disk — register the package into the live
+                // dispatch so the new parameters take effect this session
+                // (seconds-to-live, like round_duration.set), instead of
+                // waiting for the next explicit reload or restart.
+                let _ = core.lock().await.reload_lua_packages();
                 Ok::<_, CoreError>(serde_json::to_value(receipt).unwrap_or(Value::Null))
             })
             .await
@@ -308,23 +313,15 @@ fn blueprint_save(
              loader scans must be explicit (overwrite: true)"
         ));
     }
+    let pkg_was_dir = pkg.is_dir();
     std::fs::create_dir_all(&pkg).map_err(|e| format!("cannot create {root}/{name}: {e}"))?;
 
     let blueprint_path = pkg.join("blueprint.json");
     let lua_path = pkg.join("strategy.lua");
-    std::fs::write(&blueprint_path, p.json.as_bytes())
-        .map_err(|e| format!("cannot write {root}/{name}/blueprint.json: {e}"))?;
-    std::fs::write(&lua_path, lua.as_bytes())
-        .map_err(|e| format!("cannot write {root}/{name}/strategy.lua: {e}"))?;
+    let manifest_path = pkg.join("manifest.json");
 
-    // The manifest follows §6.4 exactly: name = directory name (one identity),
-    // sha256 = the digest of the entry file we just wrote (the loader verifies
-    // it and REFUSES the package on any drift), modes = the fixed declaration
-    // the codegen emits inside declare_modes(). The tunables export (用户裁决：
-    // 蓝图生产的策略也要支持进化) carries one entry per numeric anchor the
-    // generated source reads through `__param` — type decimal (they are all
-    // numbers by construction) + default + the ±half-magnitude domain the
-    // compiler computed, so shadow evolution can register and walk them.
+    // Manifest bytes are computed in memory now, so staging below only ever
+    // does pure IO — a staging failure replaces nothing on disk.
     let mut hasher = sha2::Sha256::new();
     hasher.update(lua.as_bytes());
     let digest = format!("{:x}", hasher.finalize());
@@ -367,9 +364,40 @@ fn blueprint_save(
         serde_json::to_string_pretty(&manifest)
             .map_err(|e| format!("manifest serialization failed: {e}"))?
     );
-    let manifest_path = pkg.join("manifest.json");
-    std::fs::write(&manifest_path, manifest_body.as_bytes())
-        .map_err(|e| format!("cannot write {root}/{name}/manifest.json: {e}"))?;
+
+    // Stage every target as an fsynced temp file in the SAME directory before
+    // any target is touched: `rename` on one filesystem is atomic, so the
+    // publish step either lands the whole new package or leaves the old one
+    // byte-for-byte intact (no half-written blueprint/lua/manifest mix).
+    let targets = [
+        (&blueprint_path, p.json.as_bytes()),
+        (&lua_path, lua.as_bytes()),
+        (&manifest_path, manifest_body.as_bytes()),
+    ];
+    let mut staged: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    for (target, bytes) in targets {
+        staged.push((stage_file(target, bytes)?, target.to_path_buf()));
+    }
+
+    // Remember what we displace so a failed publish can restore the previous
+    // package: the new package lands, or the old one still does.
+    let old_contents: Vec<Option<Vec<u8>>> = targets
+        .iter()
+        .map(|(target, _)| std::fs::read(target).ok())
+        .collect();
+    if let Err(e) = publish_staged(&staged, &old_contents) {
+        // publish_staged already rolls back displaced targets and removes
+        // stray temps; this is a defensive last sweep.
+        for (temp, _) in &staged {
+            let _ = std::fs::remove_file(temp);
+        }
+        // A brand-new package directory that never held a saved package is
+        // an empty shell after a failed save — do not litter it.
+        if !pkg_was_dir {
+            let _ = std::fs::remove_dir_all(&pkg);
+        }
+        return Err(e);
+    }
 
     Ok(BlueprintSaveResult {
         name: name.to_string(),
@@ -385,4 +413,58 @@ fn blueprint_save(
         ],
         tunables: tunables.into_iter().map(|t| t.name).collect(),
     })
+}
+
+/// Write `bytes` to a temp file sibling of `target` and fsync it. The temp
+/// lives on the same filesystem as `target`, so a later `rename` is atomic;
+/// the caller swaps it into place with [`publish_staged`] and removes it on
+/// any failure.
+fn stage_file(target: &std::path::Path, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+    use std::io::Write;
+    let mut temp = target.to_path_buf();
+    temp.set_extension("tmp");
+    let mut file =
+        std::fs::File::create(&temp).map_err(|e| format!("cannot stage {temp:?}: {e}"))?;
+    file.write_all(bytes)
+        .map_err(|e| format!("cannot stage {temp:?}: {e}"))?;
+    file.sync_all()
+        .map_err(|e| format!("cannot fsync {temp:?}: {e}"))?;
+    drop(file);
+    Ok(temp)
+}
+
+/// Atomically swap every `temp → target` pair into place. If a later rename
+/// fails, targets already displaced are rolled back (old bytes restored, or
+/// the file removed when it did not exist before) and every stray temp is
+/// removed — the package directory is left exactly as it was.
+fn publish_staged(
+    staged: &[(std::path::PathBuf, std::path::PathBuf)],
+    old_contents: &[Option<Vec<u8>>],
+) -> Result<(), String> {
+    for (i, (temp, target)) in staged.iter().enumerate() {
+        if let Err(e) = std::fs::rename(temp, target) {
+            for j in (0..i).rev() {
+                let (_, tgt) = &staged[j];
+                match &old_contents[j] {
+                    Some(old) => {
+                        let _ = std::fs::write(tgt, old);
+                    }
+                    None => {
+                        let _ = std::fs::remove_file(tgt);
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(temp);
+            for (stray, _) in staged.iter().skip(i + 1) {
+                let _ = std::fs::remove_file(stray);
+            }
+            return Err(format!("cannot publish {target:?}: {e}"));
+        }
+    }
+    // fsync the directory so the renames survive a crash; the rename
+    // atomicity already keeps the package consistent at every instant.
+    if let Some(dir) = staged.first().and_then(|(_, t)| t.parent()) {
+        let _ = std::fs::File::open(dir).and_then(|f| f.sync_all());
+    }
+    Ok(())
 }

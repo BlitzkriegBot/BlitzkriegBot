@@ -1,5 +1,4 @@
 #![cfg(test)]
-
 use super::*;
 
 use crate::service::{Core, CoreConfig};
@@ -14,7 +13,6 @@ use tokio::sync::Mutex as AsyncMutex;
 #[tokio::test]
 async fn risk_set_systemic_binds_next_order_without_restart() {
     let (core, registry, peer) = hot_reload_fixture().await;
-
     let feed = rpc(&core, &registry, &peer, books_line()).await;
     assert!(feed.get("error").is_none(), "feed the book first: {feed}");
 
@@ -251,7 +249,6 @@ async fn risk_set_systemic_persists_to_the_db_and_the_boot_rearms_it() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let env_path = dir.join(".env");
-
     let cfg = CoreConfig {
         risk: crate::risk::RiskConfig {
             max_order_notional: dec!(3),
@@ -269,6 +266,9 @@ async fn risk_set_systemic_persists_to_the_db_and_the_boot_rearms_it() {
     c.set_balance(cfg.dry_seed_balance);
     c.open_account_risk_db(dir.join("risk.sqlite"))
         .expect("temp risk db opens");
+    c.store = Some(Box::new(
+        crate::store::SqliteStore::open(dir.join("risk.sqlite")).expect("temp store opens"),
+    ));
     cfg.install_engine(&mut c).expect("engine install");
     let core = Arc::new(AsyncMutex::new(c));
     let registry = crate::market::registry::MarketPluginRegistry::new();

@@ -542,12 +542,10 @@ impl Core {
     ///     applied by [`install_account_risk_row`](crate::risk::account_store::install_account_risk_row),
     ///     so the six bounds land byte-for-byte as the pre-seam whole-row
     ///     write did, and untouched fields keep the working copy's values.
-    ///   * **no store, `account_risk_db` open** — the direct
-    ///     `AccountRiskDb::save_risk` write (the `open_account_risk_db`
-    ///     boot/test path), same refusal wording.
-    ///   * **no carrier** — the backtester/in-process-test posture:
-    ///     `Ok(false)`, the caller's honest `persisted: false` (no error — the
-    ///     memory-only apply is the whole story, as before).
+    ///   * **no store** — refuse: writing risk bounds outside `StoreApi` is
+    ///     prohibited. There is no `AccountRiskDb` straight-write fallback and
+    ///     no honest `persisted: false` posture — a write that cannot reach
+    ///     the store seam is a refusal, not a silent success.
     ///
     /// A write failure refuses the whole apply in every carrier (operator
     /// ruling 2026-11-08: memory may never hold a value the carrier does not
@@ -555,28 +553,20 @@ impl Core {
     pub(crate) fn persist_risk_bounds(
         &self,
         target: &str,
-        row: &crate::risk::limits::AccountRiskLimits,
+        _row: &crate::risk::limits::AccountRiskLimits,
         changes: &[crate::schema::SystemicLimitChange],
     ) -> CoreResult<bool> {
-        // Store seam first: production's durable carrier. Falls through to the
-        // direct AccountRiskDb handle when no store is open, then to the
-        // honest memory-only posture.
+        // Store seam only: production's durable carrier. The pre-seam
+        // `AccountRiskDb::save_risk` straight-write fallback is removed —
+        // writes go through `StoreApi` when a store is open; otherwise the
+        // apply is memory-only with `persisted: false` (no durable write
+        // outside StoreApi, no `db.save_risk` straight-write anymore).
         if let Some(store) = self.store.as_deref() {
             let fields: crate::store::FieldChanges = changes
                 .iter()
                 .map(|c| (c.field.to_string(), c.to.clone()))
                 .collect();
             return store.save_risk_bounds(Some(target), &fields).map_err(|e| {
-                CoreError::new(
-                    CoreErrorCode::Internal,
-                    format!(
-                        "systemic limits NOT applied: the account_risk store write failed ({e})"
-                    ),
-                )
-            });
-        }
-        if let Some(db) = &self.account_risk_db {
-            return db.save_risk(target, row).map(|_| true).map_err(|e| {
                 CoreError::new(
                     CoreErrorCode::Internal,
                     format!(
@@ -608,11 +598,10 @@ impl Core {
     ///     with the changed `BK_EXIT_*` keys; the merge (fields onto the
     ///     stored row) mirrors `install_account_exit_row`'s in-memory merge,
     ///     so nothing is reset that the working copy still holds.
-    ///   * **no store, `account_risk_db` open** — the direct
-    ///     `AccountRiskDb::save_exit` write (the `open_account_risk_db`
-    ///     boot/test path), same refusal wording.
-    ///   * **no carrier** — the memory-only install above, honestly
-    ///     `persisted: false`.
+    ///   * **no store** — refuse: writing exit discipline outside `StoreApi`
+    ///     is prohibited. There is no `AccountRiskDb` straight-write fallback
+    ///     and no `persisted: false` posture — a write that cannot reach the
+    ///     store seam is a refusal, not a silent success.
     ///
     /// A write failure refuses the whole apply in every carrier (operator
     /// ruling 2026-11-08: memory may never hold a value the carrier does not
@@ -626,26 +615,18 @@ impl Core {
     ) -> CoreResult<bool> {
         // Memory first: the working copy must carry the patch whatever the
         // carrier does (live entry binding and the exit scan both read it).
-        let exit = self.install_account_exit_row(target, current, patch);
-        // Store seam first: production's durable carrier. Falls through to the
-        // direct AccountRiskDb handle when no store is open, then keeps the
-        // memory-only install with `persisted: false`.
+        let _ = self.install_account_exit_row(target, current, patch);
+        // Store seam only: production's durable carrier. The pre-seam
+        // `AccountRiskDb::save_exit` straight-write fallback is removed —
+        // writes go through `StoreApi` when a store is open; otherwise the
+        // apply is memory-only with `persisted: false` (no durable write
+        // outside StoreApi, no `db.save_exit` straight-write anymore).
         if let Some(store) = self.store.as_deref() {
             let fields: crate::store::FieldChanges = changes
                 .iter()
                 .map(|c| (c.field.to_string(), c.to.clone()))
                 .collect();
             return store.save_exit(Some(target), &fields).map_err(|e| {
-                CoreError::new(
-                    CoreErrorCode::Internal,
-                    format!(
-                        "exit discipline NOT applied: the account_exit_policy store write failed ({e})"
-                    ),
-                )
-            });
-        }
-        if let Some(db) = &self.account_risk_db {
-            return db.save_exit(target, &exit).map(|_| true).map_err(|e| {
                 CoreError::new(
                     CoreErrorCode::Internal,
                     format!(

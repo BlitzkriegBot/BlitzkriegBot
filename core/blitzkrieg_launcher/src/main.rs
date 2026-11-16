@@ -190,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Configuration is loaded BEFORE the arguments, because the arguments are
-    // resolved against it (CLI > env > TOML > default).
+    // resolved against it (CLI > env > default).
     let argv: Vec<String> = std::env::args().skip(1).collect();
 
     // #1045: `account unfreeze <id>` — a tiny UDS JSON-RPC client that tells a

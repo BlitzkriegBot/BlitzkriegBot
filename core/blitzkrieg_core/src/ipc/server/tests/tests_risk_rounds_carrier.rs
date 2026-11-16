@@ -47,6 +47,12 @@ async fn risk_set_systemic_and_exit_write_the_db_not_the_env() {
     c.set_balance(cfg.dry_seed_balance);
     c.open_account_risk_db(dir.join("risk.sqlite"))
         .expect("temp risk db opens");
+    // Wire the StoreApi seam so `risk.setSystemic`/`risk.setExit` write through
+    // `StoreApi` (not the removed `AccountRiskDb` straight-write). Same SQLite
+    // file as `account_risk_db` — one carrier, one durable write path.
+    c.store = Some(Box::new(
+        crate::store::SqliteStore::open(dir.join("risk.sqlite")).expect("temp store opens"),
+    ));
     let core = Arc::new(AsyncMutex::new(c));
 
     // risk.setSystemic: the patch lands in the DB row, the receipt reports

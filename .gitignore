@@ -142,6 +142,16 @@ dev-docs/
 
 # Temp files
 *.bak
+
+# One-off PR #1230 merge-conflict resolution scripts (audit #1199: kept on
+# disk, excluded from version control — they write directly into Rust sources)
+fix_all.py
+fix_assembly.py
+fix_final.py
+resolve_all.py
+resolve_assembly.py
+resolve_conflicts.py
+resolve_remaining.py
 *~
 
 # =============================================================================

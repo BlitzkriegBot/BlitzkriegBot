@@ -63,7 +63,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
     let mut spread_arb_bounce_min_pct: Option<Decimal> = None;
     let mut spread_arb_bounce_window_sec: Option<i64> = None;
     // E17/#264: the four engine-level exit knobs, tracked as Option so the
-    // CLI > TOML > default chain can tell "the operator spoke" from "nobody did".
+    // CLI > env > default chain can tell "the operator spoke" from "nobody did".
     let mut exit_take_profit_pct: Option<Decimal> = None;
     let mut exit_stop_loss_pct: Option<Decimal> = None;
     let mut exit_trailing_min_high_pct: Option<Decimal> = None;

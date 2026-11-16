@@ -63,6 +63,8 @@ function boundText(b: RiskBound): string {
 /** 一行的定义：wire 字段名（camelCase）+ 展示元数据 + 整数/小数。 */
 interface RiskRowDef {
   field: string; label: string; unit: string; group: string; int: boolean
+  /** 可选的通俗解释：某一行的含义用户读不出时给一句。 */
+  hint?: string
   bound: () => RiskBound | undefined
 }
 const ROW_DEFS: RiskRowDef[] = [
@@ -71,7 +73,7 @@ const ROW_DEFS: RiskRowDef[] = [
   { field: 'maxPositionSize', label: '单仓上限', unit: '股', group: '账户', int: true, bound: () => riskDoc.value?.account.limits.maxPositionSize },
   { field: 'maxConsecutiveLosses', label: '连亏熔断', unit: '次', group: '账户', int: true, bound: () => riskDoc.value?.account.limits.maxConsecutiveLosses },
   { field: 'cooldownMinutes', label: '熔断冷静期', unit: '分钟', group: '账户', int: true, bound: () => riskDoc.value?.account.limits.cooldownMinutes },
-  { field: 'maxOrderNotionalUsd', label: '单笔下单帽', unit: 'USD', group: '账户', int: false, bound: () => riskDoc.value?.account.limits.maxOrderNotionalUsd },
+  { field: 'maxOrderNotionalUsd', label: '单笔最大限额', unit: 'USD', group: '账户', int: false, hint: '无论策略算出要下多少钱，系统单笔最多按这个金额发单（超出部分静默截断）', bound: () => riskDoc.value?.account.limits.maxOrderNotionalUsd },
 ]
 
 // ── 编辑缓冲 + 保存（risk.setSystemic，只发改动项）──
@@ -354,7 +356,7 @@ onMounted(() => void loadRisk())
               class="flex items-center justify-between gap-3 py-1.5 text-[12px]"
               :class="i === 0 ? '' : 'border-t border-line'"
             >
-              <span class="text-faint-fg">{{ row.label }}</span>
+              <span class="text-faint-fg">{{ row.label }}<span v-if="row.hint" class="ml-1 text-[10.5px] text-faint-fg">{{ row.hint }}</span></span>
               <span class="flex items-center gap-2">
                 <Input
                   v-model="editBufs[row.field]"

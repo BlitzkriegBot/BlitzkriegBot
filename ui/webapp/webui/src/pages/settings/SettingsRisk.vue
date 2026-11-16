@@ -428,10 +428,6 @@ async function rollbackPolicy(): Promise<void> {
               <Input v-model="editMinBudgetUsd" class="mt-1" type="text" placeholder="如 10" @input="editDirty = true" />
             </label>
             <label class="block">
-              <span class="label-micro">最大下注（USD）</span>
-              <Input v-model="editMaxBudgetUsd" class="mt-1" type="text" placeholder="如 100" @input="editDirty = true" />
-            </label>
-            <label class="block">
               <span class="label-micro">最低权益要求（USD）</span>
               <Input v-model="editMinEquityUsd" class="mt-1" type="text" placeholder="如 50" @input="editDirty = true" />
             </label>

@@ -482,6 +482,26 @@ impl RiskGate {
         self.config.systemic.set_account(account_id, limits);
     }
 
+    /// The effective per-order notional cap for ONE account: the account's
+    /// own bound OR'd with the CLI fallback, tighter one wins, `None` = the
+    /// cap is off (unlimited). This is the clamp-side twin of the gate inside
+    /// [`check_with_equity`]: the sizing path reads it to shrink an over-cap
+    /// ticket BEFORE submission, so the gate itself never fires on the
+    /// clamped order (#1199 — silent clamp instead of reject).
+    pub fn per_order_cap(&self, account_id: &str) -> Option<Decimal> {
+        let account_cap = &self.account_limits(account_id).max_order_notional_usd;
+        let cli_cap = self.config.max_order_notional;
+        match (
+            account_cap.is_enabled().then_some(account_cap.value()),
+            (cli_cap > Decimal::ZERO).then_some(cli_cap),
+        ) {
+            (Some(a), Some(c)) => Some(a.min(c)),
+            (Some(a), None) => Some(a),
+            (None, Some(c)) => Some(c),
+            (None, None) => None,
+        }
+    }
+
     pub fn check(&self, req: &OrderRequest) -> CoreResult<()> {
         self.check_with_equity(req, Decimal::ZERO)
     }

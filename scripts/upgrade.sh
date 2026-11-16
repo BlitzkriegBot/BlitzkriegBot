@@ -151,6 +151,13 @@ step "1. production build worktree → source"
 ua_wt_ensure "$repo_root" "$build_wt" "$SRC_SHA"
 git -C "$build_wt" fetch ceer --quiet
 git -C "$build_wt" checkout --detach "$SRC_SHA"
+# #1199 eleventh audit: a clean tree builds a clean version stamp. The detached
+# checkout resets tracked files, but leftover untracked files from a previous
+# build (or a partial run) would make build_info stamp `dirty` into the binary.
+# git clean -fd (NOT -x) removes untracked non-ignored files while keeping the
+# target/ and node_modules caches that make repeated upgrades fast.
+git -C "$build_wt" reset --hard --quiet
+git -C "$build_wt" clean -fd --quiet
 
 step "2. build (release workspace + reference strategy cdylib + panel bin + webui bundle)"
 ( cd "$build_wt" && cargo build --release --workspace --locked )

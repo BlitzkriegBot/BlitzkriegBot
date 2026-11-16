@@ -307,6 +307,14 @@ jobs:
           cd ui/webapp/webui
           npm ci
           npm run build
+      # #1199 eleventh audit: every index.html reference must resolve under
+      # dist/assets/, and the build writes dist/assets/manifest.sha256 (every
+      # asset's sha256). The --verify arm (run at deploy/upgrade time) catches
+      # a dirty or mixed bundle — this step proves the build itself is sound.
+      - name: Dist asset integrity manifest (#1199)
+        run: |
+          node scripts/dist-asset-check.mjs --self-test
+          node scripts/dist-asset-check.mjs
       # The panel's own regression checks: theme follows the system, balance
       # accounting, lifecycle gating, refusal attribution, feed liveness, session
       # recovery, history-tab order/keys/pagination, round-header digit rolling,

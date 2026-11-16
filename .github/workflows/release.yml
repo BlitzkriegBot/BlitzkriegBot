@@ -170,6 +170,13 @@ jobs:
           npm ci
           npm run build
           test -f dist/index.html
+      # #1199 eleventh audit: release assets are produced on a clean CI checkout;
+      # self-test the gate then run the real verdict so a dirty/mixed bundle is
+      # refused before packaging (same shape as ci.yml's panel-check lane).
+      - name: Dist asset integrity manifest (#1199)
+        run: |
+          node scripts/dist-asset-check.mjs --self-test
+          node scripts/dist-asset-check.mjs
 
       - name: Assemble the archive
         env:

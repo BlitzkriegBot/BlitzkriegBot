@@ -447,7 +447,10 @@ async function rollbackPolicy(): Promise<void> {
       class="mt-3.5"
       :version="policyVersion"
       :msg="policyMsg"
+      :busy="policyBusy"
+      :saving="policySaving"
       @dismiss="policyMsg = null"
+      @save="savePolicy"
     >
       <template #rules>
         <div v-if="policySection" class="mt-4">

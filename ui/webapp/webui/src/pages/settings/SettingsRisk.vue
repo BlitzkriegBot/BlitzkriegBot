@@ -227,8 +227,11 @@ function buildSetParams(): ExecutionPolicySetParams {
   if (editMinEquityUsd.value) params.minEquityUsd = editMinEquityUsd.value
   const maxPos = Number(editMaxPositionsPerAsset.value)
   if (Number.isInteger(maxPos) && maxPos > 0) params.maxPositionsPerAsset = maxPos
-  params.rules = editRules.value
   return params
+}
+
+function buildRuleSetParams(): ExecutionPolicySetParams {
+  return { accountId: policyAccountId.value, rules: editRules.value }
 }
 
 /** 保存 = set（内核验证→落盘→重读→审计），成功后重新 get 刷新整个视图。 */
@@ -237,6 +240,22 @@ async function savePolicy(): Promise<void> {
   policyMsg.value = null
   try {
     const res = await api.executionPolicySet(buildSetParams())
+    if (res.error) throw new Error(res.error)
+    editDirty.value = false
+    policyMsg.value = `已保存（${policyAccountId.value}）—— 内核已重读生效。`
+    await loadPolicy()
+  } catch (e) {
+    policyErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    policySaving.value = false
+  }
+}
+
+async function saveRules(): Promise<void> {
+  policySaving.value = true
+  policyMsg.value = null
+  try {
+    const res = await api.executionPolicySet(buildRuleSetParams())
     if (res.error) throw new Error(res.error)
     editDirty.value = false
     policyMsg.value = `已保存（${policyAccountId.value}）—— 内核已重读生效。`
@@ -391,7 +410,7 @@ async function rollbackPolicy(): Promise<void> {
     </Card>
 
     <!-- 生效风控读数（只读，boot 快照）+ 就地可编辑的账户生效参数（#params）。 -->
-    <SettingsRiskLimits>
+    <SettingsRiskLimits @save-policy="savePolicy">
       <template #params>
         <div v-if="policySection" class="mt-3 border-t border-line pt-3">
           <div class="label-micro">账户生效参数（execution_policy · 可编辑）</div>
@@ -431,7 +450,7 @@ async function rollbackPolicy(): Promise<void> {
               <Button variant="outline" size="sm" :disabled="policyBusy" @click="resetToDefaultsLocal">
                 恢复 defaults 后自定义
               </Button>
-              <span v-if="editDirty" class="text-[11px] text-primary">有未保存的修改 —— 到下方保存条落盘</span>
+              <span v-if="editDirty" class="text-[11px] text-primary">有未保存的修改 —— 点上方「保存改动」落盘</span>
             </div>
           </div>
         </div>
@@ -442,7 +461,7 @@ async function rollbackPolicy(): Promise<void> {
     </SettingsRiskLimits>
 
     <!-- 执行策略规则：编辑器（列表 + 构建器 + 预览 + 保存条）——同一个账户段
-         的另一半，保存按钮在这里，把参数与规则一并写回。 -->
+         的另一半 —— 规则卡只管规则，保存只写 rules；账户生效参数由上方风控卡的「保存改动」一并保存。 -->
     <SettingsExecutionPolicy
       class="mt-3.5"
       :version="policyVersion"
@@ -450,7 +469,7 @@ async function rollbackPolicy(): Promise<void> {
       :busy="policyBusy"
       :saving="policySaving"
       @dismiss="policyMsg = null"
-      @save="savePolicy"
+      @save="saveRules"
     >
       <template #rules>
         <div v-if="policySection" class="mt-4">
@@ -461,7 +480,7 @@ async function rollbackPolicy(): Promise<void> {
             :busy="policyBusy"
             :saving="policySaving"
             @touch="editDirty = true"
-            @save="savePolicy"
+            @save="saveRules"
             @rollback="rollbackPolicy"
             @invalid="policyMsg = $event"
           />

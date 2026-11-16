@@ -19,6 +19,8 @@ import {
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
+
+const emit = defineEmits<{ 'save-policy': [] }>()
 import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
 import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
@@ -288,6 +290,10 @@ async function saveRisk(): Promise<void> {
       exitReceipt.value = res
     }
     await loadRisk()
+    // issue 1199: the account-level execution_policy params live in this card's
+    // #params slot but are owned by the parent. After the limits land, let the
+    // parent persist them too — one save button, one save action.
+    emit('save-policy')
   } catch (e) {
     riskErr.value = e instanceof Error ? e.message : String(e)
   } finally {

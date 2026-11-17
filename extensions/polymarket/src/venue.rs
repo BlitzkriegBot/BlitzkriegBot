@@ -409,9 +409,12 @@ async fn actor_loop<S: alloy::signers::Signer + Clone + Send + Sync + 'static>(
     mut cmd_rx: mpsc::Receiver<VenueCmd>,
     events: mpsc::Sender<VenueEvent>,
 ) {
-    // The owner identity the F2 fill filters compare venue `owner` fields
-    // against. The REST trade rows carry the funder as a checksummed address;
-    // compare case-insensitively so either case matches.
+    // The fill filters' second accepted owner proof. `owner` fields on BOTH
+    // channels are API keys (SDK: `pub type ApiKey = Uuid`; the address lives
+    // in the REST row's separate `maker_address` field), but the funder
+    // checksum stays in the filter as belt-and-braces: a leg belongs to us
+    // when its owner names our API key OR our funder, and a stranger's leg
+    // names neither. Compared case-insensitively.
     let funder_checksum = funder.to_checksum(None);
     // User-WS stream (best effort: skip when no markets are provided).
     if !markets.is_empty()
@@ -745,7 +748,55 @@ async fn sdk_snapshot(
         .collect();
 
     let page = l2_get_json(http, host_url, creds, signer_checksum, "/data/trades").await?;
+    let our_key = creds.key().to_string();
+    let (trades, unattributed) = parse_trades(&page, &our_key, funder_checksum);
+    if unattributed > 0 {
+        // Rare by construction once attribution matches the venue's owner
+        // spelling (#1251): a dropped leg means the venue semantics moved
+        // again. Like sweep failures this prints every sweep — an attribution
+        // anomaly is not the healthy path the summary discipline protects.
+        eprintln!(
+            "polymarket-extension: sweep: {unattributed} maker leg(s) proved no ownership \
+             (owner matched neither our API key nor the funder) — dropped, not booked"
+        );
+    }
+    Ok((open_ids, trades))
+}
+
+/// A leg proves ownership by naming our API key or our funder address in its
+/// `owner` field. Both channels' `owner` values are API keys (SDK
+/// `pub type ApiKey = Uuid`); the funder stays accepted as a second proof so
+/// the filter survives either venue spelling (#1251). Case-insensitive.
+fn leg_is_ours(owner: Option<&str>, our_key: &str, funder_checksum: &str) -> bool {
+    owner
+        .is_some_and(|o| o.eq_ignore_ascii_case(our_key) || o.eq_ignore_ascii_case(funder_checksum))
+}
+
+/// Parse one `/data/trades` page into per-order fill rows. Pure (no transport),
+/// so the F2 attribution rules are unit-testable.
+///
+/// F2: every leg must PROVE it belongs to this account before it may reach the
+/// fill ledger. The authenticated /data/trades response still contains trades
+/// we only participated in as makers — with the FULL trade attached (the taker
+/// leg and every maker leg, each carrying its `owner`). Booking the taker leg
+/// or a stranger's maker leg books the counterparty's flow: the audit's
+/// counterexample turns one 10-share position into 100 shares of phantom sale
+/// proceeds.
+///
+/// The taker leg is ours when the venue's `trader_side` says so — the
+/// trade-level `owner` is NOT consulted (REST rows carry no `trade_owner`,
+/// and what party the trade-level `owner` names is not proven, so booking on
+/// it could book the counterparty's flow). A maker leg is ours only when ITS
+/// owner names our API key or our funder — the trade-level owner says nothing
+/// about the leg. Legs that prove nothing are DROPPED, not queued as unknown
+/// fills, and COUNTED so the caller can surface the incomplete sweep (#1251).
+fn parse_trades(
+    page: &serde_json::Value,
+    our_key: &str,
+    funder_checksum: &str,
+) -> (Vec<VenueTradeInfo>, usize) {
     let mut trades = Vec::new();
+    let mut unattributed = 0usize;
     for t in as_slice(page.get("data")) {
         if str_field(t, "status").is_some_and(|s| s.eq_ignore_ascii_case("FAILED")) {
             continue;
@@ -764,21 +815,8 @@ async fn sdk_snapshot(
         let ts_ms = ts_ms.saturating_mul(1000);
         let trade_id = str_field(t, "id").unwrap_or_default().to_string();
 
-        // F2: every leg must PROVE it belongs to this account before it may
-        // reach the fill ledger. The authenticated /data/trades response still
-        // contains trades we only participated in as makers — with the FULL
-        // trade attached (the taker leg and every maker leg, each carrying its
-        // `owner`). Booking the taker leg or a stranger's maker leg books the
-        // counterparty's flow: the audit's counterexample turns one 10-share
-        // position into 100 shares of phantom sale proceeds.
-        // The taker leg is ours when the row's owner field names our funder
-        // (`owner`/`trade_owner`), or when the venue's `trader_side` says we
-        // were the taker. An unprovable leg is DROPPED, not queued as an
-        // unknown fill.
-        let taker_ours = str_field(t, "owner")
-            .is_some_and(|o| o.eq_ignore_ascii_case(funder_checksum))
-            || str_field(t, "trade_owner").is_some_and(|o| o.eq_ignore_ascii_case(funder_checksum))
-            || str_field(t, "trader_side").is_some_and(|s| s.eq_ignore_ascii_case("TAKER"));
+        let taker_ours =
+            str_field(t, "trader_side").is_some_and(|s| s.eq_ignore_ascii_case("TAKER"));
         if taker_ours
             && let (Some(taker_id), Some(size), Some(price)) = (
                 str_field(t, "taker_order_id"),
@@ -799,9 +837,8 @@ async fn sdk_snapshot(
             });
         }
         for m in as_slice(t.get("maker_orders")) {
-            // A maker leg is ours only when ITS owner names our funder; the
-            // trade-level owner is the taker's and says nothing about the leg.
-            if !str_field(m, "owner").is_some_and(|o| o.eq_ignore_ascii_case(funder_checksum)) {
+            if !leg_is_ours(str_field(m, "owner"), our_key, funder_checksum) {
+                unattributed += 1;
                 continue;
             }
             let Some(order_id) = str_field(m, "order_id") else {
@@ -829,7 +866,17 @@ async fn sdk_snapshot(
             });
         }
     }
-    Ok((open_ids, trades))
+    (trades, unattributed)
+}
+
+/// The sweep's URL join. The validated base keeps its trailing slash — that is
+/// the SDK client's contract — but our sweep paths carry their own leading
+/// slash, and joining both verbatim produced
+/// `https://clob.polymarket.com//data/orders` (#1250), a malformed URL the
+/// venue intermittently refused. The base is trimmed here; every path passed
+/// to this helper starts with `/`.
+fn sweep_url(host_url: &str, path: &str) -> String {
+    format!("{}{path}", host_url.trim_end_matches('/'))
 }
 
 /// One L2-signed GET against the CLOB, returning the raw JSON body. The header
@@ -847,7 +894,7 @@ async fn l2_get_json(
     path: &str,
 ) -> CoreResult<serde_json::Value> {
     let ts = http
-        .get(format!("{host_url}time"))
+        .get(sweep_url(host_url, "/time"))
         .send()
         .await
         .map_err(|e| CoreError::new(CoreErrorCode::VenueError, format!("/time fetch: {e}")))?
@@ -889,7 +936,7 @@ async fn l2_get_json(
     );
 
     let resp = http
-        .get(format!("{host_url}{path}"))
+        .get(sweep_url(host_url, path))
         .headers(headers)
         .send()
         .await
@@ -1103,3 +1150,126 @@ pub fn map_sdk_err(raw: &str) -> CoreError {
 // Keep Kind referenced so the generic bound stays documented for live wiring.
 #[allow(dead_code)]
 fn _kind_is_used<K: Kind>(_: &K) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    const OUR_KEY: &str = "0e3c0e5b-1a2b-3c4d-8e9f-aabbccddeeff";
+    const FUNDER: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const STRANGER: &str = "99d1d1d1-2222-3333-4444-555566667777";
+
+    // #1250: the validated base ends with `/` and sweep paths carry their own
+    // leading slash — the join must not produce a double slash.
+    #[test]
+    fn sweep_url_never_doubles_the_slash() {
+        assert_eq!(
+            sweep_url("https://clob.polymarket.com/", "/data/orders"),
+            "https://clob.polymarket.com/data/orders"
+        );
+        // A base without the trailing slash joins the same way.
+        assert_eq!(
+            sweep_url("https://clob.polymarket.com", "/data/orders"),
+            "https://clob.polymarket.com/data/orders"
+        );
+    }
+
+    // #1251: a leg proves ownership via our API key or our funder; a
+    // stranger's key and a missing owner prove nothing.
+    #[test]
+    fn leg_is_ours_accepts_key_or_funder_only() {
+        assert!(leg_is_ours(Some(OUR_KEY), OUR_KEY, FUNDER));
+        // Case drift must not break the match.
+        assert!(leg_is_ours(
+            Some("0E3C0E5B-1A2B-3C4D-8E9F-AABBCCDDEEFF"),
+            OUR_KEY,
+            FUNDER
+        ));
+        assert!(leg_is_ours(Some(FUNDER), OUR_KEY, FUNDER));
+        assert!(!leg_is_ours(Some(STRANGER), OUR_KEY, FUNDER));
+        assert!(!leg_is_ours(None, OUR_KEY, FUNDER));
+    }
+
+    // #1251: the REST attribution rules — taker via `trader_side`, maker legs
+    // via their own `owner`, unprovable legs dropped and COUNTED.
+    #[test]
+    fn parse_trades_attribution() {
+        let page = serde_json::json!({ "data": [
+            // FAILED rows never parse.
+            { "id": "t0", "status": "FAILED", "side": "BUY", "match_time": "1" },
+            // We were the taker: the taker leg books even though the
+            // trade-level owner names a stranger; one maker leg is ours by
+            // API key, one by funder address, two prove nothing.
+            {
+                "id": "t1", "status": "MATCHED", "side": "SELL", "match_time": "100",
+                "trader_side": "TAKER", "owner": STRANGER,
+                "taker_order_id": "ord-taker", "size": "10", "price": "0.5",
+                "asset_id": "111", "maker_orders": [
+                    { "order_id": "ord-ours", "owner": OUR_KEY, "matched_amount": "4",
+                      "price": "0.5", "asset_id": "111" },
+                    { "order_id": "ord-funder", "owner": FUNDER, "matched_amount": "2",
+                      "price": "0.5", "asset_id": "111" },
+                    { "order_id": "ord-stranger", "owner": STRANGER, "matched_amount": "94",
+                      "price": "0.5", "asset_id": "111" },
+                    { "order_id": "ord-ownerless", "matched_amount": "1",
+                      "price": "0.5", "asset_id": "111" }
+                ]
+            },
+            // We were the maker: trader_side=MAKER must NOT book the taker leg.
+            {
+                "id": "t2", "status": "MATCHED", "side": "BUY", "match_time": 200,
+                "trader_side": "MAKER", "owner": STRANGER,
+                "taker_order_id": "ord-taker2", "size": "7", "price": "0.3",
+                "asset_id": "222", "maker_orders": [
+                    { "order_id": "ord-ours2", "owner": OUR_KEY, "matched_amount": "7",
+                      "price": "0.3", "asset_id": "222" }
+                ]
+            }
+        ]});
+        let (trades, unattributed) = parse_trades(&page, OUR_KEY, FUNDER);
+        assert_eq!(
+            unattributed, 2,
+            "stranger + ownerless maker legs are counted"
+        );
+        assert_eq!(
+            trades.len(),
+            4,
+            "taker(t1) + 2 maker legs(t1) + 1 maker leg(t2)"
+        );
+
+        let taker = trades.iter().find(|t| t.maker == Some(false)).unwrap();
+        assert_eq!(taker.venue_order_id, "ord-taker");
+        assert_eq!(taker.trade_id, "t1");
+        assert_eq!(taker.side, Side::Sell);
+        assert_eq!(taker.ts_ms, 100_000);
+
+        let ours = trades
+            .iter()
+            .find(|t| t.venue_order_id == "ord-ours")
+            .unwrap();
+        assert_eq!(ours.maker, Some(true));
+        assert_eq!(ours.side, Side::Buy, "our maker leg is the trade's inverse");
+        assert_eq!(ours.size, dec!(4));
+        assert_eq!(ours.trade_id, "t1:ord-ours");
+
+        let by_funder = trades
+            .iter()
+            .find(|t| t.venue_order_id == "ord-funder")
+            .expect("funder-address proof still books the leg");
+        assert_eq!(by_funder.size, dec!(2));
+
+        assert!(
+            !trades.iter().any(|t| t.venue_order_id == "ord-taker2"),
+            "trader_side=MAKER: the taker leg must not book"
+        );
+        assert_eq!(
+            trades
+                .iter()
+                .find(|t| t.trade_id == "t2:ord-ours2")
+                .unwrap()
+                .ts_ms,
+            200_000
+        );
+    }
+}

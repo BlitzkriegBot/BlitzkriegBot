@@ -996,9 +996,16 @@ impl Policy {
     /// 存伪账户 `defaults` 名下）。boot 时把 SQL 行作为**最上层**叠加：
     /// 代码默认 < TOML(已退役) < env(旧部署兼容) < SQL。校验失败返回 Err
     /// （fail-closed——一段写坏的策略不许静默失效，调用方拒绝启动）。
+    ///
+    /// #1253 self-heal: a SQLite `defaults` row that stored a cap above the
+    /// sanity ceiling (e.g. the 1.02e16 production typo) must not brick the
+    /// kernel — there is no UI to reach without a running kernel. The
+    /// offending cap(s) are clamped to `MAX_BUDGET_CEILING_USD`, persisted back
+    /// to the database, and boot continues with a warn.
     pub fn overlay_sql_settings(
         &mut self,
         settings: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+        risk_db: Option<&crate::risk::account_store::AccountRiskDb>,
     ) -> Result<(), String> {
         fn lookup_of<'a>(
             keys: &'a std::collections::BTreeMap<String, String>,
@@ -1015,6 +1022,36 @@ impl Policy {
         {
             let env = lookup_of(keys);
             apply_env(&mut self.defaults, None, &env)?;
+            // #1253 self-heal: clamp any cap above the ceiling before
+            // validating, so a poisoned defaults row cannot refuse boot.
+            let ceiling = MAX_BUDGET_CEILING_USD;
+            let mut healed: Vec<(&str, Decimal)> = Vec::new();
+            if self.defaults.max_budget_usd > ceiling {
+                healed.push(("max_budget_usd", self.defaults.max_budget_usd));
+                self.defaults.max_budget_usd = ceiling;
+            }
+            if self.defaults.min_equity_usd > ceiling {
+                healed.push(("min_equity_usd", self.defaults.min_equity_usd));
+                self.defaults.min_equity_usd = ceiling;
+            }
+            if !healed.is_empty() {
+                let ceiling_str = ceiling.to_string();
+                for (key, old) in &healed {
+                    if let Some(risk_db) = risk_db {
+                        if let Err(e) = risk_db.save_setting("defaults", key, Some(&ceiling_str)) {
+                            tracing::warn!(
+                                "issue 1253 self-heal: could not persist defaults.{key} clamp \
+                                 {old} → {ceiling} ({e})"
+                            );
+                        } else {
+                            tracing::warn!(
+                                "issue 1253 self-heal: SQLite defaults.{key} was {old} above the \
+                                 $1,000,000 sanity ceiling — clamped to {ceiling} and persisted"
+                            );
+                        }
+                    }
+                }
+            }
             self.defaults.validate("[defaults] (SQLite)")?;
         }
         for (id, keys) in settings {

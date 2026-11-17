@@ -638,11 +638,12 @@ impl Core {
                 .load_settings()
                 .unwrap_or_else(|e| panic!("refusing to boot: account_settings read failed ({e})"))
         });
+        let risk_db = sqlite.as_ref().map(|s| s.risk_db());
         let execution_policy = {
             let policy = Self::load_execution_policy_at_boot(&config);
             match (policy, sql_policy_settings.as_ref()) {
                 (Some(mut p), Some(settings)) => {
-                    if let Err(reason) = p.overlay_sql_settings(settings) {
+                    if let Err(reason) = p.overlay_sql_settings(settings, risk_db) {
                         panic!(
                             "refusing to boot: the SQLite policy sections do not validate \
                              ({reason}) — fix the rows and restart (fail-closed)"
@@ -1674,7 +1675,6 @@ impl Core {
         } else {
             Self::shadow_switches_from_env(self.config.env_file_path.as_deref())?
         };
-
         if enabled {
             self.shadow_evolution
                 .enable(blitzkrieg_market_api::net::now_ms() as i64);

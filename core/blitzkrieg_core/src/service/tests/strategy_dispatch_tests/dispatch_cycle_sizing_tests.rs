@@ -791,7 +791,11 @@ fn a_gate_exemption_never_bypasses_a_safety_boundary() {
     // the kill switch or the global capacity ceiling — those live in
     // `Core::place`, far below the entry gates.
     // The risk gate snapshots `config.risk` at construction, so the per-order
-    // notional ceiling is set here: 1 USD vs the 0.44 x 10 = 4.40 order.
+    // notional ceiling is set here. #1258: an over-cap entry is CLAMPED down
+    // to the cap (floored to the 2-dp grid) BEFORE Gate 2 runs, so this arm's
+    // refusal needs a cap that cannot afford one 2-dp share — 0.002 < 0.39 ×
+    // 0.01 — the clamp yields zero, the over-cap 3.90 request reaches Gate 2
+    // intact and is refused.
     let mut c = core_with_declared_dips_and_risk(
         HashMap::new(),
         &[("all_in", &["BTC"])],
@@ -800,7 +804,7 @@ fn a_gate_exemption_never_bypasses_a_safety_boundary() {
         RiskConfig {
             systemic: crate::risk::limits::SystemicRiskLimits {
                 account: crate::risk::limits::AccountRiskLimits {
-                    max_order_notional_usd: Bound::new(dec!(1), LimitSource::Flag),
+                    max_order_notional_usd: Bound::new(dec!(0.002), LimitSource::Flag),
                     ..Default::default()
                 },
                 accounts: Default::default(),

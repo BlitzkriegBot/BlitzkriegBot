@@ -587,6 +587,33 @@ impl Core {
                 self.stats.place_rejected += 1;
                 continue;
             }
+            // #1199: silent clamp to the account's per-order notional cap —
+            // an over-cap ticket is SIZED DOWN to the cap instead of refused.
+            // Rationale: a strategy that wants 8.60 on a 6.00 cap still
+            // trades at 6.00; refusing outright throws the opportunity away.
+            // This runs BEFORE `from_request`, so Gate 2's per-order cap arm
+            // (`check_with_equity` inside `process_intent`) sees the already
+            // clamped request and never fires on it (#1258 — the clamp used
+            // to sit after the Rejected `continue`, where Gate 2's own
+            // refusal made it unreachable dead code).
+            if let Some(cap) = self.risk.per_order_cap(req.account_id.as_str()) {
+                let notional = req.price * req.size;
+                if notional > cap {
+                    // Floor to the venue's 2-dp share grid: truncation past
+                    // the 2nd decimal costs at most 0.01 share and can never
+                    // round UP past the cap.
+                    let scaled = (cap / req.price) * rust_decimal::Decimal::from(100);
+                    let capped = scaled.trunc() / rust_decimal::Decimal::from(100);
+                    if capped > rust_decimal::Decimal::ZERO && capped < req.size {
+                        tracing::warn!(target: "strategy",
+                            strategy = %name,
+                            account = %req.account_id,
+                            "order notional {notional} clamped to per-order cap {cap} (size {} → {capped})",
+                            req.size);
+                        req.size = capped;
+                    }
+                }
+            }
             let intent = crate::arbitration::StrategyIntent::from_request(req);
             let outcome = {
                 let round_tokens = self
@@ -693,30 +720,6 @@ impl Core {
                 continue;
             }
             let mut req = intent.request;
-            // #1199: silent clamp to the account's per-order notional cap —
-            // an over-cap ticket is SIZED DOWN to the cap instead of refused.
-            // Rationale: a strategy that wants 8.60 on a 6.00 cap still
-            // trades at 6.00; refusing outright throws the opportunity away.
-            // The clamp runs BEFORE Gate 2 (`check_with_equity` inside
-            // `place_gated`), so the gate never fires on the clamped order.
-            if let Some(cap) = self.risk.per_order_cap(req.account_id.as_str()) {
-                let notional = req.price * req.size;
-                if notional > cap {
-                    // Floor to the venue's 2-dp share grid: truncation past
-                    // the 2nd decimal costs at most 0.01 share and can never
-                    // round UP past the cap.
-                    let scaled = (cap / req.price) * rust_decimal::Decimal::from(100);
-                    let capped = scaled.trunc() / rust_decimal::Decimal::from(100);
-                    if capped > rust_decimal::Decimal::ZERO && capped < req.size {
-                        tracing::warn!(target: "strategy",
-                            strategy = %name,
-                            account = %req.account_id,
-                            "order notional {notional} clamped to per-order cap {cap} (size {} → {capped})",
-                            req.size);
-                        req.size = capped;
-                    }
-                }
-            }
             // E26 (§4.2): a systemic shrink rides the decision as MODIFIED —
             // the audit names the bound that bit; here the reduced size is
             // what gets placed. The pipeline never rewrote the request (the
@@ -1108,6 +1111,28 @@ impl Core {
                 self.stats.place_rejected += 1;
                 continue;
             }
+            // #1199: silent clamp to the per-order notional cap — the SAME
+            // seam as the real cycle above, for the same reason: it must run
+            // BEFORE `from_request` so Gate 2 sees the clamped request
+            // (#1258 — dead code where it sat after the Rejected `continue`).
+            if let Some(cap) = self.risk.per_order_cap(req.account_id.as_str()) {
+                let notional = req.price * req.size;
+                if notional > cap {
+                    // Floor to the venue's 2-dp share grid: truncation past
+                    // the 2nd decimal costs at most 0.01 share and can never
+                    // round UP past the cap.
+                    let scaled = (cap / req.price) * rust_decimal::Decimal::from(100);
+                    let capped = scaled.trunc() / rust_decimal::Decimal::from(100);
+                    if capped > rust_decimal::Decimal::ZERO && capped < req.size {
+                        tracing::warn!(target: "strategy",
+                            strategy = %name,
+                            account = %req.account_id,
+                            "order notional {notional} clamped to per-order cap {cap} (size {} → {capped})",
+                            req.size);
+                        req.size = capped;
+                    }
+                }
+            }
             let intent = crate::arbitration::StrategyIntent::from_request(req);
             let outcome = {
                 let round_tokens = self
@@ -1198,30 +1223,6 @@ impl Core {
                 continue;
             }
             let mut req = intent.request;
-            // #1199: silent clamp to the account's per-order notional cap —
-            // an over-cap ticket is SIZED DOWN to the cap instead of refused.
-            // Rationale: a strategy that wants 8.60 on a 6.00 cap still
-            // trades at 6.00; refusing outright throws the opportunity away.
-            // The clamp runs BEFORE Gate 2 (`check_with_equity` inside
-            // `place_gated`), so the gate never fires on the clamped order.
-            if let Some(cap) = self.risk.per_order_cap(req.account_id.as_str()) {
-                let notional = req.price * req.size;
-                if notional > cap {
-                    // Floor to the venue's 2-dp share grid: truncation past
-                    // the 2nd decimal costs at most 0.01 share and can never
-                    // round UP past the cap.
-                    let scaled = (cap / req.price) * rust_decimal::Decimal::from(100);
-                    let capped = scaled.trunc() / rust_decimal::Decimal::from(100);
-                    if capped > rust_decimal::Decimal::ZERO && capped < req.size {
-                        tracing::warn!(target: "strategy",
-                            strategy = %name,
-                            account = %req.account_id,
-                            "order notional {notional} clamped to per-order cap {cap} (size {} → {capped})",
-                            req.size);
-                        req.size = capped;
-                    }
-                }
-            }
             if let crate::arbitration::Decision::Modified {
                 modification: crate::arbitration::Modification::SizeReduced { approved, .. },
                 ..

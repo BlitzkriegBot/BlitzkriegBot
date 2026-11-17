@@ -98,18 +98,77 @@ fn rejection_causes_report_position_cap_bucket() {
 }
 
 #[test]
-fn rejection_causes_report_per_order_cap_risk_bucket() {
-    // E9-c: a Risk::check per-order-cap rejection inside place() is
-    // bucketed as risk.perOrderCap (previously the reason was dropped).
+fn an_over_cap_entry_is_clamped_to_the_cap_and_approved() {
+    // #1258: the #1199 silent clamp used to sit AFTER the arbitration
+    // Rejected `continue`, where Gate 2's own per-order-cap refusal made it
+    // unreachable dead code — every over-cap entry was rejected ACCOUNT_LIMIT
+    // and the clamp never ran. Moved before `from_request`, Gate 2 now sees
+    // the already clamped request: the 3.90 entry (0.39 × 10; the strategy
+    // prices at 88% of the 0.44 mid) on a 1.00 cap is sized down to
+    // floor(1.00/0.39, 2dp) = 2.56 shares and APPROVED.
     let mut c = core_with_engine(HashMap::new());
     let now = 1_000_000i64;
+    let dir = std::env::temp_dir().join(format!("bk-1258-clamp-{}", std::process::id()));
+    c.intent_audit.path = dir.join("intents.jsonl");
+    let _ = std::fs::remove_file(&c.intent_audit.path);
     feed_entry_setup(&mut c, now);
     c.risk_config_mut().systemic.account.max_order_notional_usd =
         Bound::new(dec!(1), LimitSource::Flag);
     assert_eq!(
         c.engine_evaluate(now + 12_000),
+        1,
+        "the clamped entry must place, not be refused"
+    );
+    let orders = c.list_orders();
+    let o = orders.first().expect("the clamped entry is on the OME");
+    assert_eq!(o.size, dec!(2.56), "size == cap floored to the 2-dp grid");
+    assert_eq!(o.price, dec!(0.39));
+    let notional = o.price * o.size;
+    assert!(
+        notional <= dec!(1),
+        "clamped notional {notional} must not exceed the cap"
+    );
+    let stats = c.strategy_stats();
+    let s = strategy_entry(&stats, "spread_arb");
+    assert_eq!(s["ordersPlaced"], 1);
+    assert_eq!(s["ordersRejected"], 0);
+
+    // The intent audit carries the CLAMPED request as an APPROVED decision —
+    // the intents.jsonl sample #1258 asks for (previously these were
+    // REJECTED ACCOUNT_LIMIT lines and the APPROVED-clamped shape never
+    // existed).
+    let audit = std::fs::read_to_string(&c.intent_audit.path).expect("audit written");
+    let rec: serde_json::Value = audit
+        .lines()
+        .last()
+        .expect("one audit record")
+        .parse()
+        .expect("json record");
+    assert_eq!(rec["decision"]["status"], "APPROVED", "{audit}");
+    assert_eq!(
+        rec["intent"]["size"], 2.56,
+        "the audited intent is the clamped one"
+    );
+    assert_eq!(rec["strategy"], "spread_arb");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rejection_causes_report_per_order_cap_risk_bucket() {
+    // E9-c: a per-order-cap refusal that survives the clamp is bucketed as
+    // risk.perOrderCap. The clamp floors the size to the venue's 2-dp share
+    // grid, so a cap that cannot afford ONE share at 2dp (0.002 < 0.39 ×
+    // 0.01) cannot be clamped — the over-cap request reaches Gate 2 and is
+    // refused, and the bucket must name the cap that bit.
+    let mut c = core_with_engine(HashMap::new());
+    let now = 1_000_000i64;
+    feed_entry_setup(&mut c, now);
+    c.risk_config_mut().systemic.account.max_order_notional_usd =
+        Bound::new(dec!(0.002), LimitSource::Flag);
+    assert_eq!(
+        c.engine_evaluate(now + 12_000),
         0,
-        "1 USD per-order cap must reject the 4.30 entry"
+        "a cap below one 2-dp share must reject the 3.90 entry"
     );
     let stats = c.strategy_stats();
     let s = strategy_entry(&stats, "spread_arb");

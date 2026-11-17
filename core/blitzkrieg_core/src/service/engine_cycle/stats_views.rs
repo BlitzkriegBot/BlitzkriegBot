@@ -260,6 +260,19 @@ impl Core {
             let Some(name) = row.get("name").and_then(|v| v.as_str()).map(String::from) else {
                 continue;
             };
+            // Per-account enablement: the (account, strategy) enablement set
+            // (account.list -> Account.strategies) is the only truth for "is
+            // this strategy enabled on THIS account". The global master switch
+            // (`enabled_strategy_names`) is process-wide and must not be
+            // reported as per-account enabled — that was the split-brain where
+            // a default account with 0 enabled strategies showed every
+            // registered strategy as enabled via engine.stats.
+            let account_enabled = self
+                .accounts()
+                .account(&crate::account::AccountId::from(account))
+                .map(|a| a.strategies.iter().any(|s| s.as_str() == name))
+                .unwrap_or(false);
+            row["enabled"] = serde_json::json!(account_enabled);
             // The arb totals the GLOBAL row just carried (the arb unit's whole
             // fold across its leg accounts); read before any slice overwrites
             // the row, and re-attached below so every account's page shows the

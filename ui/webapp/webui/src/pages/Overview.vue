@@ -33,6 +33,19 @@ const store = usePanelStore()
 
 const snap = computed(() => store.snapshot)
 const strategyRows = computed(() => store.strategyRows)
+// 当前账户的启用策略数：口径唯一化，只认 account.list 行的 strategies 集合
+//（账本真值，issue 552 裁决），不跟随全局开关，也不把「已注册策略总数」
+// 误报成「该账户启用策略数」。与 Strategies.vue 的 isAccountEnabled 同源。
+const accounts = computed(() => store.accounts)
+const activeAccountId = computed(() => store.activeAccount)
+const activeAccountEnabledStrategyCount = computed(() => {
+  const id = activeAccountId.value
+  if (!id) return 0
+  const row = accounts.value.find((a) => a.id === id)
+  const set = row?.strategies
+  if (!Array.isArray(set)) return 0 // 老内核缺字段：按 0 诚实缺失，不借全局开关
+  return set.length
+})
 
 // ── issue 684 过期持仓清除（positions.force_close）──────────────────────────
 // 场地 updown 列表只载未来 ~20h 的未到期轮次，已过期 conditionId 的结算裁决
@@ -363,11 +376,7 @@ const unrealized = computed(() =>
  */
 const needsStrategyHint = computed(() => {
   if (snap.value === null) return false
-  const rows = strategyRows.value
-  const anyOn = rows.some((r) =>
-    Array.isArray(r.accounts) ? r.accounts.length > 0 : Boolean(r.enabled),
-  )
-  return !anyOn
+  return activeAccountEnabledStrategyCount.value === 0
 })
 
 /**
@@ -598,7 +607,7 @@ const needsStrategyHint = computed(() => {
       <Card>
         <CardHeader label="策略拒单原因分布">
           <template #action>
-            <Badge variant="default"><RollingNumber :value="strategyRows.length" /> 策略</Badge>
+            <Badge variant="default"><RollingNumber :value="activeAccountEnabledStrategyCount" /> 策略</Badge>
           </template>
         </CardHeader>
         <RejectionChart :rows="strategyRows" :height="210" />

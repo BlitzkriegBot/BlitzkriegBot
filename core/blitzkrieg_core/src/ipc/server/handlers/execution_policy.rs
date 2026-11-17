@@ -192,7 +192,7 @@ async fn execution_policy_set(
                 None,
             )
         })?;
-        policy_section_write(store, &p.account_id, Some(section))
+        policy_section_write(store, &p.account_id, Some(section.clone()))
             .map_err(|e| (Failure::INVALID_PARAMS, e, None))?
     };
     let mut c = core.lock().await;
@@ -217,10 +217,16 @@ async fn execution_policy_set(
         action: "set".to_string(),
         account_id: p.account_id.clone(),
         before,
-        after,
+        after: after.clone(),
         error: None,
     });
-    Ok(serde_json::json!({ "accountId": p.account_id }))
+    // #1253: the reply carries what was accepted and the RELOADED state the
+    // kernel will judge under — no follow-up get needed to verify the save.
+    Ok(serde_json::json!({
+        "accountId": p.account_id,
+        "written": serde_json::to_value(&section).unwrap_or(Value::Null),
+        "readBack": after,
+    }))
 }
 
 /// #363: the `execution_policy.reset` flow — remove the account's section
@@ -277,10 +283,17 @@ async fn execution_policy_reset(
         action: "reset".to_string(),
         account_id: p.account_id.clone(),
         before,
-        after,
+        after: after.clone(),
         error: None,
     });
-    Ok(serde_json::json!({ "accountId": p.account_id }))
+    // #1253: same written/readBack shape as `set` — a reset's "written" is
+    // the swept section (absent), and `readBack` is the reloaded view the
+    // account now inherits.
+    Ok(serde_json::json!({
+        "accountId": p.account_id,
+        "written": Value::Null,
+        "readBack": after,
+    }))
 }
 
 /// #363: turn `execution_policy.set` params into the section that lands in

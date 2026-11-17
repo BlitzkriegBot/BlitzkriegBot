@@ -626,6 +626,39 @@ fn daily_loss_limit_blocks_new_positions() {
     assert!(pm.daily_loss_tripped_for("default"));
 }
 
+/// #1253: `system.reset_trading` re-seeds the ledger, so the day's loss book
+/// must re-open on that same seed number — realized zeroed, the trip cleared,
+/// and the cap still enforcing against the NEW base afterwards.
+#[test]
+fn reset_daily_for_account_reopens_the_day_on_the_seed() {
+    let cfg = PositionConfig {
+        max_daily_loss_usd: dec!(1),
+        asset_cooldown_sec: 0,
+        loss_cooldown_sec: 0,
+        stop_loss_cooldown_sec: 0,
+        ..Default::default()
+    };
+    let mut pm = PositionManager::new(cfg);
+    pm.roll_daily("default", 1_000, dec!(1_000), EquityBasis::Dry);
+    // The pre-reset day already "lost" well past the cap.
+    pm.set_daily_realized_for_test(&crate::model::default_account_id(), dec!(-7.33));
+    assert!(pm.daily_loss_tripped_for("default"));
+
+    pm.reset_daily_for_account("default", 2_000, dec!(1_000), EquityBasis::Dry);
+    assert!(
+        !pm.daily_loss_tripped_for("default"),
+        "the trip died with the reset"
+    );
+    // The re-opened day enforces against the re-seeded book again.
+    pm.set_daily_realized_for_test(&crate::model::default_account_id(), dec!(-0.5));
+    assert!(!pm.daily_loss_tripped_for("default"));
+    pm.set_daily_realized_for_test(&crate::model::default_account_id(), dec!(-1.5));
+    assert!(
+        pm.daily_loss_tripped_for("default"),
+        "the cap still enforces post-reset"
+    );
+}
+
 /// 每账户日亏（2026-10-25 操作者裁决）：一个账户把日亏预算烧穿，兄弟
 /// 账户的当天分文不动、进场照旧——单槽时代 poly 的亏损会冻结 default。
 #[test]

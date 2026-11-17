@@ -265,23 +265,42 @@ impl SqliteStore {
     /// account-book writes share; INSERT OR IGNORE — a real row is never
     /// overwritten).
     fn ensure_account(&self, account_id: &str, name: Option<&str>) -> Result<(), CoreError> {
+        // `defaults` is the reserved policy-section selector (env_state.rs):
+        // its row exists only so the globals POLICY_* rows satisfy the
+        // account_settings FK — scaffolding, never an account. It is marked
+        // here (and healed on pre-existing rows) so no reader mistakes the
+        // empty venue for an unbound account (#1253); boot's
+        // ledger_book_from_rows already refuses to materialize it.
+        let reserved = account_id.eq_ignore_ascii_case("defaults");
+        let marker = "reserved-policy-selector (FK scaffold for the globals policy section)";
         self.risk
             .db()
             .with_connection(|conn| {
                 conn.execute(
                     "INSERT OR IGNORE INTO accounts
-                            (id, name, market_type, status, trading_enabled, updated_at_ms)
-                         VALUES (?1, ?2, 'prediction', 'active', 1, ?3)",
-                    rusqlite::params![account_id, name.unwrap_or(account_id), crate::db::now_ms(),],
-                )
+                            (id, name, market_type, status, status_reason, trading_enabled, updated_at_ms)
+                         VALUES (?1, ?2, 'prediction', 'active', ?3, 1, ?4)",
+                    rusqlite::params![
+                        account_id,
+                        name.unwrap_or(account_id),
+                        reserved.then_some(marker),
+                        crate::db::now_ms(),
+                    ],
+                )?;
+                if reserved {
+                    conn.execute(
+                        "UPDATE accounts SET status_reason = ?2 WHERE id = ?1 AND status_reason IS NULL",
+                        rusqlite::params![account_id, marker],
+                    )?;
+                }
+                Ok::<(), rusqlite::Error>(())
             })
             .map_err(|e| {
                 CoreError::new(
                     CoreErrorCode::Internal,
                     format!("account ensure failed: {e}"),
                 )
-            })?;
-        Ok(())
+            })
     }
 }
 
@@ -861,6 +880,41 @@ mod tests {
             .iter()
             .map(|(f, v)| (f.to_string(), v.to_string()))
             .collect()
+    }
+
+    /// #1253: the reserved `defaults` selector is FK scaffolding — its row
+    /// carries the marker (fresh and healed), a real account's does not, and
+    /// the ensure stays idempotent across repeated calls.
+    #[test]
+    fn defaults_row_is_marked_reserved_not_unbound() {
+        let (store, dir) = temp_store();
+        store.ensure_account("defaults", None).unwrap();
+        store.ensure_account("defaults", None).unwrap();
+        store.ensure_account("paper", None).unwrap();
+        let reason_of = |store: &SqliteStore, id: &str| -> Option<String> {
+            store
+                .risk
+                .db()
+                .with_connection(|conn| {
+                    conn.query_row(
+                        "SELECT status_reason FROM accounts WHERE id = ?1",
+                        rusqlite::params![id],
+                        |r| r.get::<_, Option<String>>(0),
+                    )
+                })
+                .unwrap()
+        };
+        assert!(
+            reason_of(&store, "defaults").is_some(),
+            "the reserved selector's row carries the FK-scaffold marker (#1253)"
+        );
+        assert_eq!(
+            reason_of(&store, "paper"),
+            None,
+            "a real account is never marked"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The risk-bounds round-trip: a field set merges onto the stored row,

@@ -1127,6 +1127,15 @@ impl Core {
                  next boot may replay pre-reset rows"
             );
         }
+        // #1253: the ledger was re-seeded above — re-open the day's loss book
+        // on that same seed number, or the breaker keeps enforcing against
+        // the pre-reset day (ledger said 0, the book said −7.33: two truths).
+        self.positions.reset_daily_for_account(
+            account_id.as_str(),
+            now_ms,
+            self.config.dry_seed_balance,
+            self.equity_basis(),
+        );
         // issue 723: the reset rewrote this account's journal into a single
         // `Reset` row — a NEW evidence generation with its own row-seq space.
         // The bound venues' cursors die here: the pre-reset numbers must

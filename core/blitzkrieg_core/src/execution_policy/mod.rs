@@ -852,6 +852,28 @@ impl SectionDefaults {
                 self.max_budget_usd, self.min_budget_usd
             ));
         }
+        // #1253: above the sanity ceiling a "cap" is the cap's negation — the
+        // production store held max_budget_usd = 1.02e16 (≈ unlimited) from a
+        // typo'd save. The parser already guarantees finiteness; this refuses
+        // the magnitude. Generous against every real deployment (the code
+        // default cap is $10 000; the ceiling is an operator-approved bound),
+        // and judged on EVERY resolved section, so file, env and IPC layers
+        // all fail closed together.
+        let sanity_ceiling = dec!(1_000_000);
+        if self.max_budget_usd > sanity_ceiling {
+            return Err(format!(
+                "{label}: max_budget_usd {} exceeds the sanity ceiling {sanity_ceiling} — \
+                 a cap this size disables itself (#1253)",
+                self.max_budget_usd
+            ));
+        }
+        if self.min_equity_usd > sanity_ceiling {
+            return Err(format!(
+                "{label}: min_equity_usd {} exceeds the sanity ceiling {sanity_ceiling} — \
+                 the same ceiling as the budget cap (#1253)",
+                self.min_equity_usd
+            ));
+        }
         if self.min_equity_usd < Decimal::ZERO {
             return Err(format!(
                 "{label}: min_equity_usd {} must be >= 0",

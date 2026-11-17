@@ -470,6 +470,34 @@ impl TradeDb {
         if removed.is_empty() {
             return 0;
         }
+        // #1253: a reset that leaves no file-level trace of the trades it
+        // wipes is an unarchived erasure. The removed rows land in a sibling
+        // archive BEFORE the rewrite; an archive write failure refuses the
+        // rewrite (the rows survive on disk — the same posture as a failed
+        // rewrite — and the reset's post-check then fails loudly).
+        let archive_path = self.jsonl_path.with_file_name(format!(
+            "{}.reset-archive-{account}-{now_ms}.jsonl",
+            self.jsonl_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("trades")
+        ));
+        let archive_body = removed
+            .iter()
+            .filter_map(|r| serde_json::to_string(r).ok())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        // 原子写与主文件同一纪律（store-layer 门禁把 jsonl 直写钉成声明性
+        // 债务——本归档写与下面的 rewrite 同类，一并进基线）。
+        if !crate::jsonl::rewrite_atomic(&archive_path, archive_body.as_bytes()) {
+            tracing::warn!(
+                account = %account,
+                "issue 1253: trade-log archive write failed — the rewrite is \
+                 refused so the wipe cannot outrun its archive"
+            );
+            return 0;
+        }
         let Ok(body) = kept
             .iter()
             .map(serde_json::to_string)
@@ -651,6 +679,21 @@ mod tests {
         assert_eq!(db2.summary_for("poly").total_trades, 0);
         assert_eq!(db2.summary_for("default").total_trades, 1);
         assert_eq!(db2.summary().total_trades, 1);
+        // #1253: the retract ARCHIVED the removed rows before the rewrite —
+        // the pre-reset history stays file-level auditable, the main log
+        // carries only the survivor.
+        let archive = dir.join("trades.reset-archive-poly-300.jsonl");
+        let archived = std::fs::read_to_string(&archive).expect("archive exists");
+        assert!(
+            archived.contains("\"poly-1\""),
+            "the removed row is in the archive"
+        );
+        assert_eq!(archived.lines().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().lines().count(),
+            1,
+            "the main log keeps only default's row"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

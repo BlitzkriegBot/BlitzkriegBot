@@ -215,6 +215,36 @@ impl PositionManager {
         })
     }
 
+    /// #1253: `system.reset_trading` re-seeds the account's ledger to the seed
+    /// balance — the day's loss book must re-open on that SAME number, or the
+    /// breaker keeps enforcing against the pre-reset day (production held a
+    /// −7.33 realized against a freshly re-seeded ledger: two truths, one
+    /// day). Same shape a UTC-day roll produces, minus the roll: zero
+    /// realized, the trip cleared, the day's index kept, persisted.
+    pub fn reset_daily_for_account(
+        &mut self,
+        account: &str,
+        now_ms: i64,
+        equity_usd: Decimal,
+        basis: EquityBasis,
+    ) {
+        let Some(daily) = self.daily_by_account.get_mut(&AccountId::from(account)) else {
+            return; // no day stamped yet — nothing to re-anchor
+        };
+        *daily = DailyLossState {
+            day_index: daily.day_index,
+            realized_pnl_usd: Decimal::ZERO,
+            opening_equity_usd: equity_usd.max(Decimal::ZERO),
+            equity_basis: Some(basis),
+            tripped: false,
+            tripped_at_ms: 0,
+            tripped_limit_usd: Decimal::ZERO,
+            tripped_reported: false,
+            opened_at_ms: now_ms,
+        };
+        self.persist_daily();
+    }
+
     /// Keep the day's opening equity honest WITHIN the day (P1 #235).
     ///
     /// The cap is a share of the account the day opened on, and only one thing

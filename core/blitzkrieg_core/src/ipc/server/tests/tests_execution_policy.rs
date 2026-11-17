@@ -140,3 +140,57 @@ async fn a_set_proceeds_past_an_operator_edited_policy_file_with_a_warn() {
     );
     let _ = std::fs::remove_dir_all(env_path.parent().unwrap());
 }
+
+/// #1253 acceptance: a `maxBudgetUsd` at the "cap disables itself" magnitude —
+/// the exact value found in production `account_settings` — is refused on the
+/// wire, and no POLICY_ row lands in the store. A typo must not be able to
+/// raise the ceiling to `≈ unlimited`.
+#[tokio::test]
+async fn an_absurd_budget_cap_is_refused_and_the_store_is_untouched() {
+    let (core, registry, peer, env_path) = policy_fixture().await;
+    let v = rpc(&core, &registry, &peer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"execution_policy.set","params":{"accountId":"acct-big","maxBudgetUsd":"10222221221331331"}}"#.into())
+        .await;
+    assert!(
+        v.get("error").is_some(),
+        "the absurd cap must be refused: {v}"
+    );
+
+    let rows = crate::risk::account_store::AccountRiskDb::open(
+        env_path.parent().unwrap().join("store.sqlite"),
+    )
+    .expect("the store re-opens")
+    .load_settings()
+    .expect("settings readable");
+    assert!(
+        !rows
+            .get("acct-big")
+            .map(|s| s.keys().any(|k| k.starts_with("POLICY_")))
+            .unwrap_or(false),
+        "no POLICY_ row may land for the refused section: {rows:?}"
+    );
+    let _ = std::fs::remove_dir_all(env_path.parent().unwrap());
+}
+
+/// #1253: the set reply carries `written` (the accepted section) and
+/// `readBack` (the reloaded view the kernel judges under) — the caller
+/// verifies the save without a follow-up get.
+#[tokio::test]
+async fn a_set_reply_carries_written_and_read_back() {
+    let (core, registry, peer, env_path) = policy_fixture().await;
+    let v = rpc(&core, &registry, &peer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"execution_policy.set","params":{"accountId":"acct-r","budgetRatio":"0.05","maxBudgetUsd":"20"}}"#.into())
+        .await;
+    assert!(v.get("error").is_none(), "set answers: {v}");
+    let res = v.get("result").expect("success reply");
+    assert_eq!(res["accountId"], "acct-r");
+    assert!(
+        res.get("written").is_some_and(|w| !w.is_null()),
+        "written names the accepted section: {res}"
+    );
+    assert!(
+        res.get("readBack").is_some_and(|r| !r.is_null()),
+        "readBack is the reloaded view: {res}"
+    );
+    let _ = std::fs::remove_dir_all(env_path.parent().unwrap());
+}

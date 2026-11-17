@@ -889,6 +889,31 @@ then = { action = "skip" }
     }
 
     #[test]
+    fn reload_resolves_from_sql_when_no_env_file_exists() {
+        // 保存路径不得要求 `.env` 存在。权威写入面是 SQLite（操作者裁决
+        // 2026-11-14），文件只剩手工编辑/旧部署兼容；干净安装（release 解包、
+        // 或从 data-only 目录启动的 core）根本没有这个文件。PRE-FIX:
+        // `read_to_string` 的 NotFound 被 `?` 冒泡，IPC 保存整体被拒并回
+        // `rpc -32602: <path> unreadable: No such file or directory`。
+        let dir = scratch("reload-no-env-file");
+        let env_path = dir.join(".env"); // deliberately never created
+        let toml_path = dir.join("execution_policy.toml");
+        let mut keys = std::collections::BTreeMap::new();
+        keys.insert("ACCOUNT_LIST".to_string(), "paper".to_string());
+        keys.insert("POLICY_MAX_BUDGET_USD_PAPER".to_string(), "250".to_string());
+        let mut sql = std::collections::BTreeMap::new();
+        sql.insert("paper".to_string(), keys);
+        let no_writes = std::collections::BTreeMap::new();
+
+        let reloaded =
+            Policy::load_for_reload_with_sql(&toml_path, &env_path, &no_writes, &sql, |_| None)
+                .expect("a missing .env is not a reload failure");
+
+        assert_eq!(reloaded.section_for("paper").max_budget_usd, dec!(250));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn reset_does_not_resurrect_the_startup_env() {
         // #757: after the set the account owns the file keys, then `reset`
         // sweeps them. The process env still carries the boot export 100; the

@@ -11,29 +11,32 @@
  * 徽标会变成「命令行/热改」，这是内核 LimitSource::Flag 的如实呈现。
  */
 import { computed, onMounted, ref } from 'vue'
-import { RefreshCw, ShieldCheck } from 'lucide-vue-next'
+import { RefreshCw, Save, ShieldCheck } from 'lucide-vue-next'
 import {
   api,
-  type ExitSetUpdateDoc, type RiskBound, type RiskLimitsDoc,
+  type RiskBound, type RiskLimitsDoc,
 } from '@/api/client'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
-
-defineExpose({
-  buildPatch,
-  buildExitPatch,
-  setExitReceipt,
-})
 import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
-import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
 import Switch from '@/components/ui/switch/Switch.vue'
 
 const riskDoc = ref<RiskLimitsDoc | null>(null)
 const riskErr = ref<string | null>(null)
 const riskBusy = ref(false)
-const exitReceipt = ref<ExitSetUpdateDoc | null>(null)
+const riskSaving = ref(false)
+
+/** 本卡片是「生效风控」一张表单：账户级限额 + 退出纪律 + 账户生效参数（#params 插槽）
+ *  由底部唯一的保存按钮一次性提交，子组件不自己调接口。 */
+defineEmits<{ (e: 'save-all'): void }>()
+
+defineExpose({
+  buildPatch,
+  buildExitPatch,
+  riskSaving,
+})
 
 async function loadRisk(): Promise<void> {
   riskBusy.value = true
@@ -46,11 +49,6 @@ async function loadRisk(): Promise<void> {
   } finally {
     riskBusy.value = false
   }
-}
-
-/** 由父组件在 risk.setExit 成功后写入，供回执模板展示 old→new 文案。 */
-function setExitReceipt(receipt: ExitSetUpdateDoc | null): void {
-  exitReceipt.value = receipt
 }
 
 /** 来源词表：出厂/环境变量/命令行或热改，与内核 LimitSource 一致（去 TOML 后只允许 flag/env/default）。 */
@@ -101,34 +99,6 @@ function syncBuffers(d: RiskLimitsDoc): void {
   next['trailingEnabled'] = String(d.exit.trailingEnabled ?? false)
   next['makerFirstExits'] = String(d.exit.strategyExitMakerFirst ?? false)
   editBufs.value = next
-}
-
-/** 下一笔策略开仓就被这个 bound 约束（live）；其余三项重启后武装。 */
-const NEXT_SESSION_FIELDS = new Set(['maxConsecutiveLosses', 'cooldownMinutes'])
-function effectLabel(effect: string): string {
-  return effect === 'live' ? '立即生效' : effect === 'next_session' ? '重启后生效' : effect
-}
-function fieldLabel(field: string): string {
-  return ROW_DEFS.find((r) => r.field === field)?.label ?? EXIT_ROW_DEFS.find((r) => r.field === field)?.label ?? field
-}
-/** 回执里的单位随字段：百分比行带 %，强平行带 s。 */
-function fieldUnit(field: string): string {
-  if (field === 'stopLossPct' || field === 'takeProfitPct') return '%'
-  if (field === 'forceExitSec') return 's'
-  return ''
-}
-/** bool 行（移动止盈 / maker-first）的回执 from/to 是 'true'/'false' 原文 —— 展示成 开/关。 */
-const EXIT_BOOL_FIELDS = new Set(['trailingEnabled', 'strategyExitMakerFirst'])
-function changeText(c: { field: string; from: string; to: string }): string {
-  if (EXIT_BOOL_FIELDS.has(c.field)) {
-    // 布尔字段（trailingEnabled / strategyExitMakerFirst）：'true'/'false' → '开'/'关'
-    return `${c.from === 'true' ? '开' : '关'} → ${c.to === 'true' ? '开' : '关'}`
-  }
-  // 数字字段（stopLossPct / takeProfitPct / forceExitSec）：'0' → '关闭'，否则显示真实值+单位
-  const u = fieldUnit(c.field)
-  const f = c.from === '0' ? '关闭' : c.from
-  const t = c.to === '0' ? '关闭' : c.to
-  return `${f}${u} → ${t}${u}`
 }
 
 /** 只发改动过的字段；空串=保持不变。非法输入就地拒绝保存。 */
@@ -331,7 +301,7 @@ onMounted(() => void loadRisk())
           </div>
         </template>
 
-        <div class="label-micro mt-3">退出纪律（Gate 4 绑定）</div>
+        <div class="label-micro mt-3">退出纪律</div>
         <div class="mt-1">
           <div
             v-for="(row, i) in EXIT_ROW_DEFS.filter((r) => !r.excluded)"
@@ -371,24 +341,21 @@ onMounted(() => void loadRisk())
            风控参数与系统限额同卡呈现，各归各位（插槽内容来自编排壳）。 -->
       <slot name="params" />
 
-      <div v-if="exitReceipt" class="mt-2 rounded border border-line bg-panel-2 px-2.5 py-2 text-[11px] leading-relaxed">
-        <div class="font-semibold text-fg">
-          退出纪律已写入 {{ exitReceipt.applied.length }} 项（已持久化）
-        </div>
-        <div v-for="c in exitReceipt.applied" :key="c.field" class="mt-0.5 text-muted-fg">
-          {{ fieldLabel(c.field) }}：{{ changeText(c) }}
-          <Badge variant="gold" class="ml-1">{{ effectLabel(c.effect) }}</Badge>
-        </div>
-        <div class="mt-1 text-faint-fg">新入场下一笔按新值绑定；已开仓位的退出扫描同步跟随新值。</div>
-      </div>
-
       <div class="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          size="sm" :disabled="riskSaving || riskBusy"
+          title="把本卡三部分（账户级限额 / 退出纪律 / 账户生效参数）一次性提交给内核"
+          @click="$emit('save-all')"
+        >
+          <Save class="size-3.5" />{{ riskSaving ? '保存中…' : '保存' }}
+        </Button>
         <Button
           variant="outline" size="sm" :disabled="riskBusy" title="重新读取内核的风控读数（放弃未保存的编辑）"
           @click="loadRisk"
         >
           <RefreshCw class="size-3.5" />刷新
         </Button>
+        <span class="text-[11px] leading-snug text-faint-fg">{{ riskHint }}</span>
       </div>
       <p v-if="riskErr" class="mt-2 text-[11px] leading-snug text-down">{{ riskErr }}</p>
     </template>

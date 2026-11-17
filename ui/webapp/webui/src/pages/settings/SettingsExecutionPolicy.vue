@@ -11,12 +11,9 @@
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
-import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
 import { ShieldCheck } from 'lucide-vue-next'
 
-defineProps<{ version: number; msg?: string | null }>()
-
-defineEmits<{ dismiss: [] }>()
+defineProps<{ version: number }>()
 </script>
 
 <template>
@@ -40,8 +37,5 @@ defineEmits<{ dismiss: [] }>()
 
     <!-- issue 393 (①): 规则编辑器由编排壳填入（缓冲与保存在 SettingsRisk）。 -->
     <slot name="rules" />
-    <AlertBanner v-if="msg" tone="info" class="mt-2.5" dismissible @dismiss="$emit('dismiss')">
-      {{ msg }}
-    </AlertBanner>
   </Card>
 </template>

@@ -166,7 +166,12 @@ for (const f of FILES) {
 // issue 717 拆出的行情组件面不各自持告警条：告警（feed 过期/内核退出/
 // 指令反馈）语义归页面 round bar 与 feed 区（HftPage 仍被审计）；组件面
 // 的非数据态走 EmptyState（上面那条已钉）。
-for (const f of FILES.filter((f) => !['App.vue', 'LoginView', '设置壳', '设置·风控与策略', '设置·通用'].includes(f.name) && !f.name.startsWith('行情·'))) {
+// 设置·执行策略 是纯卡片壳（CardHeader + 描述 + `#rules` 槽），自身没有
+// 任何告警状态：规则编辑器的非法输入上抛 `invalid`、保存失败上抛 `save`，
+// 都由编排壳 SettingsRisk 的唯一 AlertBanner 呈现。原先进回执横幅是唯一
+// 的 AlertBanner，2026-11-17 操作者指令删除「已保存」回执后本卡不再持有
+// 告警面 —— 豁免的是「壳不持告警」这一事实，不是放宽告警必须走原语的规则。
+for (const f of FILES.filter((f) => !['App.vue', 'LoginView', '设置壳', '设置·风控与策略', '设置·通用', '设置·执行策略'].includes(f.name) && !f.name.startsWith('行情·'))) {
   check(`${f.name}: surfaces its alerts through the AlertBanner primitive`, () => {
     assert.ok(/<AlertBanner/.test(f.src), 'no AlertBanner usage')
   })

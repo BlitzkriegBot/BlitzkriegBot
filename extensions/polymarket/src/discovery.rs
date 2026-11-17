@@ -78,6 +78,12 @@ pub fn spawn(
         // 组成变化时打一条（限频：不变不刷屏）。这行日志是「全族覆盖没有
         // 随 boot 网格缩窄」的可 grep 证据——某个族连续缺席即回归。
         let mut last_mix: Vec<(i64, usize)> = Vec::new();
+        // Kalshi-style once-per-process alarm: if a configured family yields
+        // NO markets for an entire discovery cycle, warn loudly once so an
+        // operator can tell "disabled on purpose / misconfigured" from "venue
+        // has nothing listed" instead of silent empty books.
+        let mut silent_family_warned: std::collections::HashSet<i64> =
+            std::collections::HashSet::new();
         let mut tick = tokio::time::interval(Duration::from_secs(poll_sec.max(3)));
         loop {
             tick.tick().await;
@@ -140,6 +146,14 @@ pub fn spawn(
                     if end_ms <= now {
                         continue; // already expired
                     }
+                    // Kalshi-style guard: a real round closes within one round
+                    // length. Anything further out (strike ladders, stale
+                    // events) must not hijack the round clock — the old code
+                    // fed a far-future expiry into the scanner and the panel
+                    // counted down years.
+                    if end_ms - now > 2 * (*fam) * 1000 {
+                        continue; // close time too far out for a round; skipping
+                    }
                     found_assets.push(asset.clone());
                     markets.push(MarketDescriptor {
                         asset: asset.to_uppercase(),
@@ -171,6 +185,25 @@ pub fn spawn(
                 mix.push((*fam, found_assets.len()));
 
                 if markets.is_empty() {
+                    // Kalshi-style once-per-process alarm: if a family yields
+                    // nothing this poll and never has, surface it loudly so an
+                    // operator can tell "misconfigured / venue has nothing" from
+                    // silent empty books instead of discovering nothing forever
+                    // with no log line (the 4h blind spot that hid for weeks).
+                    if silent_family_warned.insert(*fam) {
+                        eprintln!(
+                            "polymarket-extension: discovery: family {label} ({fam}s) \
+                             found NO markets this poll — if this persists the \
+                             round's books will not be subscribed and the book \
+                             will appear frozen. Check Gamma slug routing for \
+                             assets {assets:?}.",
+                            assets = assets
+                                .iter()
+                                .map(|a| a.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    }
                     continue; // retry next tick (market may not be live yet)
                 }
                 // #498: same shape as the kalshi gate — Gamma can publish the

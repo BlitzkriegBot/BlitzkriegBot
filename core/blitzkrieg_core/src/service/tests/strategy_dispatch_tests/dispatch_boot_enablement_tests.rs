@@ -474,34 +474,31 @@ fn boot_applies_assignments_and_migrates_the_implicit_default_once() {
         EngineConfig::default().spread_arb,
     );
 
-    // ①+③: the default migrates (file gains the key), probe2's key is
-    // honored (its book spelling is already explicit).
+    // ①+③: the default does NOT migrate — persisted enabled-set is no longer
+    // folded into the default account's `strategies` (default strategies come
+    // from `.env` ACCOUNT_DEFAULT_STRATEGIES / `account.strategies.set` only).
+    // probe2's key is honored (its book spelling is already explicit).
     let migrated = c.apply_account_strategy_assignments_at_boot().unwrap();
-    assert_eq!(
-        migrated,
-        vec!["spread_arb".to_string(), "trend_follow".to_string()],
-        "the migration returns the materialized default assignment"
+    // 诊断信息不插值：CodeQL 把策略指派行当敏感信息，panic 消息里回显
+    // 会被判 cleartext-logging（断言本身不动）。
+    assert!(
+        migrated.is_empty(),
+        "no migration into the default account anymore"
     );
     let default_id = crate::account::default_account_id();
-    assert_eq!(
-        c.accounts
-            .strategy_assignment(&default_id)
-            .expect("migrated into the book"),
-        &vec!["spread_arb".to_string(), "trend_follow".to_string()],
+    assert!(
+        c.accounts.strategy_assignment(&default_id).is_none(),
+        "default account has no explicit strategies"
     );
     assert_eq!(
         stored_strategy_set(&dir, "default").as_deref(),
-        Some("[\"spread_arb\",\"trend_follow\"]"),
-        "the migration materializes the default's assignment as a row"
+        None,
+        "no STRATEGIES_SETTING row is materialized for the default account"
     );
 
-    // Idempotence: a SECOND boot call does not re-report (the file now
-    // carries the key — the migration is one-time by construction).
+    // Idempotence: a SECOND boot call still reports empty.
     let again = c.apply_account_strategy_assignments_at_boot().unwrap();
-    assert!(
-        again.is_empty(),
-        "the migration never runs twice: the file is the truth now"
-    );
+    assert!(again.is_empty(), "nothing was materialized for default");
 
     // ②: an account with NO key (and no persisted set to migrate — the
     // file now has one for default, so wipe the state file's role by
@@ -530,21 +527,13 @@ fn boot_applies_assignments_and_migrates_the_implicit_default_once() {
     );
     let migrated2 = c2.apply_account_strategy_assignments_at_boot().unwrap();
     assert!(migrated2.is_empty(), "no state file, no migration");
-    // probe2's assignment names spread_arb, but the test adapter is a
-    // non-Lua source: build_lua_scope declines, the ADD phase warns and
-    // skips — probe2 gains NO scope (fail-closed, never a panic). The
-    // default's own row (the migrated set) names trend_follow, whose
-    // pre-hosted default-scope instance EXISTS: the Some(existing) arm
-    // of the ADD phase enables it (in the set = the 启用 state) — the
-    // migration earlier in this test materialized the state file's set
-    // as the default's accounts.toml key, and c2 boots from that same
-    // file, so the default row is explicit (no INHERIT involved).
+    // default has no explicit strategies (.env ACCOUNT_DEFAULT_STRATEGIES unset)
+    // and probe2's spread_arb is a non-Lua source: build_lua_scope declines,
+    // so no scope is built for either account — nothing is enabled at boot.
     assert_eq!(
         c2.enabled_strategy_names(),
-        vec!["spread_arb".to_string(), "trend_follow".to_string()],
-        "the file's enablement sets are what boot — the state file is out \
-         of the loop (both names resolve to the default scope's \
-         pre-hosted adapter instances)"
+        Vec::<String>::new(),
+        "default has no strategies; probe2's non-Lua strategy builds no scope"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -598,10 +587,7 @@ fn boot_keeps_the_production_default_enablement_shape_byte_identical() {
     );
     // The migration NEVER runs: the file's default row is already explicit.
     let migrated = c.apply_account_strategy_assignments_at_boot().unwrap();
-    assert!(
-        migrated.is_empty(),
-        "an explicit key means no migration: {migrated:?}"
-    );
+    assert!(migrated.is_empty(), "an explicit key means no migration");
     // The book + file are untouched (byte-identical behaviour on upgrade).
     assert_eq!(
         c.accounts

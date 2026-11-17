@@ -17,7 +17,7 @@
  * 落盘→重读→落审计后才应答），不新增任何旁路。
  */
 import { computed, onMounted, ref } from 'vue'
-import { RefreshCw, LockOpen, Minus, Plug, Save } from 'lucide-vue-next'
+import { RefreshCw, LockOpen, Minus, Plug } from 'lucide-vue-next'
 import {
   api,
   type ExecutionPolicyListDoc, type ExecutionPolicySectionDoc,
@@ -43,7 +43,6 @@ const policyPreview = ref<ExecutionPolicyPreviewDoc | null>(null)
 const policyHistory = ref<ExecutionPolicyHistoryDoc>([])
 const policyAccountId = ref<string>('defaults')
 const policyErr = ref<string | null>(null)
-const policyMsg = ref<string | null>(null)
 const policyBusy = ref(false)
 const policySaving = ref(false)
 
@@ -169,7 +168,6 @@ async function unfreeze(accountId: string): Promise<void> {
   if (freezeOperateId.value) return
   freezeOperateId.value = accountId
   policyErr.value = null
-  policyMsg.value = null
   try {
     const r = await api.accountUnfreeze({ accountId })
     if (r.error) throw new Error(r.error)
@@ -204,7 +202,6 @@ async function unfreeze(accountId: string): Promise<void> {
       policyErr.value = `解冻 ${accountId}：风控闸门已解除，但日内亏损熔断仍在，入场暂未恢复。`
       return
     }
-    policyMsg.value = `已解冻 ${accountId}，该账户恢复接新单。`
   } catch (e) {
     policyErr.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -216,7 +213,6 @@ async function unfreeze(accountId: string): Promise<void> {
 function resetToDefaultsLocal(): void {
   loadEditorFromSection(policyList.value?.defaults ?? null)
   editDirty.value = true
-  policyMsg.value = '已按 defaults 重置编辑区 —— 保存后才写入内核。'
 }
 
 // ── 保存 / 回滚 ──
@@ -235,23 +231,26 @@ function buildRuleSetParams(): ExecutionPolicySetParams {
   return { accountId: policyAccountId.value, rules: editRules.value }
 }
 
-/** 保存 = 把表单内全部字段（限额 + 退出纪律 + 生效参数）一次性写入内核。 */
+/** 保存 = 把表单内全部字段（限额 + 退出纪律 + 生效参数）一次性写入内核。
+ *  成功不弹回执（页面本身就是内核确认过的状态）；只有「没改动」和非法输入
+ *  这类需要操作者知道的结论走 warn 横幅。 */
 async function saveAll(): Promise<void> {
   policySaving.value = true
-  policyMsg.value = null
   policyErr.value = null
-  limitsRef.value?.setExitReceipt(null)
+  if (limitsRef.value) {
+    limitsRef.value.riskSaving = true
+  }
   try {
     // 1. 收集系统限额 patch（来自 SettingsRiskLimits 子组件）
     const limitsPatch = limitsRef.value?.buildPatch()
     if (typeof limitsPatch === 'string') {
-      policyMsg.value = limitsPatch
+      policyErr.value = limitsPatch
       return
     }
     // 2. 收集退出纪律 patch（来自 SettingsRiskLimits 子组件）
     const exitPatch = limitsRef.value?.buildExitPatch()
     if (typeof exitPatch === 'string') {
-      policyMsg.value = exitPatch
+      policyErr.value = exitPatch
       return
     }
     // 3. 收集 execution_policy 参数（来自本组件编辑缓冲）
@@ -259,7 +258,7 @@ async function saveAll(): Promise<void> {
     const keys = Object.keys(limitsPatch ?? {})
     const exitKeys = Object.keys(exitPatch ?? {})
     if (keys.length === 0 && exitKeys.length === 0 && !policyParams.budgetRatio && !policyParams.minBudgetUsd && !policyParams.maxBudgetUsd && !policyParams.minEquityUsd && !policyParams.maxPositionsPerAsset) {
-      policyMsg.value = '没有改动 —— 六项系统限额、退出纪律与执行参数都与内核当前生效值一致。'
+      policyErr.value = '没有改动 —— 六项系统限额、退出纪律与执行参数都与内核当前生效值一致。'
       return
     }
     // 4. 一次性写入：系统限额、退出纪律、执行参数
@@ -270,28 +269,28 @@ async function saveAll(): Promise<void> {
     if (exitKeys.length > 0) {
       const res = await api.riskSetExit({ ...exitPatch, reason: 'webui 面板编辑（退出纪律）' })
       if (res.error) throw new Error(res.error)
-      limitsRef.value?.setExitReceipt(res)
     }
     const res = await api.executionPolicySet(policyParams)
     if (res.error) throw new Error(res.error)
     editDirty.value = false
-    policyMsg.value = `已保存（${policyAccountId.value}）—— 内核已重读生效。`
     await loadPolicy()
   } catch (e) {
     policyErr.value = e instanceof Error ? e.message : String(e)
   } finally {
     policySaving.value = false
+    if (limitsRef.value) {
+      limitsRef.value.riskSaving = false
+    }
   }
 }
 
 async function saveRules(): Promise<void> {
   policySaving.value = true
-  policyMsg.value = null
+  policyErr.value = null
   try {
     const res = await api.executionPolicySet(buildRuleSetParams())
     if (res.error) throw new Error(res.error)
     editDirty.value = false
-    policyMsg.value = `已保存（${policyAccountId.value}）—— 内核已重读生效。`
     await loadPolicy()
   } catch (e) {
     policyErr.value = e instanceof Error ? e.message : String(e)
@@ -307,7 +306,7 @@ async function rollbackPolicy(): Promise<void> {
     .reverse()
     .find((l) => l.action === 'set' && l.before)
   if (!lastSet?.before) {
-    policyMsg.value = '没有可回滚的历史版本（该账户还没有 set 记录）。'
+    policyErr.value = '没有可回滚的历史版本（该账户还没有 set 记录）。'
     return
   }
   const b = lastSet.before
@@ -319,12 +318,11 @@ async function rollbackPolicy(): Promise<void> {
   if (b.maxPositionsPerAsset) params.maxPositionsPerAsset = b.maxPositionsPerAsset
   params.rules = b.rules ?? []
   policySaving.value = true
-  policyMsg.value = null
+  policyErr.value = null
   try {
     const res = await api.executionPolicySet(params)
     if (res.error) throw new Error(res.error)
     editDirty.value = false
-    policyMsg.value = `已回滚（${policyAccountId.value}）到 v${policyVersion.value - 1}。`
     await loadPolicy()
   } catch (e) {
     policyErr.value = e instanceof Error ? e.message : String(e)
@@ -443,10 +441,10 @@ async function rollbackPolicy(): Promise<void> {
     </Card>
 
     <!-- 生效风控读数（只读，boot 快照）+ 就地可编辑的账户生效参数（#params）。 -->
-    <SettingsRiskLimits ref="limitsRef">
+    <SettingsRiskLimits ref="limitsRef" @save-all="saveAll">
       <template #params>
         <div v-if="policySection" class="mt-3 border-t border-line pt-3">
-          <div class="label-micro">账户生效参数（execution_policy · 可编辑）</div>
+          <div class="label-micro">账户生效参数</div>
           <p class="mt-1 text-[11px] leading-snug text-faint-fg">
             下单前内核按这组基础参数给每一单定预算、设门槛 —— 与下方规则同属一个账户段，
             一并保存（内核验证→落盘→重读→落审计后才应答）。
@@ -485,14 +483,12 @@ async function rollbackPolicy(): Promise<void> {
     </SettingsRiskLimits>
 
     <!-- 执行策略规则：编辑器（列表 + 构建器 + 预览 + 保存条）——同一个账户段
-         的另一半 —— 规则卡只管规则，保存只写 rules；账户生效参数由上方风控卡的「保存改动」一并保存。 -->
+         的另一半 —— 规则卡只管规则，保存只写 rules；账户生效参数由上方风控卡的「保存」一并保存。 -->
     <SettingsExecutionPolicy
       class="mt-3.5"
       :version="policyVersion"
-      :msg="policyMsg"
       :busy="policyBusy"
       :saving="policySaving"
-      @dismiss="policyMsg = null"
       @save="saveRules"
     >
       <template #rules>
@@ -506,20 +502,11 @@ async function rollbackPolicy(): Promise<void> {
             @touch="editDirty = true"
             @save="saveRules"
             @rollback="rollbackPolicy"
-            @invalid="policyMsg = $event"
+            @invalid="policyErr = $event"
           />
           <span v-if="editDirty" class="sr-only">有未保存的修改</span>
         </div>
       </template>
     </SettingsExecutionPolicy>
-    <div class="mt-4 flex items-end justify-end">
-      <Button
-        size="sm"
-        :disabled="policySaving || policyBusy || !editDirty"
-        @click="saveAll"
-      >
-        <Save class="size-3.5" />{{ policySaving ? '保存中…' : '保存' }}
-      </Button>
-    </div>
   </div>
 </template>

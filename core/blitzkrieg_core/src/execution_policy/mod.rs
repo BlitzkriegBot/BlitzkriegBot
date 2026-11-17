@@ -1165,8 +1165,21 @@ impl Policy {
         sql_flat: &std::collections::BTreeMap<String, String>,
         process_env: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, String> {
-        let file_map: std::collections::HashMap<String, String> = std::fs::read_to_string(env_path)
-            .map_err(|e| format!("{} unreadable: {e}", env_path.display()))?
+        // A MISSING `.env` means "no legacy file lines", not a failed reload:
+        // since 操作者裁决 2026-11-14 the durable write face is SQLite and the
+        // file survives only as the hand-edit/legacy layer. A clean install
+        // (release archive, or a core started from a data-only directory) has
+        // no `.env` at all, and the reload must still resolve from the SQL
+        // rows — otherwise every save is refused with
+        // `rpc -32602: <path> unreadable: No such file or directory`. Any
+        // OTHER io error (permissions, a directory in the way) still fails
+        // closed, because such a file may be hiding a tightening line.
+        let file_text = match std::fs::read_to_string(env_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("{} unreadable: {e}", env_path.display())),
+        };
+        let file_map: std::collections::HashMap<String, String> = file_text
             .lines()
             .filter_map(crate::env_file::parse_line)
             .collect();

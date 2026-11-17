@@ -7,6 +7,7 @@
  */
 import { ref } from 'vue'
 import type { ExecutionPolicyPreviewDoc, PolicyRuleView, PolicyThenView } from '@/api/client'
+import { Plus, RotateCcw, Save } from 'lucide-vue-next'
 import { dateTime } from '@/lib/format'
 import Badge from '@/components/ui/badge/Badge.vue'
 import Button from '@/components/ui/button/Button.vue'
@@ -116,7 +117,7 @@ function verdictBadge(v: string): { text: string; variant: 'up' | 'down' | 'gold
     <div class="flex items-center justify-between">
       <span class="label-micro">规则（拖拽卡片调整优先级）</span>
       <Button variant="outline" size="sm" :disabled="ruleDraft != null" @click="startAddRule">
-        + 新规则
+        <Plus class="size-3.5" />新规则
       </Button>
     </div>
     <div class="mt-2 space-y-2">
@@ -196,7 +197,7 @@ function verdictBadge(v: string): { text: string; variant: 'up' | 'down' | 'gold
     <!-- 版本与保存 -->
     <div class="mt-4 flex flex-wrap items-center gap-2">
       <Button size="sm" :disabled="saving || busy" @click="emit('save')">
-        {{ saving ? '保存中…' : '保存（写入内核）' }}
+        <Save class="size-3.5" />{{ saving ? '保存中…' : '保存' }}
       </Button>
       <Button
         variant="outline"
@@ -204,7 +205,7 @@ function verdictBadge(v: string): { text: string; variant: 'up' | 'down' | 'gold
         :disabled="saving || busy || version === 0"
         :title="version === 0 ? '还没有可回滚的历史' : `回滚到 v${version - 1}（取最近一次 set 的 before 状态写回）`"
         @click="emit('rollback')"
-      >回滚到 v{{ Math.max(version - 1, 0) }}</Button>
+      ><RotateCcw class="size-3.5" />回滚到 v{{ Math.max(version - 1, 0) }}</Button>
       <span class="text-[11px] text-faint-fg">版本号 = 审计记录数（当前 v{{ version }}）</span>
     </div>
   </div>

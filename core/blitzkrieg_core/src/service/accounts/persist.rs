@@ -2,7 +2,6 @@
 
 use crate::account::AccountLedgers;
 use crate::model::*;
-use blitzkrieg_market_api::net::now_ms;
 use rust_decimal::Decimal;
 use std::collections::HashSet;
 
@@ -910,13 +909,12 @@ impl Core {
         let Some(db) = self.account_risk_db.clone() else {
             return Ok(Vec::new());
         };
-        // The persisted enabled-set (strategy-state.json) drives the one-time
-        // migration of the default account. Read BEFORE any write.
-        let persisted_enabled: Vec<String> = match self.config.strategy_state_path.as_deref() {
-            Some(p) => crate::strategy_state::load(std::path::Path::new(p)),
-            None => Vec::new(),
-        };
-        let default_id = crate::account::default_account_id();
+        // Default 账户的策略集不再从 strategy_state.json 迁移（default 的
+        // 启用策略只认 .env ACCOUNT_DEFAULT_STRATEGIES / 运行时
+        // `account.strategies.set`），避免旧 persisted set 把默认账户强塞
+        // 成若干策略（issue：default 0 启用策略却账本说 7 个）。
+        // 这里只保留 per-account round duration  overlay 和各账户 enablement
+        // set 进 scope 的应用。
         // Overlay per-account round durations from SQLite (issue #1230):
         // the account_settings row wins over the .env default read at book
         // load. A row that fails to parse is warn-skipped; one bad cell must
@@ -948,48 +946,10 @@ impl Core {
                 }
             }
         }
-        // The default account's assignment key decides whether the boot runs
-        // on the file's spelling (migration already happened) or migrates.
-        let default_has_key = self
-            .accounts
-            .account(&default_id)
-            .is_some_and(|a| !a.strategies.is_empty());
-        let mut migrated: Vec<String> = Vec::new();
-        if !default_has_key && !persisted_enabled.is_empty() {
-            // One-time migration: the file gains the explicit default
-            // assignment, spelling exactly what the old implicit behaviour
-            // (inherit the persisted enabled set) produced. The write is
-            // best-effort — a read-only tree keeps the implicit shape and
-            // the boot proceeds (the persisted set is re-read next boot).
-            //
-            // #537: the persisted set is also kept in lockstep from here on —
-            // the default toggle now rewrites BOTH stores, and a set the
-            // operator emptied (key removed from the file, empty state file)
-            // must not be resurrected by a stale state file left over from
-            // the pre-toggle era. This one-time gate fires only when the file
-            // never spelled an assignment; afterwards the accounts file is
-            // the sole truth, exactly as the contract above states.
-            let rendered = serde_json::to_string(&persisted_enabled).unwrap_or_default();
-            if db
-                .save_setting(
-                    default_id.as_str(),
-                    crate::risk::account_store::STRATEGIES_SETTING,
-                    Some(&rendered),
-                )
-                .is_ok()
-            {
-                let _ =
-                    self.accounts
-                        .set_strategies(&default_id, persisted_enabled.clone(), now_ms());
-                migrated = persisted_enabled;
-                tracing::info!(
-                    strategies = ?migrated,
-                    "strategy enablement migration: the default account's persisted \
-                     enabled set is materialized as its account_settings row — \
-                     the database row is the only truth from here on"
-                );
-            }
-        }
+        // Default 账户的策略集不再从旧的 persisted enabled set 迁移：默认账户
+        // 显式为 0 个启用策略时，账本就如实说 0，不会被旧 state 文件强塞
+        // 成若干策略。各账户的 enablement set 进 scope 的应用（下方）
+        // 保持不变：default 账户 strategies 为空时不会进入，scope 保持静默。
         // Apply every account's enablement set (the default's included —
         // after migration it spells the old behaviour). An empty key is the
         // EXPLICIT "run nothing on this account" set — it never follows the
@@ -1010,7 +970,7 @@ impl Core {
             // registered set is what the strategy dir loaded this boot).
             self.set_account_scopes_at_boot(&account, &strategies);
         }
-        Ok(migrated)
+        Ok(Vec::new())
     }
 
     /// The boot-flavoured scope application: instantiate `strategies` for

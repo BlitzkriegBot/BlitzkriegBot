@@ -352,10 +352,11 @@ fn spot_update_golden() {
         asset: "BTC".into(),
         price: d("65000.5"),
         ts_ms: TS,
+        trade_time: Some(TS - 500),
     };
     assert_round_trip(
         &spot,
-        r#"{"asset":"BTC","price":65000.5,"tsMs":1000000000000}"#,
+        r#"{"asset":"BTC","price":65000.5,"tsMs":1000000000000,"tradeTime":"999999999500"}"#,
     );
 }
 

@@ -28,6 +28,7 @@ fn all_events(now: i64) -> Vec<DataEvent> {
             asset: "BTC".into(),
             price: dec!(62850.123456789),
             now_ms: now + 3,
+            trade_time: None,
         },
         DataEvent::Resolution {
             condition_id: "0xcond".into(),
@@ -142,11 +143,13 @@ fn eq(a: &DataEvent, b: &DataEvent) {
                 asset: s1,
                 price: p1,
                 now_ms: n1,
+                trade_time: _,
             },
             DataEvent::Spot {
                 asset: s2,
                 price: p2,
                 now_ms: n2,
+                trade_time: _,
             },
         ) => assert_eq!((s1, p1, n1), (s2, p2, n2)),
         (
@@ -224,6 +227,7 @@ fn decimals_survive_round_trip_exactly() {
         asset: "BTC".into(),
         price: dec!(0.07),
         now_ms: 1,
+        trade_time: None,
     };
     let back = event_from_json(&event_to_json(&ev)).unwrap();
     match back {
@@ -433,6 +437,7 @@ fn archive_rotates_segments_without_losing_events() {
             asset: "BTC".into(),
             price: dec!(1),
             now_ms: 1_757_851_200_000 + i as i64 * 1000,
+            trade_time: None,
         };
         a.record_at(event_at_ms(&ev), &ev);
     }
@@ -490,6 +495,7 @@ fn disk_guard_stops_before_the_volume_fills() {
             asset: "BTC".into(),
             price: dec!(1),
             now_ms: 1_757_851_200_000 + i,
+            trade_time: None,
         };
         a.record_at(event_at_ms(&ev), &ev);
     }
@@ -576,6 +582,7 @@ fn archive_open_cleans_legacy_segments_before_recording() {
         asset: "BTC".into(),
         price: dec!(1),
         now_ms: 1,
+        trade_time: None,
     };
     a.record(&ev);
     a.flush();
@@ -605,6 +612,7 @@ fn segment_source_reads_every_rotated_segment_in_order() {
             asset: "BTC".into(),
             price: dec!(1),
             now_ms: 1_757_851_200_000 + i as i64,
+            trade_time: None,
         };
         a.record_at(event_at_ms(&ev), &ev);
     }
@@ -699,6 +707,7 @@ fn archive_cap_stops_recording_without_deleting() {
         asset: "BTC".into(),
         price: dec!(1),
         now_ms: 1,
+        trade_time: None,
     };
     let mut a = EventArchive::open(&path, 60).unwrap();
     for _ in 0..50 {
@@ -736,6 +745,7 @@ fn a_second_writer_cannot_share_the_archive() {
         asset: "BTC".into(),
         price: dec!(1),
         now_ms: 1,
+        trade_time: None,
     };
     let mut first = EventArchive::open(&path, 0).unwrap();
     assert!(

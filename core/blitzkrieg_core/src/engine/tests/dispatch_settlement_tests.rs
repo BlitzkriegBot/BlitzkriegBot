@@ -264,6 +264,7 @@ fn engine_places_a_trend_confirmed_dip_buy() {
         asset: "BTC".into(),
         price: dec!(60000),
         now_ms: now + 12_000,
+        trade_time: None,
     });
 
     let orders = e.evaluate(now + 12_000);
@@ -320,11 +321,13 @@ fn engine_blocks_entry_when_spot_moves_against() {
         asset: "BTC".into(),
         price: dec!(60000),
         now_ms: now + 1000,
+        trade_time: None,
     });
     e.on_data(DataEvent::Spot {
         asset: "BTC".into(),
         price: dec!(59000),
         now_ms: now + 12_000,
+        trade_time: None,
     });
     assert!(
         e.evaluate(now + 12_000).is_empty(),
@@ -547,6 +550,7 @@ fn the_chase_leg_is_blocked_by_the_shared_spot_gate_when_spot_falls() {
             asset: "BTC".into(),
             price: dec!(60000) - Decimal::from(i) * dec!(10),
             now_ms: 1_000_000 + i * 1000,
+            trade_time: None,
         });
     }
     rising_books(&mut e, "up", 12, 1_000_000);

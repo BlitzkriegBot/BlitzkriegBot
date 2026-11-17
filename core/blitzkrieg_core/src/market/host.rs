@@ -431,9 +431,10 @@ impl MarketHost for CoreHost {
                     asset: update.asset,
                     price: update.price,
                     now_ms: update.ts_ms,
+                    trade_time: update.trade_time,
                 },
                 now,
-            );
+            )
         })
     }
 

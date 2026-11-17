@@ -942,6 +942,8 @@ pub(crate) fn builtin_registry() -> blitzkrieg_core::market::registry::MarketPlu
     let reg = blitzkrieg_core::market::registry::MarketPluginRegistry::new();
     #[cfg(feature = "polymarket")]
     reg.register(Box::new(polymarket_extension::PolymarketPlugin::new()));
+    #[cfg(feature = "binance_spot")]
+    reg.register(Box::new(binance_spot_extension::BinanceSpotPlugin::new()));
     #[cfg(feature = "kalshi")]
     reg.register(Box::new(kalshi_extension::KalshiPlugin::new()));
     #[cfg(feature = "predictfun")]

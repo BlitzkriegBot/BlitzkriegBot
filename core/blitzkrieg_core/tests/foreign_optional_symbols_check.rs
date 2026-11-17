@@ -167,6 +167,7 @@ fn engine_cfg() -> EngineConfig {
         max_shares: dec!(10),
         size_pct: dec!(0),
         strategy_sizes: std::collections::HashMap::new(),
+        spot_freshness_max_ms: None,
     }
 }
 

@@ -17,8 +17,7 @@
 //! rather than on a poll boundary.
 
 use blitzkrieg_bk_contract::net::now_ms;
-use blitzkrieg_bk_contract::{BookUpdate, MarketHost, SpotUpdate};
-use futures_util::StreamExt;
+use blitzkrieg_bk_contract::{BookUpdate, MarketHost};
 use polymarket_client_sdk_v2::error::{
     Error as SdkError, Kind as SdkErrorKind, Status as SdkErrorStatus,
 };
@@ -198,21 +197,12 @@ pub enum FeedEvent {
         books: Vec<BatchBook>,
         now_ms: i64,
     },
-    Spot {
-        asset: String,
-        price: Decimal,
-        now_ms: i64,
-    },
     Info(String),
 }
 
 /// Run all feeds, forwarding every update to the [`MarketHost`]. `token_ids` is
 /// the initial subscription set; the caller may add more via [`FeedHandle`].
-pub async fn spawn_feed(
-    host: Arc<dyn MarketHost>,
-    token_ids: Vec<String>,
-    binance_assets: Vec<String>,
-) -> FeedHandle {
+pub async fn spawn_feed(host: Arc<dyn MarketHost>, token_ids: Vec<String>) -> FeedHandle {
     let (ev_tx, ev_rx) = mpsc::channel::<FeedEvent>(1024);
 
     // Event pump: feed → host (the market seam).
@@ -251,18 +241,6 @@ pub async fn spawn_feed(
                             .collect();
                         host.on_books(updates, now_ms).await;
                     }
-                    FeedEvent::Spot {
-                        asset,
-                        price,
-                        now_ms,
-                    } => {
-                        host.on_spot(SpotUpdate {
-                            asset,
-                            price,
-                            ts_ms: now_ms,
-                        })
-                        .await;
-                    }
                     FeedEvent::Info(msg) => {
                         tracing::info!(feed = %msg, "feed");
                     }
@@ -298,15 +276,6 @@ pub async fn spawn_feed(
         let _ = ev_tx.send(FeedEvent::Info(warning)).await;
     }
 
-    // Binance spot feed (reconnect loop).
-    if !binance_assets.is_empty() {
-        let ev_tx = ev_tx.clone();
-        let assets = binance_assets.clone();
-        tokio::spawn(async move {
-            binance_spot_loop(assets, ev_tx).await;
-        });
-    }
-
     FeedHandle {
         tx: ctl_tx,
         _ev: ev_tx,
@@ -336,28 +305,6 @@ impl blitzkrieg_bk_contract::SubscriptionControl for FeedHandle {
 }
 
 // ── Polymarket orderbook via REST polling ───────────────────────────────────
-
-/// How long to wait before dialing Binance again.
-///
-/// A transport blip retries in 5s. HTTP 451 is the venue refusing the source
-/// IP ("restricted location"); retrying every 5s for the life of the process
-/// only fills the capture log and never obtains a trade. A minute is still a
-/// retry, not a give-up.
-fn binance_reconnect_pause(err: &str) -> Duration {
-    if err.contains("451") {
-        Duration::from_secs(60)
-    } else {
-        Duration::from_secs(5)
-    }
-}
-
-/// A combined Binance `@trade` stream of the liquid pairs this feed subscribes
-/// (BTC/ETH/SOL/XRP) prints many times a second. Silence longer than this is a
-/// transport gap, not a quiet market, so the feed logs it. It is an observation
-/// only — it does not change the book stamp, the staleness budget, or any
-/// order. 3500ms is about three default book polls: the same hole the
-/// data-quality report counts as a missed snapshot.
-const WS_SILENCE_LOG_MS: u128 = 3_500;
 
 /// Median and max of `local_now_ms - venue_ms`.
 ///
@@ -579,113 +526,7 @@ async fn poly_rest_loop(
     }
 }
 
-// ── Binance spot via tokio-tungstenite ──────────────────────────────────────
-
-async fn binance_spot_loop(assets: Vec<String>, ev_tx: mpsc::Sender<FeedEvent>) {
-    use tokio_tungstenite::tungstenite::Message;
-
-    let streams: Vec<String> = assets
-        .iter()
-        .map(|a| format!("{}@trade", a.to_lowercase() + "usdt"))
-        .collect();
-    let url = format!("wss://stream.binance.com:9443/ws/{}", streams.join("/"));
-
-    // Clock of the last trade frame. A reconnect's first trade measures the
-    // hole the socket was down for; a live socket that simply stops printing
-    // measures a stall. Either one longer than [`WS_SILENCE_LOG_MS`] is logged.
-    let mut last_rx = std::time::Instant::now();
-    let mut saw_trade = false;
-    // Both arms assign this before the sleep. A successful dial waits 5s
-    // before the next reconnect; a refused dial uses [`binance_reconnect_pause`].
-    let mut pause;
-    loop {
-        match crate::proxy::connect(&url).await {
-            Ok((ws, _)) => {
-                pause = Duration::from_secs(5);
-                let _ = ev_tx
-                    .send(FeedEvent::Info("binance spot connected".into()))
-                    .await;
-                let (_write, mut read) = ws.split();
-                while let Some(next) = read.next().await {
-                    match next {
-                        Ok(Message::Text(txt)) => {
-                            if let Some((symbol, price)) = parse_binance_trade(&txt) {
-                                let silence_ms = last_rx.elapsed().as_millis();
-                                if saw_trade && silence_ms >= WS_SILENCE_LOG_MS {
-                                    let _ = ev_tx
-                                        .send(FeedEvent::Info(format!(
-                                            "binance ws gap silence_ms={silence_ms} why=trade"
-                                        )))
-                                        .await;
-                                }
-                                saw_trade = true;
-                                last_rx = std::time::Instant::now();
-                                let asset = symbol
-                                    .trim_end_matches("USDT")
-                                    .trim_end_matches("USD")
-                                    .to_string();
-                                let _ = ev_tx
-                                    .send(FeedEvent::Spot {
-                                        asset,
-                                        price,
-                                        now_ms: now_ms(),
-                                    })
-                                    .await;
-                            }
-                        }
-                        Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
-                        Ok(Message::Close(_)) => {
-                            let silence_ms = last_rx.elapsed().as_millis();
-                            if saw_trade && silence_ms >= WS_SILENCE_LOG_MS {
-                                let _ = ev_tx
-                                    .send(FeedEvent::Info(format!(
-                                        "binance ws gap silence_ms={silence_ms} why=close"
-                                    )))
-                                    .await;
-                            }
-                            break;
-                        }
-                        Err(e) => {
-                            let silence_ms = last_rx.elapsed().as_millis();
-                            let _ = ev_tx
-                                .send(FeedEvent::Info(format!("binance ws error: {e}")))
-                                .await;
-                            if saw_trade && silence_ms >= WS_SILENCE_LOG_MS {
-                                let _ = ev_tx
-                                    .send(FeedEvent::Info(format!(
-                                        "binance ws gap silence_ms={silence_ms} why=error"
-                                    )))
-                                    .await;
-                            }
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                pause = binance_reconnect_pause(&msg);
-                let _ = ev_tx
-                    .send(FeedEvent::Info(format!("binance connect: {msg}")))
-                    .await;
-            }
-        }
-        tokio::time::sleep(pause).await;
-    }
-}
-
-/// Parse a Binance combined `@trade` payload into (symbol, price).
-/// Format: {"e":"trade","s":"BTCUSDT","p":"60000.00",...}
-pub fn parse_binance_trade(text: &str) -> Option<(String, Decimal)> {
-    let v: serde_json::Value = serde_json::from_str(text).ok()?;
-    if v.get("e").and_then(|e| e.as_str()) != Some("trade") {
-        return None;
-    }
-    let symbol = v.get("s")?.as_str()?.to_string();
-    let price = Decimal::from_str(v.get("p")?.as_str()?).ok()?;
-    Some((symbol, price))
-}
+// ── Compile-time cadence assertions ─────────────────────────────────────────
 
 /// The engine's freshness budget has to stay well clear of the poll interval,
 /// or a perfectly healthy poller reads to the engine as a dead feed. Checked at
@@ -718,20 +559,6 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU16, Ordering};
-
-    #[test]
-    fn parses_binance_trade() {
-        let msg = r#"{"e":"trade","s":"BTCUSDT","p":"60000.50","q":"0.01"}"#;
-        let (sym, px) = parse_binance_trade(msg).unwrap();
-        assert_eq!(sym, "BTCUSDT");
-        assert_eq!(px, Decimal::from_str("60000.50").unwrap());
-    }
-
-    #[test]
-    fn ignores_non_trade_messages() {
-        assert!(parse_binance_trade(r#"{"e":"24hrTicker","s":"BTCUSDT"}"#).is_none());
-        assert!(parse_binance_trade("not json").is_none());
-    }
 
     fn dec(s: &str) -> Decimal {
         Decimal::from_str(s).unwrap()
@@ -1003,18 +830,6 @@ mod tests {
         assert!(
             line.contains("venue_lag_ms="),
             "venue timestamp must survive as a lag, got {line}"
-        );
-    }
-
-    #[test]
-    fn a_geo_block_waits_longer_than_a_transport_blip() {
-        assert_eq!(
-            binance_reconnect_pause("HTTP error: 451 Unavailable For Legal Reasons"),
-            Duration::from_secs(60)
-        );
-        assert_eq!(
-            binance_reconnect_pause("Connection refused"),
-            Duration::from_secs(5)
         );
     }
 

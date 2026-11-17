@@ -540,6 +540,7 @@ fn race_engine() -> EngineConfig {
         max_shares: dec!(10),
         size_pct: Decimal::ZERO,
         strategy_sizes: HashMap::new(),
+        spot_freshness_max_ms: None,
     }
 }
 

@@ -431,6 +431,7 @@ fn a_stale_spot_feed_signals_once_per_episode() {
                 asset: "BTC".into(),
                 price: dec!(50_000),
                 now_ms: T0,
+                trade_time: None,
             },
             T0,
         );
@@ -447,6 +448,7 @@ fn a_stale_spot_feed_signals_once_per_episode() {
                 asset: "BTC".into(),
                 price: dec!(50_100),
                 now_ms: T0 + 80_000,
+                trade_time: None,
             },
             T0 + 80_000,
         ); // 恢复

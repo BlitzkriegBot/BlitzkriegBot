@@ -14,8 +14,9 @@ members = [
     # #841: the external composition root — the ONLY member that links the
     # concrete market extensions and produces the `blitzkrieg-core` binary.
     "core/blitzkrieg_launcher",
-    "extensions/polymarket",
-    "extensions/kalshi",
+"extensions/polymarket",
+"extensions/binance_spot",
+"extensions/kalshi",
     "extensions/predictfun",
     "extensions/polysimulator",
     "user_layer/strategy_api",

@@ -113,14 +113,13 @@ impl DataFeed for PolymarketDataFeed {
     fn start<'a>(
         &'a self,
         host: Arc<dyn MarketHost>,
-        config: DataFeedConfig,
+        _config: DataFeedConfig,
         initial_tokens: Vec<TokenId>,
     ) -> BoxFuture<'a, CoreResult<()>> {
         Box::pin(async move {
             // `spawn_feed` returns a handle immediately and drives the loops on
             // background tasks; register it so the host can re-subscribe tokens.
-            let handle =
-                crate::feed::spawn_feed(host.clone(), initial_tokens, config.spot_assets).await;
+            let handle = crate::feed::spawn_feed(host.clone(), initial_tokens).await;
             host.install_subscription_control("polymarket", Arc::new(handle))
                 .await;
             Ok(())

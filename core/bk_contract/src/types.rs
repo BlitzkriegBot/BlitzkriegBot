@@ -11,6 +11,40 @@ use crate::decimal;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+/// Serialize `Option<i64>` as a JSON string (absent when `None`).
+/// Mirrors the archive's `"t": "<trade_time>"` spelling for spot events.
+mod opt_i64_as_str {
+    use super::*;
+    pub fn serialize<S>(v: &Option<i64>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match v {
+            Some(t) => s.serialize_str(&t.to_string()),
+            None => s.serialize_none(),
+        }
+    }
+    pub fn deserialize<'d, D>(d: D) -> Result<Option<i64>, D::Error>
+    where
+        D: serde::Deserializer<'d>,
+    {
+        let v = Option::<serde_json::Value>::deserialize(d)?;
+        match v {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::String(s)) => {
+                s.parse::<i64>().map(Some).map_err(serde::de::Error::custom)
+            }
+            Some(serde_json::Value::Number(n)) => n
+                .as_i64()
+                .map(Some)
+                .ok_or_else(|| serde::de::Error::custom("expected i64")),
+            Some(other) => Err(serde::de::Error::custom(format!(
+                "expected string/number, got {other}"
+            ))),
+        }
+    }
+}
+
 pub type TokenId = String;
 pub type OrderId = String;
 pub type TradeId = String;
@@ -378,6 +412,16 @@ pub struct SpotUpdate {
     #[serde(with = "decimal")]
     pub price: Decimal,
     pub ts_ms: i64,
+    /// Upstream trade time (e.g. Binance `T` field). `None` when the source did
+    /// not stamp one. Downstream uses `now_ms - trade_time` to measure spot
+    /// staleness; `ts_ms` (local receive time) is NOT a freshness signal because
+    /// a stalled socket stamps every late tick with "now".
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "opt_i64_as_str"
+    )]
+    pub trade_time: Option<i64>,
 }
 
 /// An order the core has accepted locally but not yet placed on a venue.

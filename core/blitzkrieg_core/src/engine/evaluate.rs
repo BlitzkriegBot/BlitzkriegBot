@@ -11,6 +11,10 @@ impl Engine {
             scanner: Scanner::new(cfg.scanner.clone()),
             books: HashMap::new(),
             spot: HashMap::new(),
+            // Last upstream trade time per asset (`trade_time` from the spot
+            // feed). `None` asset = never seen spot. Used by the optional
+            // spot-freshness guard in `momentum_ok` (OFF by default, R6).
+            spot_last_trade_time: HashMap::new(),
             pending_tokens: HashSet::new(),
             last_candidates: Vec::new(),
             candidates_stable: false,
@@ -506,11 +510,17 @@ impl Engine {
                 asset,
                 price,
                 now_ms,
+                trade_time,
             } => {
+                // Use the upstream trade stamp when available — it is the only
+                // honest freshness signal. `now_ms` (local receive time) masks a
+                // stalled socket: every late tick gets stamped "now".
+                let at = trade_time.unwrap_or(now_ms);
                 self.spot
                     .entry(asset.clone())
                     .or_insert_with(|| PriceBuffer::new(180))
-                    .push(price, now_ms);
+                    .push(price, at);
+                self.spot_last_trade_time.insert(asset.clone(), at);
                 self.feed_kline_price(&asset, price, now_ms);
                 return Vec::new();
             }
@@ -1098,6 +1108,28 @@ impl Engine {
         dir: SignalDirection,
         now_ms: i64,
     ) -> Result<(), String> {
+        // Spot freshness guard (OFF by default — R6, human approval to enable).
+        // Reject when the upstream trade stamp is missing or older than the
+        // budget, so a stalled socket never feeds the momentum filter a price
+        // that pretends to be "now".
+        if let Some(max_ms) = self.cfg.spot_freshness_max_ms {
+            let last = self.spot_last_trade_time.get(asset).copied();
+            match last {
+                None => {
+                    return Err(format!(
+                        "spot {asset} never seen this session — freshness guard armed"
+                    ));
+                }
+                Some(at) if now_ms.saturating_sub(at) > max_ms => {
+                    return Err(format!(
+                        "spot {asset} stale {}s (> {max_ms}ms budget) — freshness guard armed",
+                        (now_ms - at) / 1000
+                    ));
+                }
+                _ => {}
+            }
+        }
+
         let Some(buf) = self.spot.get(asset) else {
             return Ok(());
         };

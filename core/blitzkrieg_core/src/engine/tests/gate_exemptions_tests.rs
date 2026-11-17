@@ -38,11 +38,13 @@ fn spot_falls(e: &mut Engine, asset: &str, from: Decimal, to: Decimal, now: i64)
         asset: asset.into(),
         price: from,
         now_ms: now,
+        trade_time: None,
     });
     e.on_data(DataEvent::Spot {
         asset: asset.into(),
         price: to,
         now_ms: now + 2_000,
+        trade_time: None,
     });
 }
 

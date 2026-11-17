@@ -41,6 +41,7 @@ fn engine_cfg() -> EngineConfig {
         max_shares: dec!(10),
         size_pct: Decimal::ZERO,
         strategy_sizes: HashMap::new(),
+        spot_freshness_max_ms: None,
     }
 }
 
@@ -460,6 +461,7 @@ fn feed_entry_setup(c: &mut Core, now: i64) {
             asset: "BTC".into(),
             price: dec!(60000),
             now_ms: t,
+            trade_time: None,
         },
         t,
     );

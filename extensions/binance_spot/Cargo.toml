@@ -1,0 +1,24 @@
+[package]
+name = "blitzkrieg-binance-spot"
+version.workspace = true
+edition = "2024"
+description = "Binance spot market extension for Blitzkrieg core — independent reference-price feed (decoupled from Polymarket)."
+
+[lib]
+name = "binance_spot_extension"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+# The extension depends ONLY on the market contract (blitzkrieg-bk-contract).
+# It must NOT depend on blitzkrieg-core — #841: only the composition root
+# (core/blitzkrieg_launcher) links extensions, so an inverse edge would form a
+# Cargo cycle and break the plugin/kernel boundary.
+blitzkrieg-bk-contract = { path = "../../core/bk_contract" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
+rust_decimal = { workspace = true }
+serde_json = { workspace = true }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
+tracing = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+base64 = "0.22"

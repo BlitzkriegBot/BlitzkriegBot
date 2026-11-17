@@ -400,6 +400,7 @@ mod tests {
                 asset: "BTC".into(),
                 price: dec!(62850.123456789),
                 now_ms: now + 3,
+                trade_time: None,
             },
             DataEvent::Resolution {
                 condition_id: "0xcond".into(),
@@ -535,11 +536,13 @@ mod tests {
                     asset: s1,
                     price: p1,
                     now_ms: n1,
+                    trade_time: _,
                 },
                 DataEvent::Spot {
                     asset: s2,
                     price: p2,
                     now_ms: n2,
+                    trade_time: _,
                 },
             ) => assert_eq!((s1, p1, n1), (s2, p2, n2)),
             (
@@ -618,6 +621,7 @@ mod tests {
             asset: "BTC".into(),
             price: dec!(0.07),
             now_ms: 1,
+            trade_time: None,
         };
         let back = crate::events::event_from_json(&crate::events::event_to_json(&ev)).unwrap();
         match back {

@@ -53,6 +53,7 @@ fn scenario_events(now: i64) -> Vec<TimedEvent> {
             asset: "BTC".into(),
             price: dec!(60000),
             now_ms: t,
+            trade_time: None,
         },
     });
     // The take-profit book arrives AFTER the escalation deadline: the
@@ -598,6 +599,7 @@ fn dense_stream_keeps_live_evaluation_cadence() {
                 asset: "BTC".into(),
                 price: dec!(60000),
                 now_ms: t,
+                trade_time: None,
             },
         });
     }
@@ -610,6 +612,7 @@ fn dense_stream_keeps_live_evaluation_cadence() {
             asset: "BTC".into(),
             price: dec!(60001),
             now_ms: NOW + 500,
+            trade_time: None,
         },
     });
 
@@ -647,6 +650,7 @@ fn sparse_stream_evaluates_every_due_cycle() {
                 asset: "BTC".into(),
                 price: dec!(60000),
                 now_ms: NOW + 10_000,
+                trade_time: None,
             },
         },
     ];

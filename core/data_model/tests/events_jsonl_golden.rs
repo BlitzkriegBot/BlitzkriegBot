@@ -107,6 +107,7 @@ fn every_kind_has_a_frozen_golden_line() {
         asset: "BTC".into(),
         price: d("65000.5"),
         now_ms: TS,
+        trade_time: None,
     };
     assert_eq!(
         line(&spot),
@@ -232,6 +233,7 @@ fn every_golden_line_decodes_back_to_the_same_event() {
             asset: "BTC".into(),
             price: d("65000.5"),
             now_ms: TS,
+            trade_time: None,
         },
         DataEvent::RoundMarkets {
             markets: vec![market()],

@@ -208,6 +208,7 @@ pub(crate) async fn handle_misc(
                                 asset: p.asset,
                                 price: p.price,
                                 now_ms: now,
+                                trade_time: None,
                             },
                             now,
                         );

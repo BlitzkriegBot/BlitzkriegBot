@@ -70,11 +70,14 @@ pub enum DataEvent {
         best_ask: Option<Decimal>,
         now_ms: i64,
     },
-    /// Binance spot price for an asset (e.g. "BTC").
+    /// Binance spot price for an asset (e.g. "BTC"). `trade_time` is the
+    /// upstream trade stamp; `now_ms` is local receive time. Use `trade_time`
+    /// for freshness — `now_ms` alone masks a stalled socket.
     Spot {
         asset: String,
         price: Decimal,
         now_ms: i64,
+        trade_time: Option<i64>,
     },
     /// Fresh round markets discovered by the scanner.
     RoundMarkets {
@@ -199,12 +202,21 @@ pub fn event_to_json(ev: &DataEvent) -> Value {
             asset,
             price,
             now_ms,
-        } => json!({
-            "at": now_ms,
-            "k": "spot",
-            "s": asset,
-            "p": price.to_string(),
-        }),
+            trade_time,
+        } => {
+            let mut v = json!({
+                "at": now_ms,
+                "k": "spot",
+                "s": asset,
+                "p": price.to_string(),
+            });
+            if let Some(t) = trade_time {
+                v.as_object_mut()
+                    .unwrap()
+                    .insert("t".to_string(), json!(t.to_string()));
+            }
+            v
+        }
         DataEvent::RoundMarkets { markets, now_ms } => json!({
             "at": now_ms,
             "k": "round",
@@ -340,6 +352,14 @@ pub fn event_from_json(v: &Value) -> Result<DataEvent, String> {
             asset: str_field(v, "s")?,
             price: dec_field(v, "p")?,
             now_ms,
+            trade_time: v
+                .get("t")
+                .and_then(Value::as_str)
+                .map(|s| {
+                    s.parse::<i64>()
+                        .map_err(|e| format!("bad trade_time `{s}`: {e}"))
+                })
+                .transpose()?,
         }),
         "round" => {
             let m = v.get("m").ok_or_else(|| "missing `m`".to_string())?;

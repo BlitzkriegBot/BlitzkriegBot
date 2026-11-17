@@ -77,6 +77,11 @@ pub struct EngineConfig {
     pub momentum_window_sec: i64,
     /// Tolerance for spot moving against the entry direction (%).
     pub momentum_tol_pct: Decimal,
+    /// Spot freshness guard for the momentum alignment filter. `None` = OFF
+    /// (historical behaviour: stale spot is accepted); `Some(ms)` = reject an
+    /// entry when `now_ms - spot_trade_time > ms`. A risk-control change —
+    /// OFF by default; human approval required to enable (RULES R6).
+    pub spot_freshness_max_ms: Option<i64>,
     /// Internal-key base so the OME dedups repeats within a round.
     pub size_usd: Decimal,
     pub min_shares: Decimal,
@@ -200,6 +205,7 @@ impl Default for EngineConfig {
             // today, and arming this would change their order sizes silently.
             size_pct: Decimal::ZERO,
             strategy_sizes: HashMap::new(),
+            spot_freshness_max_ms: None,
         }
     }
 }
@@ -369,6 +375,10 @@ pub struct Engine {
     scanner: Scanner,
     books: HashMap<String, LocalBook>,
     spot: HashMap<String, PriceBuffer>,
+    /// Last upstream trade time per asset (`trade_time` from the spot feed).
+    /// `None` asset = never seen spot. Used by the optional spot-freshness
+    /// guard in `momentum_ok` (OFF by default, R6).
+    spot_last_trade_time: HashMap<String, i64>,
     /// Tokens with a live entry order this round, to avoid re-signalling.
     /// Keyed `(account_id, token_id)`: two accounts trading the same token
     /// are two independent entries, and neither may suppress the other.
@@ -1296,6 +1306,7 @@ mod tests {
             max_shares: dec!(10),
             size_pct: Decimal::ZERO,
             strategy_sizes: HashMap::new(),
+            spot_freshness_max_ms: None,
         }
     }
 

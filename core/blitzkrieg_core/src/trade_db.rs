@@ -490,6 +490,11 @@ impl TradeDb {
             + "\n";
         // 原子写与主文件同一纪律（store-layer 门禁把 jsonl 直写钉成声明性
         // 债务——本归档写与下面的 rewrite 同类，一并进基线）。
+        //
+        // StoreApi 退化评估（issue #1257 follow-up）：trade_db.rs 是 JSONL-based
+        // trade log，StoreApi (SQLite) 是另一存储层（账户/风控/退出），两者
+        // 职责不重叠；归档写属于 trade-log 层，无法也不应经 StoreApi seam
+        // 退化，保持 jsonl::rewrite_atomic（与主文件同一原子重写纪律）。
         if !crate::jsonl::rewrite_atomic(&archive_path, archive_body.as_bytes()) {
             tracing::warn!(
                 account = %account,

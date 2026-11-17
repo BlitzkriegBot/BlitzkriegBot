@@ -25,5 +25,5 @@ core/blitzkrieg_core/src/trade_db.rs:308 json-direct crate::jsonl::rewrite_atomi
 core/blitzkrieg_core/src/trade_db.rs:349 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
 core/blitzkrieg_core/src/trade_db.rs:379 json-direct let _ = crate::jsonl::rewrite_atomic(&self.jsonl_path, b"");
 core/blitzkrieg_core/src/trade_db.rs:434 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
-core/blitzkrieg_core/src/trade_db.rs:493 json-direct if !crate::jsonl::rewrite_atomic(&archive_path, archive_body.as_bytes()) {
-core/blitzkrieg_core/src/trade_db.rs:514 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
+core/blitzkrieg_core/src/trade_db.rs:498 json-direct if !crate::jsonl::rewrite_atomic(&archive_path, archive_body.as_bytes()) {
+core/blitzkrieg_core/src/trade_db.rs:519 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {

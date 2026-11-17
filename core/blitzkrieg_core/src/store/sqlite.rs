@@ -61,6 +61,17 @@ use crate::store::FieldChanges;
 /// the table is already account-keyed, so the key carries no id).
 pub const ROUND_DURATION_SETTING: &str = "round.duration_sec";
 
+/// The reserved `defaults` account selector (env_state.rs): its row exists
+/// only so the globals `POLICY_*` rows satisfy the `account_settings` FK —
+/// scaffolding, never an account. Marked with [`DEFAULTS_STATUS_REASON`] so
+/// no reader mistakes the empty venue for an unbound account (#1253).
+pub const DEFAULTS_ACCOUNT_ID: &str = "defaults";
+/// `status_reason` written on the `defaults` row (and healed on pre-existing
+/// rows) in [`SqliteStore::ensure_account`] — the FK scaffold's own label,
+/// store-layer internal convention.
+pub const DEFAULTS_STATUS_REASON: &str =
+    "reserved-policy-selector (FK scaffold for the globals policy section)";
+
 /// The SQLite-backed [`StoreApi`](super::StoreApi) implementation.
 ///
 /// See the module doc for the domain coverage and the install gate.
@@ -271,8 +282,8 @@ impl SqliteStore {
         // here (and healed on pre-existing rows) so no reader mistakes the
         // empty venue for an unbound account (#1253); boot's
         // ledger_book_from_rows already refuses to materialize it.
-        let reserved = account_id.eq_ignore_ascii_case("defaults");
-        let marker = "reserved-policy-selector (FK scaffold for the globals policy section)";
+        let reserved = account_id.eq_ignore_ascii_case(DEFAULTS_ACCOUNT_ID);
+        let marker = DEFAULTS_STATUS_REASON;
         self.risk
             .db()
             .with_connection(|conn| {

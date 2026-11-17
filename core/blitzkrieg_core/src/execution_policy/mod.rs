@@ -261,6 +261,17 @@ pub const EXECUTION_POLICY_AUDIT_PATH: &str = "data/audit/execution_policy.jsonl
 /// rewrite this code has not seen — refuse rather than guess (fail-closed).
 pub const POLICY_VERSION: u32 = 1;
 
+/// Sanity ceiling for the per-account budget caps
+/// (`max_budget_usd`, `min_equity_usd`) validated in `SectionDefaults::validate`.
+///
+/// The compiled code default cap is `$10 000` ([`code_defaults`]):
+/// `$1 000 000` is therefore the 100x operator-approved bound — generous
+/// against every real deployment, yet refuses the production typo that shipped
+/// `max_budget_usd = 1.02e16` (≈ unlimited, issue #1253). The parser already
+/// guarantees finiteness; this refuses the magnitude. Judged on every resolved
+/// section, so file, env and IPC layers fail closed together.
+pub const MAX_BUDGET_CEILING_USD: Decimal = dec!(1_000_000);
+
 // ── Wire types ──────────────────────────────────────────────────────────────
 
 /// TOML/JSON → Decimal with the ONE precision rule the repo's own
@@ -855,11 +866,10 @@ impl SectionDefaults {
         // #1253: above the sanity ceiling a "cap" is the cap's negation — the
         // production store held max_budget_usd = 1.02e16 (≈ unlimited) from a
         // typo'd save. The parser already guarantees finiteness; this refuses
-        // the magnitude. Generous against every real deployment (the code
-        // default cap is $10 000; the ceiling is an operator-approved bound),
-        // and judged on EVERY resolved section, so file, env and IPC layers
+        // the magnitude; [`MAX_BUDGET_CEILING_USD`] is the operator-approved
+        // bound, judged on EVERY resolved section so file, env and IPC layers
         // all fail closed together.
-        let sanity_ceiling = dec!(1_000_000);
+        let sanity_ceiling = MAX_BUDGET_CEILING_USD;
         if self.max_budget_usd > sanity_ceiling {
             return Err(format!(
                 "{label}: max_budget_usd {} exceeds the sanity ceiling {sanity_ceiling} — \

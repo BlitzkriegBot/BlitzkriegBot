@@ -336,7 +336,7 @@ fn reconcile_from_another_venue_leaves_the_resting_order_alone() {
             crate::reconcile::VenueSnapshot {
                 open_order_ids: vec![],
                 trades: vec![],
-                now_ms: 3,
+                now_ms: 20_000,
             },
             "kalshi",
         )
@@ -358,7 +358,7 @@ fn reconcile_from_another_venue_leaves_the_resting_order_alone() {
             crate::reconcile::VenueSnapshot {
                 open_order_ids: vec![],
                 trades: vec![],
-                now_ms: 4,
+                now_ms: 20_001,
             },
             "polymarket",
         )

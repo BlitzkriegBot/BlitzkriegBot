@@ -216,7 +216,7 @@ fn sweep_marked_terminal_orders_are_persisted() {
     let snap = crate::reconcile::VenueSnapshot {
         open_order_ids: vec![],
         trades: vec![],
-        now_ms: 3,
+        now_ms: 20_000,
     };
     let report = c.reconcile(snap).unwrap();
     assert_eq!(
@@ -854,7 +854,7 @@ fn ghost_sweep_releases_the_buy_reservation_and_keeps_entries_open() {
         .reconcile(VenueSnapshot {
             open_order_ids: vec![],
             trades: vec![],
-            now_ms: 3,
+            now_ms: 20_000,
         })
         .unwrap();
     assert!(report.suspect_ghost_ids.contains(&id));
@@ -880,7 +880,7 @@ fn ghost_sweep_releases_the_buy_reservation_and_keeps_entries_open() {
     );
 
     // No stray reservation => no structural audit failure => no halt.
-    let audit = c.run_accounting_audit(4);
+    let audit = c.run_accounting_audit(20_001);
     // Static message only: `audit.note` narrates the ledger figures, and a
     // panic payload is a log sink as far as the scanning gate is concerned.
     assert!(audit.ok, "the sweep must leave no structural audit failure");

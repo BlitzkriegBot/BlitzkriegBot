@@ -197,6 +197,10 @@ pub fn reconcile_scoped(
                 });
             }
             _ => {
+                let submitted_at_ms = ome.get(&core_id).map(|o| o.submitted_at_ms).unwrap_or(0);
+                if snap.now_ms - submitted_at_ms < 10_000 {
+                    continue;
+                }
                 // A ghost: the venue has neither the order nor any fill for it.
                 // #457: this is the kernel closing an order nobody else closed
                 // — ForceClosed, not Cancelled.
@@ -926,13 +930,13 @@ mod tests {
     fn detects_ghost_order_without_fill() {
         let mut ome = Ome::new();
         live_order(&mut ome, "k1", "c1", "v1", 1);
-        // Venue no longer lists it open and there are no trades → ghost. #457:
-        // the KERNEL is the one closing it (nobody else did), so the terminal
-        // status is ForceClosed — "we gave up waiting", not "we withdrew".
+        // Venue no longer lists it open and there are no trades → ghost. Order
+        // is well past the grace window, so #457 applies: the KERNEL closes it
+        // as ForceClosed — "we gave up waiting", not "we withdrew".
         let snap = VenueSnapshot {
             open_order_ids: vec![],
             trades: vec![],
-            now_ms: 5,
+            now_ms: 20_000,
         };
         let report = reconcile(&mut ome, &snap).unwrap();
         assert_eq!(report.suspect_ghost_ids, vec!["c1".to_string()]);

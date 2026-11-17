@@ -5,10 +5,11 @@
 //! 在结算应答里。
 //!
 //! 第一层（内核自动，#1236 操作者裁决 2026-11-15）：轮次过期超过
-//! [`EXPIRY_ESTIMATE_SETTLE_AFTER_MS`]（10s）→ 按兜底价（最近已知 mid，
-//! 为 0 则入场价=成本回收；binary 市场到期前已收敛 1/0）**强制平仓入
-//! 历史**，trade record 带 `unverifiable_expiry` 标签，**不建 redemption
-//! claim** —— 裁决未经验证，赎回一个发明出来的赢家是错的；场地现金真值
+//! [`EXPIRY_ESTIMATE_SETTLE_AFTER_MS`]（10s）→ 按兜底价（binary 市场把
+//! 最后已知 mid 二值化：`> 0.5` → 1，`<= 0.5` → 0；`0`/无 feed → 0 并
+//! 标 `price_source=unobserved`，绝不套入场价）**强制平仓入历史**，
+//! trade record 带 `unverifiable_expiry` 标签，**不建 redemption claim**
+//! —— 裁决未经验证，赎回一个发明出来的赢家是错的；场地现金真值
 //! 由既有 reconcile/realign sweep 跟平。
 //!
 //! 第二层（操作员）：`positions.force_close` —— 持仓存在 + 已过期 +
@@ -116,7 +117,11 @@ fn stage_unanswered_query(c: &mut Core, condition_id: &str, token_id: &str, firs
 fn an_expired_never_answered_position_falls_back_closed() {
     let dir = scratch("fallback-closes");
     let mut c = fallback_core(&dir, false);
-    open_expiring_position(&mut c);
+    // 0.97 > 0.5 → 二值化结算价 1（旧语义会错按原 mid 0.40 记账，少回笼 3%）。
+    let mut p = open_expiring_position(&mut c);
+    p.current_price = dec!(0.97);
+    p.prev_price = dec!(0.97);
+    c.positions_mut().restore_open(vec![p], None);
 
     // 过期瞬间 watch 接管（真路径），查询在过期后 100ms 首次发出、零应答。
     let sent = EXPIRES_MS + 100;
@@ -139,8 +144,13 @@ fn an_expired_never_answered_position_falls_back_closed() {
         crate::model::ExitReason::UnverifiableExpiry,
         "the record must carry the unverifiable-expiry label"
     );
-    // 兜底价 = 最后已知 mid（入场后没有新报价 → 入场价 0.40 = 成本回收）。
-    assert_eq!(closed.exit_price, dec!(0.40));
+    // 0.97 > 0.5 → 二值化结算价 1（旧语义会错按 0.40 记账，少回笼 3%）。
+    assert_eq!(closed.exit_price, dec!(1));
+    assert_eq!(
+        c.recent_trades(10)[0]["priceSource"],
+        serde_json::json!("binary_threshold"),
+        "trade record names the threshold source"
+    );
     // 无 redemption claim：结算簿应收为 0、无待赎回。
     let stats = c.engine_stats_at(bound + 2_000)["settlement"].clone();
     assert_eq!(
@@ -237,7 +247,11 @@ fn an_answered_market_inside_the_ten_second_bound_stays_open() {
 fn an_answered_market_past_the_estimate_bound_falls_back_closed() {
     let dir = scratch("answered-slow-falls");
     let mut c = fallback_core(&dir, false);
-    open_expiring_position(&mut c);
+    // 0.97 > 0.5 → 二值化结算价 1，验证兜底 sweep 在超估计窗后仍会平仓。
+    let mut p = open_expiring_position(&mut c);
+    p.current_price = dec!(0.97);
+    p.prev_price = dec!(0.97);
+    c.positions_mut().restore_open(vec![p], None);
     let sent = EXPIRES_MS + 100;
     c.tick(sent).unwrap();
     stage_unanswered_query(&mut c, "cond", "tok", sent);
@@ -255,8 +269,8 @@ fn an_answered_market_past_the_estimate_bound_falls_back_closed() {
     assert_eq!(closed.len(), 1, "exactly one fallback close");
     assert_eq!(
         closed[0].exit_price,
-        dec!(0.40),
-        "the close prices at the last known mid (the final pre-expiry quote)"
+        dec!(1),
+        "mid 0.97 settles 1 (binary threshold), not 0.40"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -452,12 +466,13 @@ fn force_close_is_idempotent_on_an_already_closed_position() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 补充：兜底价的第二档 —— 持仓快照的标记价为 0（恢复自一份喂死时的
-/// positions.jsonl 快照；F6 语义下活路径永不把 stale 标记打成 0，所以这一档
-/// 只能从恢复形态抵达）时回退入场价（成本回收）。
+/// #1238: `current_price == 0` (dead feed / never observed) is NOT priced at
+/// the entry price. The fallback books `0` at `price_source=unobserved`; the
+/// notional rides the receivable pool (cash policy credits `0 × shares`, i.e.
+/// nothing), and venue truth redeems it later — no invented cost recovery.
 #[test]
-fn the_zero_mid_fallback_recovers_cost_via_the_entry_price() {
-    let dir = scratch("zero-mid");
+fn zero_feed_fallback_is_unobserved_no_entry_price_substitute() {
+    let dir = scratch("zero-feed-unobserved");
     let mut c = fallback_core(&dir, false);
     let p = open_expiring_position(&mut c);
     // 一份喂死时落盘的快照：current_price = 0，flows 已记录开仓现金流。
@@ -485,62 +500,46 @@ fn the_zero_mid_fallback_recovers_cost_via_the_entry_price() {
     );
     assert_eq!(
         closed.exit_price,
-        dec!(0.40),
-        "mark 0 falls back to the entry price (cost recovery)"
+        dec!(0),
+        "dead feed books 0, never the entry price"
+    );
+    let trades = c.recent_trades(10);
+    assert_eq!(
+        trades[0]["priceSource"],
+        serde_json::json!("unobserved"),
+        "price source names the unobserved feed"
+    );
+    // No spendable cash is credited: `amount = 0 × dust_shares = 0` so the
+    // cash leg applies nothing and writes no ExpiryFallback journal row.
+    let journal = c.ledger().journal_snapshot();
+    assert!(
+        !journal
+            .iter()
+            .any(|e| matches!(e.kind, crate::ledger::JournalKind::ExpiryFallback)),
+        "no ExpiryFallback cash credit for an unobserved close: {journal:?}"
+    );
+    assert!(
+        closed.net_pnl_usd <= Decimal::ZERO,
+        "cost of an unobserved close is never booked as profit"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 兜底价不再封顶：当最后已知 mid 远低于入场价（市场已放弃该二元期权，
-/// mid 跌到 0.01）时，fallback 价如实按 mid 记账（0.01），不再托底到入场
-/// 价的 50%（0.20）。一笔没卖掉的单子不得被洗成比实际残值好得多的假账。
+/// #1238 binary threshold: `0 < current_price <= 0.5` settles `0` (raw mid
+/// `0.01` → `0`, no floor); exactly `0.5` → `0` (tie falls to zero);
+/// `current_price == 0` → `0` at `unobserved`.
 #[test]
-fn the_residual_mid_fallback_books_at_raw_mid_no_floor() {
-    let entry = dec!(0.40);
-
-    // 无 env 覆盖，也不再有默认 floor：0.01 的 mid 如实记账为 0.01（-97.5%）。
-    unsafe { std::env::remove_var("BK_SETTLEMENT_FALLBACK_FLOOR_PCT") };
+fn binary_threshold_books_zero_at_and_below_half() {
+    // Sub-case 1: 0.01 — above zero but at/below the 0.5 threshold → 0.
     {
-        let dir = scratch("residual-mid-raw");
+        let dir = scratch("binary-001");
         let mut c = fallback_core(&dir, false);
         let p = open_expiring_position(&mut c);
-        let mut dead = p.clone();
-        dead.current_price = dec!(0.01);
-        dead.prev_price = dec!(0.01);
-        c.positions.restore_open(vec![dead], None);
-        assert_eq!(c.positions().open_positions()[0].current_price, dec!(0.01));
-
-        let sent = EXPIRES_MS + 100;
-        c.tick(sent).unwrap();
-        stage_unanswered_query(&mut c, "cond", "tok", sent);
-        let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
-        c.tick(bound + 1_000).unwrap();
-
-        assert!(c.positions().open_positions().is_empty());
-        let closed = &c.positions().closed_positions()[0];
-        assert_eq!(
-            closed.exit_reason,
-            crate::model::ExitReason::UnverifiableExpiry
-        );
-        assert_eq!(
-            closed.exit_price,
-            dec!(0.01),
-            "no floor: raw mid 0.01 booked as-is, not 0.20"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // current_price 为 0（完全无 feed）：fall back 到入场价 = 成本回收，
-    // 这是兜底路径仅剩的保底，不属于 floor 托亏。
-    {
-        let dir = scratch("residual-mid-zero");
-        let mut c = fallback_core(&dir, false);
-        let p = open_expiring_position(&mut c);
-        let mut dead = p.clone();
-        dead.current_price = dec!(0);
-        dead.prev_price = dec!(0);
-        c.positions.restore_open(vec![dead], None);
+        let mut low = p.clone();
+        low.current_price = dec!(0.01);
+        low.prev_price = dec!(0.01);
+        c.positions.restore_open(vec![low], None);
 
         let sent = EXPIRES_MS + 100;
         c.tick(sent).unwrap();
@@ -549,13 +548,64 @@ fn the_residual_mid_fallback_books_at_raw_mid_no_floor() {
         c.tick(bound + 1_000).unwrap();
 
         let closed = &c.positions().closed_positions()[0];
+        assert_eq!(closed.exit_price, dec!(0), "mid 0.01 settles 0, not 0.01");
         assert_eq!(
-            closed.exit_price, entry,
-            "zero feed falls back to entry price (cost recovery)"
+            c.recent_trades(10)[0]["priceSource"],
+            serde_json::json!("binary_threshold"),
+            "threshold-priced at or below 0.5"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
-    unsafe { std::env::remove_var("BK_SETTLEMENT_FALLBACK_FLOOR_PCT") };
+
+    // Sub-case 2: exactly 0.5 → 0 (the tie falls to zero).
+    {
+        let dir = scratch("binary-tie-050");
+        let mut c = fallback_core(&dir, false);
+        let p = open_expiring_position(&mut c);
+        let mut tie = p.clone();
+        tie.current_price = dec!(0.5);
+        tie.prev_price = dec!(0.5);
+        c.positions.restore_open(vec![tie], None);
+
+        let sent = EXPIRES_MS + 100;
+        c.tick(sent).unwrap();
+        stage_unanswered_query(&mut c, "cond", "tok", sent);
+        let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
+        c.tick(bound + 1_000).unwrap();
+
+        let closed = &c.positions().closed_positions()[0];
+        assert_eq!(closed.exit_price, dec!(0), "the exact-0.5 tie settles 0");
+        assert_eq!(
+            c.recent_trades(10)[0]["priceSource"],
+            serde_json::json!("binary_threshold"),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Sub-case 3: 0 → unobserved (covered by name-sake test too, kept here
+    // as the threshold family's zero corner).
+    let dir = scratch("binary-zero");
+    let mut c = fallback_core(&dir, false);
+    let p = open_expiring_position(&mut c);
+    let mut dead = p.clone();
+    dead.current_price = dec!(0);
+    dead.prev_price = dec!(0);
+    c.positions.restore_open(vec![dead], None);
+
+    let sent = EXPIRES_MS + 100;
+    c.tick(sent).unwrap();
+    stage_unanswered_query(&mut c, "cond", "tok", sent);
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
+    c.tick(bound + 1_000).unwrap();
+
+    let closed = &c.positions().closed_positions()[0];
+    assert_eq!(closed.exit_price, dec!(0));
+    assert_eq!(
+        c.recent_trades(10)[0]["priceSource"],
+        serde_json::json!("unobserved"),
+        "zero feed is unobserved, not threshold-priced"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// OpenParams 构造的补充面：test-seam 开出的旧快照（entered > expires +
@@ -636,7 +686,11 @@ fn fallback_close_carries_source_fallback() {
 fn reconcile_backfill_flips_fallback_to_venue() {
     let dir = scratch("reconcile-backfill");
     let mut c = fallback_core(&dir, false);
-    let _p = open_expiring_position(&mut c);
+    // 0.97 > 0.5 → 二值化结算价 1，作为 fallback_price；venue 后以 0.55 到账，两者可区分。
+    let mut p = open_expiring_position(&mut c);
+    p.current_price = dec!(0.97);
+    p.prev_price = dec!(0.97);
+    c.positions_mut().restore_open(vec![p], None);
 
     // First close via the fallback sweep (zero venue answers past the silence bound).
     let sent = EXPIRES_MS + 100;
@@ -653,8 +707,8 @@ fn reconcile_backfill_flips_fallback_to_venue() {
     let fallback_price = closed_before.exit_price;
     assert_eq!(
         fallback_price,
-        dec!(0.40),
-        "fixture: the fallback priced the unsold remainder at the entry price"
+        dec!(1),
+        "fixture: binary 0.97 settles 1 (the fallback price)"
     );
     assert_eq!(
         closed_before.original_fallback_price,
@@ -869,10 +923,10 @@ fn unverified_exposure_report_lists_only_fallback_closes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// #987: zero-feed fallback is cost recovery (entry price), NOT profit — the
-/// books must never look better than reality when the venue never answered.
+/// Kept for regression: zero feed still nets ≤ 0 (never profit), now at
+/// `price_source=unobserved` instead of entry-price cost recovery.
 #[test]
-fn zero_feed_fallback_is_cost_recovery_not_profit() {
+fn zero_feed_fallback_never_books_profit() {
     let dir = scratch("zero-feed-no-profit");
     let mut c = fallback_core(&dir, false);
     let p = open_expiring_position(&mut c);
@@ -889,19 +943,105 @@ fn zero_feed_fallback_is_cost_recovery_not_profit() {
     c.tick(bound + 1_000).unwrap();
 
     let closed = &c.positions().closed_positions()[0];
+    assert_eq!(closed.exit_price, dec!(0));
     assert_eq!(
-        closed.exit_price,
-        dec!(0.40),
-        "zero feed falls back to entry price = cost recovery"
+        c.recent_trades(10)[0]["priceSource"],
+        serde_json::json!("unobserved"),
     );
-    // net_pnl at cost recovery is ~0 (minus fees), never a positive payout.
     assert!(
         closed.net_pnl_usd <= Decimal::ZERO,
         "cost recovery never books profit"
     );
     assert_eq!(
         closed.source, "fallback",
-        "zero-feed close is labeled fallback, never venue"
+        "zero-feed close is labeled fallback"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #1238 binary threshold: `current_price > 0.5` settles `1` — 0.97 → 1,
+/// 0.6 → 1 — and the cash policy credits `1 × dust_shares` (5 unsold shares
+/// @ 1 = 5 USDC) as an ExpiryFallback journal row.
+#[test]
+fn binary_above_half_settles_one_and_credits_full_shares() {
+    for price in [dec!(0.97), dec!(0.6)] {
+        let dir_name = format!("binary-{}", price);
+        let dir = scratch(&dir_name);
+        let mut c = fallback_core(&dir, false);
+        let p = open_expiring_position(&mut c);
+        let mut hi = p.clone();
+        hi.current_price = price;
+        hi.prev_price = price;
+        c.positions.restore_open(vec![hi], None);
+
+        let sent = EXPIRES_MS + 100;
+        c.tick(sent).unwrap();
+        stage_unanswered_query(&mut c, "cond", "tok", sent);
+        let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
+        c.tick(bound + 1_000).unwrap();
+
+        let closed = &c.positions().closed_positions()[0];
+        assert_eq!(closed.exit_price, dec!(1), "mid {price} settles 1",);
+        assert_eq!(
+            c.recent_trades(10)[0]["priceSource"],
+            serde_json::json!("binary_threshold"),
+        );
+        // `1 × dust_shares` credited as an ExpiryFallback journal row.
+        let credited: Decimal = c
+            .ledger()
+            .journal_snapshot()
+            .iter()
+            .filter(|e| matches!(e.kind, crate::ledger::JournalKind::ExpiryFallback))
+            .map(|e| e.amount)
+            .sum();
+        assert_eq!(
+            credited,
+            dec!(5),
+            "1 USD × 5 unsold shares credited: price={price}",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// #1238: `0 < current_price <= 0.5` — 0.4 → 0 (0.6's near-twin with the
+/// opposite settlement: 0.2 notional swing flips 1 vs 0). No cash credit
+/// (0 × dust_shares = 0); balance moves only by realized PnL.
+#[test]
+fn binary_at_or_below_half_settles_zero_no_credit() {
+    let dir = scratch("binary-040");
+    let mut c = fallback_core(&dir, false);
+    let p = open_expiring_position(&mut c);
+    let mut lo = p.clone();
+    lo.current_price = dec!(0.4);
+    lo.prev_price = dec!(0.4);
+    c.positions.restore_open(vec![lo], None);
+
+    let sent = EXPIRES_MS + 100;
+    c.tick(sent).unwrap();
+    stage_unanswered_query(&mut c, "cond", "tok", sent);
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
+    c.tick(bound + 1_000).unwrap();
+
+    let closed = &c.positions().closed_positions()[0];
+    assert_eq!(closed.exit_price, dec!(0), "mid 0.4 settles 0");
+    assert_eq!(
+        c.recent_trades(10)[0]["priceSource"],
+        serde_json::json!("binary_threshold"),
+    );
+    // 0 × dust_shares = 0 → no ExpiryFallback journal row, no cash credit.
+    let journal = c.ledger().journal_snapshot();
+    assert!(
+        !journal
+            .iter()
+            .any(|e| matches!(e.kind, crate::ledger::JournalKind::ExpiryFallback)),
+        "no ExpiryFallback cash credit for a 0 settlement"
+    );
+    // net_pnl reflects the realized loss; no fallback credit inflates the books.
+    assert!(
+        closed.net_pnl_usd <= Decimal::ZERO,
+        "a 0 settlement books a loss, never profit"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }

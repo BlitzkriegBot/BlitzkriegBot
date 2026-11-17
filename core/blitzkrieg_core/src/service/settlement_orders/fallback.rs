@@ -9,10 +9,11 @@ use crate::model::*;
 use crate::schema::Event;
 use crate::service::config::UnverifiedExpiryPolicy;
 use crate::settlement::{
-    EXPIRY_ESTIMATE_SETTLE_AFTER_MS, PRICE_SOURCE_CURRENT, PRICE_SOURCE_ENTRY_FALLBACK,
+    EXPIRY_ESTIMATE_SETTLE_AFTER_MS, PRICE_SOURCE_BINARY_THRESHOLD, PRICE_SOURCE_UNOBSERVED,
     UNVERIFIED_EXPIRY_EXIT_REASON,
 };
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 
 use super::Core;
 
@@ -23,8 +24,13 @@ impl Core {
     /// 几秒写下）就是裁决结果的最佳估计；过期 10s 后平台侧结算已可确认。
     ///
     /// whose expiry is long past. The close is deliberately NOT a settlement:
-    ///   * price = the position's last known mid; `0` (a dead feed) falls back
-    ///     to the entry price, i.e. cost recovery — never an invented payout;
+    ///   * price = the last known mid THRESHOLDED for a binary market:
+    ///     `> 0.5` → 1, `<= 0.5` → 0 (the settlement value domain is {0, 1},
+    ///     never 0.x; the exact-0.5 tie falls to 0). `0` (a dead feed) is
+    ///     indistinguishable from "never observed": the price is booked as 0 at
+    ///     `PRICE_SOURCE_UNOBSERVED` and the notional rides the receivable
+    ///     pool (or credits zero cash under the cash policy) — entry price is
+    ///     never substituted, so no fake cost recovery is invented.
     ///   * NO redemption claim is booked (`SettlementBook::book` is not
     ///     called): with no verified verdict, redeeming a "winner" would be
     ///     redeeming an invention. The venue's own cash truth folds in through
@@ -70,18 +76,26 @@ impl Core {
         }
         let closed_count = targets.len();
         for pos in &targets {
-            // Fallback price: the last known mid; a zeroed feed recovers cost
-            // via the entry price. Both are bookkeeping values — the venue's
-            // real cash position is what the reconcile sweep reports.
-            // No floor: the price is booked as-is, so a dead feed (current_price
-            // == 0) lands as a real -100% loss instead of being laundered into
-            // a -50% fake loss. `price_source` (issue #1002) names which basis
-            // the estimate used, so downstream surfaces can tell "the feed
-            // said X" from "the feed was dead, entry price booked".
+            // Binary market fallback price: the settlement value domain is
+            // {0, 1}, never 0.x — the last pre-expiry quote direction decides.
+            // `current_price > 0.5` settles 1; `0 < current_price <= 0.5`
+            // settles 0 (the exact-0.5 tie falls to 0; venue truth corrects
+            // at redeem time). `current_price == 0` is indistinguishable from
+            // "never observed": entry_price / last mid / any mean are
+            // explicitly NOT substituted — the booked price is zero at
+            // PRICE_SOURCE_UNOBSERVED, the notional rides the receivable pool
+            // (or credits zero cash under the cash policy), and venue truth
+            // redeems it later. The 0.5 threshold is hard-coded per issue
+            // #1238 — not an env/toml knob.
             let (price, price_source) = if pos.current_price > Decimal::ZERO {
-                (pos.current_price, PRICE_SOURCE_CURRENT)
+                let settled = if pos.current_price > dec!(0.5) {
+                    Decimal::ONE
+                } else {
+                    Decimal::ZERO
+                };
+                (settled, PRICE_SOURCE_BINARY_THRESHOLD)
             } else {
-                (pos.entry_price, PRICE_SOURCE_ENTRY_FALLBACK)
+                (Decimal::ZERO, PRICE_SOURCE_UNOBSERVED)
             };
             let closed = self.positions.close_priced(
                 &pos.id,

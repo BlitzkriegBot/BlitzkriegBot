@@ -112,7 +112,11 @@ fn run_fallback_sweep(c: &mut Core, sent: i64) {
 fn receivable_fallback_books_claim_and_resolution_redeems_at_venue_truth() {
     let dir = scratch("lifecycle");
     let mut c = receivable_core(&dir, crate::service::RECEIVABLE_MAX_AGE_MS_DEFAULT);
-    open_expiring_position(&mut c);
+    // 0.97 > 0.5 → 二值化结算价 1，price_source = binary_threshold，应收 = 1 × 5 = 5.00。
+    let mut p = open_expiring_position(&mut c);
+    p.current_price = dec!(0.97);
+    p.prev_price = dec!(0.97);
+    c.positions_mut().restore_open(vec![p], None);
 
     // Cash BEFORE the fallback: the entry cost + fee came out of 1000.
     let cash_before = c.accounts().active_ledger().balance();
@@ -122,13 +126,13 @@ fn receivable_fallback_books_claim_and_resolution_redeems_at_venue_truth() {
     run_fallback_sweep(&mut c, sent);
     assert!(c.positions().open_positions().is_empty(), "fallback closed");
 
-    // The claim exists: receivable = price × shares = 0.40 × 5 = 2.00, and the
+    // The claim exists: receivable = price × shares = 1.00 × 5 = 5.00, and the
     // ledger did NOT credit a cent (the cash model would have).
     let settled_stats =
         c.engine_stats_at(sent + super::EXPIRY_FALLBACK_AFTER_MS + 2_000)["settlement"].clone();
     assert_eq!(
         settled_stats["fallbackReceivableUsd"],
-        serde_json::json!(2.0),
+        serde_json::json!(5.0),
         "the claim books the fallback notional as receivable"
     );
     assert_eq!(
@@ -154,7 +158,7 @@ fn receivable_fallback_books_claim_and_resolution_redeems_at_venue_truth() {
     // The claim rides the SAME receivable pool the settled claims ride.
     assert_eq!(
         settled_stats["receivableUsd"],
-        serde_json::json!(2.0),
+        serde_json::json!(5.0),
         "the fallback slice folds into the pool the audit reads"
     );
     // The journal carried the booking: the durable arm survives a restart.
@@ -165,7 +169,8 @@ fn receivable_fallback_books_claim_and_resolution_redeems_at_venue_truth() {
     );
 
     // Venue truth arrives: the market resolves WINNER at 0.70/share. The claim
-    // redeems: receivable −2.00, cash +3.50 (0.70 × 5), correction +1.50.
+    // redeems: booked 5.00, venue 3.50 (0.70 × 5), correction -1.50
+    // (venue_truth − booked), net cash +3.50 = venue truth.
     let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
     let resolution = blitzkrieg_market_api::MarketResolution {
         condition_id: "cond".into(),
@@ -192,11 +197,10 @@ fn receivable_fallback_books_claim_and_resolution_redeems_at_venue_truth() {
     assert_eq!(
         cash_after_redeem - cash_before,
         dec!(3.5),
-        "cash moved by VENUE TRUTH (0.70 × 5), not the estimate (2.00)"
+        "cash moved by VENUE TRUTH (0.70 × 5 = 3.50), net of the 5.00 booked estimate"
     );
-    // The ledger journal: the booked redemption row + the correction row
-    // (#998's two-row shape). The claim's `ref` is the POSITION id (the
-    // redemption is keyed on the position's close, not a settlement claim id).
+    // The ledger journal: the booked redemption row (+5.00, the estimate) + the
+    // correction row (-1.50, venue_truth − booked).
     let ledger_journal = c.accounts().active_ledger().journal_snapshot();
     let redemption_rows: Vec<_> = ledger_journal
         .iter()
@@ -206,27 +210,25 @@ fn receivable_fallback_books_claim_and_resolution_redeems_at_venue_truth() {
     assert!(
         redemption_rows
             .iter()
-            .any(|e| e.ref_ == position_id && e.amount == dec!(2.0)),
+            .any(|e| e.ref_ == position_id && e.amount == dec!(5.0)),
         "the BOOKED row credits the estimate: {redemption_rows:?}"
     );
     assert!(
         redemption_rows
             .iter()
-            .any(|e| e.amount == dec!(1.5) && e.ref_.contains("fallback redemption correction")),
-        "the correction row moves venue_truth − booked: {redemption_rows:?}"
+            .any(|e| e.amount == dec!(-1.5) && e.ref_.contains("fallback redemption correction")),
+        "the correction row moves venue_truth − booked (-1.50): {redemption_rows:?}"
     );
 
-    // The trade record's net moves by the SAME delta (Δcash == Δrealized, the
-    // anchored identity's demand). Capture the booked net from the closed row
-    // BEFORE the redemption, then expect booked + delta.
+    // The trade record's net moves by the SAME delta (Δcash == Δrealized). The
+    // delta is -1.50 (venue 3.50 − booked 5.00). Capture the booked net from
+    // the closed row BEFORE the redemption, then expect booked + delta.
     let booked_net = c.positions().closed_positions()[0].net_pnl_usd;
-    let expected_net = booked_net + dec!(1.5);
+    let expected_net = booked_net + dec!(-1.5);
     use rust_decimal::prelude::ToPrimitive;
     let trades = c.recent_trades(10);
     assert_eq!(trades.len(), 1);
     let got = trades[0]["netPnlUsd"].as_f64().expect("net is a number");
-    // No taint interpolation in the message (CodeQL cleartext-logging): the
-    // delta itself is public arithmetic, the ledger-derived numbers are not.
     assert!(
         (got - expected_net.to_f64().unwrap()).abs() < 1e-9,
         "the recorded net is amended by the venue-vs-estimate delta"
@@ -239,12 +241,12 @@ fn receivable_fallback_books_claim_and_resolution_redeems_at_venue_truth() {
     );
     assert_eq!(
         closed_after.exit_price,
-        dec!(0.40),
-        "the row's price stays the estimate (never re-labeled a venue verdict)"
+        dec!(1),
+        "the row's price stays the estimate (1.00, never re-labeled a venue verdict)"
     );
     assert_eq!(
-        closed_after.price_source, "current",
-        "the fallback priced off a live feed (current mark)"
+        closed_after.price_source, "binary_threshold",
+        "the fallback was threshold-priced (issue 1238)"
     );
 
     // THE audit: with receivable and correction both folded, the identity
@@ -265,7 +267,11 @@ fn receivable_fallback_books_claim_and_resolution_redeems_at_venue_truth() {
 fn zero_delta_redemption_books_no_correction_row() {
     let dir = scratch("zero-delta");
     let mut c = receivable_core(&dir, crate::service::RECEIVABLE_MAX_AGE_MS_DEFAULT);
-    open_expiring_position(&mut c);
+    // 0.97 > 0.5 → 二值化结算价 1，应收 = 1 × 5 = 5.00。
+    let mut p = open_expiring_position(&mut c);
+    p.current_price = dec!(0.97);
+    p.prev_price = dec!(0.97);
+    c.positions_mut().restore_open(vec![p], None);
     let sent = EXPIRES_MS + 100;
     c.tick(sent).unwrap();
     stage_unanswered_query(&mut c, "cond", sent);
@@ -277,12 +283,12 @@ fn zero_delta_redemption_books_no_correction_row() {
     );
 
     // The venue's verdict prices the token at EXACTLY the fallback estimate
-    // (0.40/share — the entry book's mark).
+    // (1.00/share — the binary settlement price).
     let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
     let resolution = blitzkrieg_market_api::MarketResolution {
         condition_id: "cond".into(),
         resolved: true,
-        payouts: vec![("tok".to_string(), dec!(0.40))],
+        payouts: vec![("tok".to_string(), dec!(1.00))],
         neg_risk: false,
         source: "test".into(),
     };
@@ -313,7 +319,7 @@ fn zero_delta_redemption_books_no_correction_row() {
         1,
         "exactly one redemption row (the booked one): {redemptions:?}"
     );
-    assert_eq!(redemptions[0].amount, dec!(2.0));
+    assert_eq!(redemptions[0].amount, dec!(5.0));
     let audit = c.run_accounting_audit(bound + 5_000);
     assert!(audit.ok, "audit after zero-delta redemption failed");
 
@@ -390,7 +396,11 @@ fn fallback_claim_journal_replay_survives_a_restart() {
     let bound;
     {
         let mut c = receivable_core(&dir, crate::service::RECEIVABLE_MAX_AGE_MS_DEFAULT);
-        open_expiring_position(&mut c);
+        // 0.97 > 0.5 → 二值化结算价 1，应收 = 1 × 5 = 5.00。
+        let mut p = open_expiring_position(&mut c);
+        p.current_price = dec!(0.97);
+        p.prev_price = dec!(0.97);
+        c.positions_mut().restore_open(vec![p], None);
         sent = EXPIRES_MS + 100;
         c.tick(sent).unwrap();
         stage_unanswered_query(&mut c, "cond", sent);
@@ -413,7 +423,7 @@ fn fallback_claim_journal_replay_survives_a_restart() {
         );
         assert_eq!(
             stats["fallbackReceivableUsd"],
-            serde_json::json!(2.0),
+            serde_json::json!(5.0),
             "the booked notional survives the restart"
         );
         // The aging clock rode the journal's at_ms: the replayed claim's age is
@@ -430,7 +440,7 @@ fn fallback_claim_journal_replay_survives_a_restart() {
         let resolution = blitzkrieg_market_api::MarketResolution {
             condition_id: "cond".into(),
             resolved: true,
-            payouts: vec![("tok".to_string(), dec!(0.40))],
+            payouts: vec![("tok".to_string(), dec!(1.00))],
             neg_risk: false,
             source: "test".into(),
         };
@@ -567,73 +577,138 @@ fn zero_aging_budget_disables_the_warn() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The AMENDMENT (issue #1002): a zero-feed fallback (current_price == 0)
-/// prices at the ENTRY price, and the closed record names the basis
-/// `price_source = "entry_fallback"` — a downstream surface can tell "the feed
-/// said X" from "the feed was dead, entry booked". A live-mark fallback reads
-/// `price_source = "current"`. Additive wire field: absent on venue rows.
+/// Issue #1238: binary fallback `price_source` naming — a zero feed is
+/// `unobserved` (never entry_fallback / cost recovery), a live mark above
+/// 0.5 is `binary_threshold` settling `1`, at-or-below 0.5 settles `0`,
+/// and venue closes carry neither field.
 #[test]
 fn price_source_names_the_fallback_basis() {
-    let dir = scratch("price-source");
-    let mut c = receivable_core(&dir, crate::service::RECEIVABLE_MAX_AGE_MS_DEFAULT);
-    let p = open_expiring_position(&mut c);
-    // Dead feed: the snapshot restores a 0 mark → entry-price basis.
-    let mut dead = p.clone();
-    dead.current_price = dec!(0);
-    dead.prev_price = dec!(0);
-    c.positions.restore_open(vec![dead], None);
-    let sent = EXPIRES_MS + 100;
-    c.tick(sent).unwrap();
-    stage_unanswered_query(&mut c, "cond", sent);
-    run_fallback_sweep(&mut c, sent);
-    let closed = &c.positions().closed_positions()[0];
-    assert_eq!(closed.source, "fallback");
-    assert_eq!(closed.exit_price, dec!(0.40), "entry price = cost recovery");
-    assert_eq!(
-        closed.price_source, "entry_fallback",
-        "a zero feed must be NAMED as the entry-price basis (issue 1002)"
-    );
+    // Zero feed → unobserved, booked price 0, never cost recovery.
+    {
+        let dir = scratch("price-source-zero");
+        let mut c = receivable_core(&dir, crate::service::RECEIVABLE_MAX_AGE_MS_DEFAULT);
+        let p = open_expiring_position(&mut c);
+        let mut dead = p.clone();
+        dead.current_price = dec!(0);
+        dead.prev_price = dec!(0);
+        c.positions.restore_open(vec![dead], None);
+        let sent = EXPIRES_MS + 100;
+        c.tick(sent).unwrap();
+        stage_unanswered_query(&mut c, "cond", sent);
+        run_fallback_sweep(&mut c, sent);
+        let closed = &c.positions().closed_positions()[0];
+        assert_eq!(closed.source, "fallback");
+        assert_eq!(
+            closed.exit_price,
+            dec!(0),
+            "zero feed books 0, never entry price"
+        );
+        assert_eq!(
+            closed.price_source, "unobserved",
+            "zero feed must be NAMED unobserved (issue 1238), not entry_fallback"
+        );
+        let raw = serde_json::to_value(closed).unwrap();
+        assert_eq!(
+            raw["price_source"],
+            serde_json::json!("unobserved"),
+            "the wire carries the basis (additive)"
+        );
+        // No spendable cash: 0 × dust_shares = 0 → no ExpiryFallback journal row.
+        let journal = c.accounts().active_ledger().journal_snapshot();
+        assert!(
+            !journal
+                .iter()
+                .any(|e| e.kind == crate::ledger::JournalKind::ExpiryFallback),
+            "no ExpiryFallback cash credit for an unobserved close"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-    // Wire shape: the additive field rides the closed-position JSON.
-    // ClosedPosition has NO camelCase rename (pre-#1002 wire), so the key is
-    // the field's own snake_case spelling — additive either way.
-    let raw = serde_json::to_value(closed).unwrap();
-    assert_eq!(
-        raw["price_source"],
-        serde_json::json!("entry_fallback"),
-        "the wire carries the basis (additive)"
-    );
+    // Live mark above 0.5 → binary_threshold, settles 1, books receivable = 1 × shares.
+    {
+        let dir = scratch("price-source-live");
+        let mut c = receivable_core(&dir, crate::service::RECEIVABLE_MAX_AGE_MS_DEFAULT);
+        let p = open_expiring_position(&mut c);
+        let mut hi = p.clone();
+        hi.current_price = dec!(0.97);
+        hi.prev_price = dec!(0.97);
+        c.positions.restore_open(vec![hi], None);
+        let sent = EXPIRES_MS + 100;
+        c.tick(sent).unwrap();
+        stage_unanswered_query(&mut c, "cond", sent);
+        run_fallback_sweep(&mut c, sent);
+        let closed = &c.positions().closed_positions()[0];
+        assert_eq!(closed.exit_price, dec!(1), "mid 0.97 settles 1");
+        assert_eq!(
+            closed.price_source, "binary_threshold",
+            "live mark above 0.5 is threshold-priced"
+        );
+        let raw = serde_json::to_value(closed).unwrap();
+        assert_eq!(
+            raw["price_source"],
+            serde_json::json!("binary_threshold"),
+            "the wire carries the basis (additive)"
+        );
+        let stats =
+            c.engine_stats_at(sent + super::EXPIRY_FALLBACK_AFTER_MS + 2_000)["settlement"].clone();
+        assert_eq!(
+            stats["fallbackReceivableUsd"],
+            serde_json::json!(5.0),
+            "receivable = 1.00 × 5 shares"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-    // A venue close carries NEITHER field: additive-only, older readers see
-    // nothing new. (byte-identity of pre-existing fixtures is pinned by the
-    // golden family 23 test.)
-    let dir2 = scratch("price-source-venue");
-    let mut c2 = receivable_core(&dir2, crate::service::RECEIVABLE_MAX_AGE_MS_DEFAULT);
-    let p2 = open_expiring_position(&mut c2);
-    let closed2 = c2
-        .positions
-        .close(
-            &p2.id,
-            dec!(0.50),
-            crate::model::ExitReason::TakeProfit,
-            true,
-            1_900_000,
-            "venue",
-        )
-        .expect("venue close lands");
-    assert_eq!(closed2.source, "venue");
-    assert_eq!(
-        closed2.price_source, "",
-        "a venue close has no fallback basis to name"
-    );
-    let raw2 = serde_json::to_value(closed2).unwrap();
-    assert!(
-        raw2.get("price_source").is_none(),
-        "the field is SKIPPED when empty — no wire byte changes for venue rows: {raw2}"
-    );
+    // At-or-below 0.5 → binary_threshold, settles 0.
+    {
+        let dir = scratch("price-source-half");
+        let mut c = receivable_core(&dir, crate::service::RECEIVABLE_MAX_AGE_MS_DEFAULT);
+        let p = open_expiring_position(&mut c);
+        let mut lo = p.clone();
+        lo.current_price = dec!(0.4);
+        lo.prev_price = dec!(0.4);
+        c.positions.restore_open(vec![lo], None);
+        let sent = EXPIRES_MS + 100;
+        c.tick(sent).unwrap();
+        stage_unanswered_query(&mut c, "cond", sent);
+        run_fallback_sweep(&mut c, sent);
+        let closed = &c.positions().closed_positions()[0];
+        assert_eq!(closed.exit_price, dec!(0), "mid 0.4 settles 0");
+        assert_eq!(
+            closed.price_source, "binary_threshold",
+            "mid at/below 0.5 is threshold-priced to 0"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&dir2);
+    // A venue close carries NEITHER field: additive-only, older readers see nothing new.
+    {
+        let dir2 = scratch("price-source-venue");
+        let mut c2 = receivable_core(&dir2, crate::service::RECEIVABLE_MAX_AGE_MS_DEFAULT);
+        let p2 = open_expiring_position(&mut c2);
+        let closed2 = c2
+            .positions
+            .close(
+                &p2.id,
+                dec!(0.50),
+                crate::model::ExitReason::TakeProfit,
+                true,
+                1_900_000,
+                "venue",
+            )
+            .expect("venue close lands");
+        assert_eq!(closed2.source, "venue");
+        assert_eq!(
+            closed2.price_source, "",
+            "a venue close has no fallback basis to name"
+        );
+        let raw2 = serde_json::to_value(closed2).unwrap();
+        assert!(
+            raw2.get("price_source").is_none(),
+            "the field is SKIPPED when empty — no wire byte changes for venue rows: {raw2}"
+        );
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
 }
 
 /// Boundary 2: the unverified-exposure report keeps BOTH faces visible in
@@ -752,7 +827,11 @@ fn the_receivable_never_reaches_the_day_budget_base() {
             ..Default::default()
         });
         c.set_balance(dec!(1000));
-        open_expiring_position(&mut c);
+        // 0.97 > 0.5 → 二值化结算价 1：现金策略记 1 × 5 = 5.00 现金，应收策略记 0 现金。
+        let mut p = open_expiring_position(&mut c);
+        p.current_price = dec!(0.97);
+        p.prev_price = dec!(0.97);
+        c.positions_mut().restore_open(vec![p], None);
         // Day 0 stamps here — BEFORE the fallback close (identical both arms).
         c.tick(1_000).unwrap();
         let sent = EXPIRES_MS + 100;
@@ -762,7 +841,7 @@ fn the_receivable_never_reaches_the_day_budget_base() {
         let bound = sent + super::EXPIRY_FALLBACK_AFTER_MS;
         let cash = c.accounts().active_ledger().balance();
         // Cross a UTC day boundary: the roll re-reads the ledger for the new
-        // day's opening equity — cash policy carries the +2.00 fallback credit,
+        // day's opening equity — cash policy carries the +5.00 fallback credit,
         // receivable policy does not (the receivable itself is not spendable).
         c.tick(bound + 100_000_000).unwrap();
         // Decimal's default serde spells STRINGS on this wire — parse it back.
@@ -776,17 +855,17 @@ fn the_receivable_never_reaches_the_day_budget_base() {
 
     let (cash_cash, opening_cash) = run(UnverifiedExpiryPolicy::Cash);
     let (cash_recv, opening_recv) = run(UnverifiedExpiryPolicy::Receivable);
-    // The cash policy credits the 2.00 fallback notional: the ledger has it.
+    // The cash policy credits the 5.00 fallback notional: the ledger has it.
     assert_eq!(
         cash_cash - cash_recv,
-        dec!(2.0),
+        dec!(5.0),
         "the ONLY cash difference between the policies is the fallback notional"
     );
-    // And the next day's budget base sits EXACTLY 2.00 lower under the
+    // And the next day's budget base sits EXACTLY 5.00 lower under the
     // receivable policy — the estimated money never entered the base.
     assert_eq!(
         opening_cash - opening_recv,
-        dec!(2.0),
+        dec!(5.0),
         "the receivable is excluded from the day-budget base"
     );
 }

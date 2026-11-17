@@ -109,11 +109,20 @@ pub const UNVERIFIED_EXPIRY_EXIT_REASON: ExitReason = ExitReason::UnverifiableEx
 /// though not a venue verdict.
 pub const PRICE_SOURCE_CURRENT: &str = "current";
 /// The closed-position `price_source` spelling (issue #1002) for a fallback
-/// close priced at the ENTRY price — the zero-feed corner where no mid was
-/// ever observed. This is the self-favoring ambiguity the field exists to
-/// expose: the record reads "moved 0%", and only the label says the feed was
-/// dead, not the market flat.
+/// close priced at the ENTRY price (dead feed). Exposed to flag self-favoring
+/// "moved 0%" records.
 pub const PRICE_SOURCE_ENTRY_FALLBACK: &str = "entry_fallback";
+
+/// The closed-position `price_source` spelling (issue #1238) for a binary
+/// fallback close: `> 0.5` settles `1`, `<= 0.5` settles `0`. Binary
+/// settlement domain is {0, 1} — a coordinate fix, not precision; 0.5 is
+/// hard-coded, never a config knob (issue #1238).
+pub const PRICE_SOURCE_BINARY_THRESHOLD: &str = "binary_threshold";
+/// The closed-position `price_source` spelling (issue #1238) when no price
+/// was ever observed (`current_price == 0`). Entry price / last mid / mean
+/// are NOT substituted: booked price is 0, notional rides the receivable
+/// pool, venue truth redeems it later.
+pub const PRICE_SOURCE_UNOBSERVED: &str = "unobserved";
 
 /// One position's settlement, as computed from a venue resolution. Pure data:
 /// the caller decides whether it becomes a booking, which keeps the arithmetic

@@ -17,7 +17,7 @@
  * 落盘→重读→落审计后才应答），不新增任何旁路。
  */
 import { computed, onMounted, ref } from 'vue'
-import { RefreshCw, LockOpen, Minus, Plug } from 'lucide-vue-next'
+import { RefreshCw, LockOpen, Minus, Plug, Save } from 'lucide-vue-next'
 import {
   api,
   type ExecutionPolicyListDoc, type ExecutionPolicySectionDoc,
@@ -36,6 +36,7 @@ import SettingsExecutionPolicy from './SettingsExecutionPolicy.vue'
 import PolicyRulesEditor from './PolicyRulesEditor.vue'
 
 const store = usePanelStore()
+const limitsRef = ref<InstanceType<typeof SettingsRiskLimits> | null>(null)
 const policyList = ref<ExecutionPolicyListDoc | null>(null)
 const policySection = ref<ExecutionPolicySectionDoc | null>(null)
 const policyPreview = ref<ExecutionPolicyPreviewDoc | null>(null)
@@ -234,12 +235,44 @@ function buildRuleSetParams(): ExecutionPolicySetParams {
   return { accountId: policyAccountId.value, rules: editRules.value }
 }
 
-/** 保存 = set（内核验证→落盘→重读→审计），成功后重新 get 刷新整个视图。 */
-async function savePolicy(): Promise<void> {
+/** 保存 = 把表单内全部字段（限额 + 退出纪律 + 生效参数）一次性写入内核。 */
+async function saveAll(): Promise<void> {
   policySaving.value = true
   policyMsg.value = null
+  policyErr.value = null
+  limitsRef.value?.setExitReceipt(null)
   try {
-    const res = await api.executionPolicySet(buildSetParams())
+    // 1. 收集系统限额 patch（来自 SettingsRiskLimits 子组件）
+    const limitsPatch = limitsRef.value?.buildPatch()
+    if (typeof limitsPatch === 'string') {
+      policyMsg.value = limitsPatch
+      return
+    }
+    // 2. 收集退出纪律 patch（来自 SettingsRiskLimits 子组件）
+    const exitPatch = limitsRef.value?.buildExitPatch()
+    if (typeof exitPatch === 'string') {
+      policyMsg.value = exitPatch
+      return
+    }
+    // 3. 收集 execution_policy 参数（来自本组件编辑缓冲）
+    const policyParams = buildSetParams()
+    const keys = Object.keys(limitsPatch ?? {})
+    const exitKeys = Object.keys(exitPatch ?? {})
+    if (keys.length === 0 && exitKeys.length === 0 && !policyParams.budgetRatio && !policyParams.minBudgetUsd && !policyParams.maxBudgetUsd && !policyParams.minEquityUsd && !policyParams.maxPositionsPerAsset) {
+      policyMsg.value = '没有改动 —— 六项系统限额、退出纪律与执行参数都与内核当前生效值一致。'
+      return
+    }
+    // 4. 一次性写入：系统限额、退出纪律、执行参数
+    if (keys.length > 0) {
+      const res = await api.riskSetSystemic({ ...limitsPatch, reason: 'webui 面板编辑（生效风控卡）' })
+      if (res.error) throw new Error(res.error)
+    }
+    if (exitKeys.length > 0) {
+      const res = await api.riskSetExit({ ...exitPatch, reason: 'webui 面板编辑（退出纪律）' })
+      if (res.error) throw new Error(res.error)
+      limitsRef.value?.setExitReceipt(res)
+    }
+    const res = await api.executionPolicySet(policyParams)
     if (res.error) throw new Error(res.error)
     editDirty.value = false
     policyMsg.value = `已保存（${policyAccountId.value}）—— 内核已重读生效。`
@@ -410,7 +443,7 @@ async function rollbackPolicy(): Promise<void> {
     </Card>
 
     <!-- 生效风控读数（只读，boot 快照）+ 就地可编辑的账户生效参数（#params）。 -->
-    <SettingsRiskLimits @save-policy="savePolicy">
+    <SettingsRiskLimits ref="limitsRef">
       <template #params>
         <div v-if="policySection" class="mt-3 border-t border-line pt-3">
           <div class="label-micro">账户生效参数（execution_policy · 可编辑）</div>
@@ -442,12 +475,7 @@ async function rollbackPolicy(): Promise<void> {
                 @input="editDirty = true"
               />
             </label>
-            <div class="flex items-end gap-3">
-              <Button variant="outline" size="sm" :disabled="policyBusy" @click="resetToDefaultsLocal">
-                恢复 defaults 后自定义
-              </Button>
-              <span v-if="editDirty" class="text-[11px] text-primary">有未保存的修改 —— 点上方「保存改动」落盘</span>
-            </div>
+            <span v-if="editDirty" class="text-[11px] text-primary">有未保存的修改 —— 点底部「保存」落盘</span>
           </div>
         </div>
         <AlertBanner v-else-if="!policyBusy && !policyErr" class="mt-3" tone="info">
@@ -484,5 +512,14 @@ async function rollbackPolicy(): Promise<void> {
         </div>
       </template>
     </SettingsExecutionPolicy>
+    <div class="mt-4 flex items-end justify-end">
+      <Button
+        size="sm"
+        :disabled="policySaving || policyBusy || !editDirty"
+        @click="saveAll"
+      >
+        <Save class="size-3.5" />{{ policySaving ? '保存中…' : '保存' }}
+      </Button>
+    </div>
   </div>
 </template>

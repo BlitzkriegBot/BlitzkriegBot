@@ -11,16 +11,20 @@
  * 徽标会变成「命令行/热改」，这是内核 LimitSource::Flag 的如实呈现。
  */
 import { computed, onMounted, ref } from 'vue'
-import { RefreshCw, Save, ShieldCheck } from 'lucide-vue-next'
+import { RefreshCw, ShieldCheck } from 'lucide-vue-next'
 import {
   api,
-  type RiskBound, type RiskLimitsDoc, type SystemicLimitUpdateDoc, type ExitSetUpdateDoc,
+  type ExitSetUpdateDoc, type RiskBound, type RiskLimitsDoc,
 } from '@/api/client'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
 
-const emit = defineEmits<{ 'save-policy': [] }>()
+defineExpose({
+  buildPatch,
+  buildExitPatch,
+  setExitReceipt,
+})
 import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
 import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
@@ -29,6 +33,7 @@ import Switch from '@/components/ui/switch/Switch.vue'
 const riskDoc = ref<RiskLimitsDoc | null>(null)
 const riskErr = ref<string | null>(null)
 const riskBusy = ref(false)
+const exitReceipt = ref<ExitSetUpdateDoc | null>(null)
 
 async function loadRisk(): Promise<void> {
   riskBusy.value = true
@@ -41,6 +46,11 @@ async function loadRisk(): Promise<void> {
   } finally {
     riskBusy.value = false
   }
+}
+
+/** 由父组件在 risk.setExit 成功后写入，供回执模板展示 old→new 文案。 */
+function setExitReceipt(receipt: ExitSetUpdateDoc | null): void {
+  exitReceipt.value = receipt
 }
 
 /** 来源词表：出厂/环境变量/命令行或热改，与内核 LimitSource 一致（去 TOML 后只允许 flag/env/default）。 */
@@ -78,10 +88,6 @@ const ROW_DEFS: RiskRowDef[] = [
 
 // ── 编辑缓冲 + 保存（risk.setSystemic，只发改动项）──
 const editBufs = ref<Record<string, string>>({})
-const riskSaving = ref(false)
-const riskMsg = ref<string | null>(null)
-const riskReceipt = ref<SystemicLimitUpdateDoc | null>(null)
-const exitReceipt = ref<ExitSetUpdateDoc | null>(null)
 
 function syncBuffers(d: RiskLimitsDoc): void {
   const next: Record<string, string> = {}
@@ -95,8 +101,6 @@ function syncBuffers(d: RiskLimitsDoc): void {
   next['trailingEnabled'] = String(d.exit.trailingEnabled ?? false)
   next['makerFirstExits'] = String(d.exit.strategyExitMakerFirst ?? false)
   editBufs.value = next
-  riskReceipt.value = null
-  exitReceipt.value = null
 }
 
 /** 下一笔策略开仓就被这个 bound 约束（live）；其余三项重启后武装。 */
@@ -200,8 +204,6 @@ function trailingOn(): boolean {
 }
 function setTrailing(on: boolean): void {
   editBufs.value['trailingEnabled'] = String(on)
-  riskMsg.value = null
-  exitReceipt.value = null
 }
 /** 老内核不认识 trailingEnabled（读数缺字段）→ 开关禁用并说明。 */
 const trailingSupported = computed(() => riskDoc.value?.exit.trailingEnabled !== undefined)
@@ -212,8 +214,6 @@ function makerFirstOn(): boolean {
 }
 function setMakerFirst(on: boolean): void {
   editBufs.value['makerFirstExits'] = String(on)
-  riskMsg.value = null
-  exitReceipt.value = null
 }
 const makerFirstSupported = computed(() => riskDoc.value?.exit.strategyExitMakerFirst !== undefined)
 
@@ -257,50 +257,6 @@ function buildExitPatch(): Record<string, string | number | boolean> | string {
     if (mf !== e.strategyExitMakerFirst) patch.strategyExitMakerFirst = mf
   }
   return patch
-}
-
-async function saveRisk(): Promise<void> {
-  riskMsg.value = null
-  riskReceipt.value = null
-  exitReceipt.value = null
-  const built = buildPatch()
-  if (typeof built === 'string') {
-    riskMsg.value = built
-    return
-  }
-  const builtExit = buildExitPatch()
-  if (typeof builtExit === 'string') {
-    riskMsg.value = builtExit
-    return
-  }
-  const keys = Object.keys(built)
-  const exitKeys = Object.keys(builtExit)
-  if (keys.length === 0 && exitKeys.length === 0) {
-    riskMsg.value = '没有改动 —— 六项系统限额与退出纪律都与内核当前生效值一致。'
-    return
-  }
-  riskSaving.value = true
-  try {
-    if (keys.length > 0) {
-      const res = await api.riskSetSystemic({ ...built, reason: 'webui 面板编辑（生效风控卡）' })
-      if (res.error) throw new Error(res.error)
-      riskReceipt.value = res
-    }
-    if (exitKeys.length > 0) {
-      const res = await api.riskSetExit({ ...builtExit, reason: 'webui 面板编辑（退出纪律）' })
-      if (res.error) throw new Error(res.error)
-      exitReceipt.value = res
-    }
-    await loadRisk()
-    // issue 1199: the account-level execution_policy params live in this card's
-    // #params slot but are owned by the parent. After the limits land, let the
-    // parent persist them too — one save button, one save action.
-    emit('save-policy')
-  } catch (e) {
-    riskErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    riskSaving.value = false
-  }
 }
 
 /** 行渲染：读数（bound）驱动徽标，编辑缓冲驱动输入框。 */
@@ -415,6 +371,17 @@ onMounted(() => void loadRisk())
            风控参数与系统限额同卡呈现，各归各位（插槽内容来自编排壳）。 -->
       <slot name="params" />
 
+      <div v-if="exitReceipt" class="mt-2 rounded border border-line bg-panel-2 px-2.5 py-2 text-[11px] leading-relaxed">
+        <div class="font-semibold text-fg">
+          退出纪律已写入 {{ exitReceipt.applied.length }} 项（已持久化）
+        </div>
+        <div v-for="c in exitReceipt.applied" :key="c.field" class="mt-0.5 text-muted-fg">
+          {{ fieldLabel(c.field) }}：{{ changeText(c) }}
+          <Badge variant="gold" class="ml-1">{{ effectLabel(c.effect) }}</Badge>
+        </div>
+        <div class="mt-1 text-faint-fg">新入场下一笔按新值绑定；已开仓位的退出扫描同步跟随新值。</div>
+      </div>
+
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <Button
           variant="outline" size="sm" :disabled="riskBusy" title="重新读取内核的风控读数（放弃未保存的编辑）"
@@ -422,30 +389,6 @@ onMounted(() => void loadRisk())
         >
           <RefreshCw class="size-3.5" />刷新
         </Button>
-        <Button size="sm" :disabled="riskSaving || riskBusy" title="把改动过的限额与退出纪律写入内核（risk.setSystemic / risk.setExit）" @click="saveRisk">
-          <Save class="size-3.5" />{{ riskSaving ? '保存中…' : '保存改动' }}
-        </Button>
-        <span class="text-[11px] text-faint-fg">{{ riskHint }}</span>
-      </div>
-      <p v-if="riskMsg" class="mt-2 text-[11px] leading-snug text-gold-400">{{ riskMsg }}</p>
-      <div v-if="riskReceipt" class="mt-2 rounded border border-line bg-panel-2 px-2.5 py-2 text-[11px] leading-relaxed">
-        <div class="font-semibold text-fg">
-          已写入 {{ riskReceipt.applied.length }} 项（{{ riskReceipt.persisted || riskReceipt.persistence === 'store' ? '已持久化' : '未持久化，重启回到启动配置' }}）
-        </div>
-        <div v-for="c in riskReceipt.applied" :key="c.field" class="mt-0.5 text-muted-fg">
-          {{ fieldLabel(c.field) }}：{{ c.from === '0' ? '关闭' : c.from }} → {{ c.to === '0' ? '关闭' : c.to }}
-          <Badge :variant="c.effect === 'live' ? 'gold' : 'default'" class="ml-1">{{ effectLabel(c.effect) }}</Badge>
-        </div>
-      </div>
-      <div v-if="exitReceipt" class="mt-2 rounded border border-line bg-panel-2 px-2.5 py-2 text-[11px] leading-relaxed">
-        <div class="font-semibold text-fg">
-          退出纪律已写入 {{ exitReceipt.applied.length }} 项（{{ exitReceipt.persisted || exitReceipt.persistence === 'store' ? '已持久化' : '未持久化，重启回到启动配置' }}）
-        </div>
-        <div v-for="c in exitReceipt.applied" :key="c.field" class="mt-0.5 text-muted-fg">
-          {{ fieldLabel(c.field) }}：{{ changeText(c) }}
-          <Badge variant="gold" class="ml-1">{{ effectLabel(c.effect) }}</Badge>
-        </div>
-        <div class="mt-1 text-faint-fg">新入场下一笔按新值绑定；已开仓位的退出扫描同步跟随新值。</div>
       </div>
       <p v-if="riskErr" class="mt-2 text-[11px] leading-snug text-down">{{ riskErr }}</p>
     </template>

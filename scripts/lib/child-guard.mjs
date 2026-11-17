@@ -37,6 +37,7 @@
  * consolidate its imports here without changing behaviour elsewhere.
  */
 import { spawn as rawSpawn } from 'node:child_process';
+import { join } from 'node:path';
 
 export { execSync, execFileSync, spawnSync, exec } from 'node:child_process';
 
@@ -119,8 +120,25 @@ export function spawn(command, args, options) {
     childOpts = childArgs;
     childArgs = [];
   }
+  // Gate isolation (#1254): a core spawned by a gate must NEVER open the
+  // deployment's SQLite. The kernel's default db path anchors to the INSTALL
+  // ROOT (exe ancestors), which on a dev checkout IS the production database —
+  // and a per-account round duration persisted there (the operator's panel
+  // grid switch) rewrites the gate's family clock: cycle-check judged its
+  // 3600s slot expired under the operator's 300s account grid and
+  // force-closed the freshly placed bid 49ms in. Gates run with a scratch
+  // cwd, so the cwd-relative spelling is the isolated one. A caller that
+  // explicitly set BLITZKRIEG_DB_PATH (six gates do) keeps its own value.
+  const env = { ...process.env, ...(childOpts?.env ?? {}) };
+  if (!env.BLITZKRIEG_DB_PATH) {
+    // No mkdir here on purpose: the kernel's Database::open creates the parent
+    // itself, so a core that refuses to boot (core-args-check's no-write
+    // assertions) leaves NO data/ directory behind.
+    env.BLITZKRIEG_DB_PATH = join(childOpts?.cwd ?? process.cwd(), 'data', 'blitzkrieg.sqlite');
+  }
   const child = rawSpawn(command, childArgs, {
     ...childOpts,
+    env,
     detached: childOpts?.detached ?? true,
   });
   live.add(child);

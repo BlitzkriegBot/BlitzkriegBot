@@ -152,9 +152,22 @@ export class CoreClient {
     ];
     // The child reads POLYMARKET_* credentials from its own environment; the
     // client never passes keys explicitly.
+    // Gate isolation (#1254): the kernel's default db path anchors to the
+    // INSTALL ROOT, which on a dev checkout is the production SQLite — and a
+    // per-account round duration the operator persisted there (the panel grid
+    // switch) rewrites this client's family clock (a 3600s slot judged
+    // expired under a 300s account grid, the maker force-closed on arrival).
+    // The cwd is the gate's scratch dir, so the cwd-relative spelling is the
+    // isolated one; an explicit envExtra.BLITZKRIEG_DB_PATH wins.
+    const env = { ...process.env, ...(this.envExtra ?? {}) };
+    if (!env.BLITZKRIEG_DB_PATH) {
+      // No mkdir: the kernel's Database::open creates the parent itself, so a
+      // core that refuses to boot leaves no data/ directory behind.
+      env.BLITZKRIEG_DB_PATH = join(this.cwd ?? process.cwd(), 'data', 'blitzkrieg.sqlite');
+    }
     const child = spawn(this.binaryPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: this.envExtra ? { ...process.env, ...this.envExtra } : process.env,
+      env,
       ...(this.cwd ? { cwd: this.cwd } : {}),
     });
     this.proc = child;

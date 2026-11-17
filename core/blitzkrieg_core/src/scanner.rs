@@ -584,6 +584,40 @@ impl Scanner {
         market.round_slot == t.slot + 1
     }
 
+    /// 读视图的选族唯一入口：`engine.round` 的行情行（行情卡的上/下报价）
+    /// 与 `engine.books` 的深度行都从这里取，保证同一页上两个读面指向
+    /// 同一族、同一份书。
+    ///
+    /// 两步（顺序即语义）：
+    /// 1. 按行自身族钟过滤「正在交易的一轮」（[`Self::is_live_round_row`]）；
+    /// 2. 多族同 (venue, asset) 时选哪一族。历史行为是「先到先得」，行序
+    ///    = discovery 到达顺序 —— 于是卡上可能是一个账户根本没在交易的族：
+    ///    5m 倒计时每 5 分钟翻页，卡上却是 15m 几乎不动的报价，看起来就是
+    ///    「书簿在刷、价格冻住」，而且两个读面各自先到先得时还会互相矛盾
+    ///    （盘口深度显示 A 族、行情卡显示 B 族）。选择权威是本扫描器的当前
+    ///    网格（`cfg.round_duration_sec` is the SELECTION authority），所以
+    ///    把当前网格那一族**稳定**排到最前，再按 (venue, asset) 先到先得。
+    ///    单族部署里所有行同族，排序键恒 0，行序与结论逐位不变。
+    pub fn live_round_rows(&self, local_now_ms: i64) -> Vec<&CryptoMarket> {
+        let active_grid = self.cfg.round_duration_sec;
+        let mut rows: Vec<&CryptoMarket> = self
+            .markets
+            .iter()
+            .filter(|m| self.is_live_round_row(m, local_now_ms))
+            .collect();
+        rows.sort_by_key(|m| {
+            let family = if m.round_duration_sec > 0 {
+                m.round_duration_sec
+            } else {
+                active_grid
+            };
+            u8::from(family != active_grid)
+        });
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        rows.retain(|m| seen.insert((m.venue.clone(), m.asset.clone())));
+        rows
+    }
+
     /// Record the venue-reported end time and derive the clock offset — in the
     /// reporting market's OWN venue slot.
     ///

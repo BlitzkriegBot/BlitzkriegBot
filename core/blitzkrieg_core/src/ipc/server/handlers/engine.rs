@@ -92,14 +92,14 @@ pub(crate) async fn handle_engine(
                 .engine()
                 .map(|e| {
                     let scanner = e.scanner();
-                    let mut seen: std::collections::HashSet<(String, String)> =
-                        std::collections::HashSet::new();
+                    // 选族（活行过滤 + 当前网格优先 + (venue,asset) 唯一化）
+                    // 收归 `Scanner::live_round_rows` 单一入口：本方法和
+                    // `engine.books` 的深度行共用同一判据，两个读面因此不会
+                    // 指向不同的族（此前各自「先到先得」，盘口显示 A 族、
+                    // 行情卡显示 B 族时，看起来就是「书簿在刷、价格冻住」）。
                     let rows: Vec<serde_json::Value> = scanner
-                        .round_state(now)
-                        .markets
-                        .iter()
-                        .filter(|m| scanner.is_live_round_row(m, now))
-                        .filter(|m| seen.insert((m.venue.clone(), m.asset.clone())))
+                        .live_round_rows(now)
+                        .into_iter()
                         .map(|m| {
                             let up = e
                                 .book_snapshot(&m.up_token_id)

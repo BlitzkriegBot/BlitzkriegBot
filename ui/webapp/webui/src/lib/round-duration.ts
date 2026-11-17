@@ -12,6 +12,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import type { RoundDurationDoc } from '@/api/client'
+import { usePanelStore } from '@/stores/panel'
 
 export function useRoundDuration() {
   const doc = ref<RoundDurationDoc | null>(null)
@@ -19,6 +20,18 @@ export function useRoundDuration() {
   const msg = ref<string | null>(null)
   const busy = ref(false)
   const pending = ref<number | null>(null)
+
+  /**
+   * 卡面读数所属的账户。写入是按账户的（`save(accountId)`），读数必须同口径：
+   * 此前 `value`/`dirty` 死钉 `perAccount['default']`，切到别的账户后保存
+   * 成功、卡面却回落到 default 的档位 —— 看起来就是「无法切换轮次」。
+   */
+  const store = usePanelStore()
+  const acct = computed(() => store.activeAccount ?? 'default')
+  /** 该账户当前的轮长：per-account 覆盖优先，缺省回落 default 网格。 */
+  const currentSec = computed<number | undefined>(
+    () => doc.value?.perAccount?.[acct.value] ?? doc.value?.effectiveSec,
+  )
 
   const segments = computed(() => {
     const allowed = doc.value?.allowed ?? []
@@ -32,18 +45,18 @@ export function useRoundDuration() {
     return out
   })
   const value = computed<string>({
-    // 预填「执行真相」（default 账户 per-account 覆盖，缺省回落 default 网格），
+    // 预填「执行真相」（该账户 per-account 覆盖，缺省回落 default 网格），
     // 即卡片打开时的当前轮长；持久格/下次会话值不再预填 —— 卡片承诺的是「现在就是这个」。
-    get: () => String(pending.value ?? doc.value?.perAccount?.['default'] ?? doc.value?.effectiveSec ?? ''),
+    get: () => String(pending.value ?? currentSec.value ?? ''),
     set: (v) => { pending.value = Number(v) },
   })
   // dirty 与 value 的显示源同口径（审计 P2-6）：pending 与「当前显示的基础
-  // 档位」（perAccount['default'] ?? effectiveSec）比较。此前 dirty 比
+  // 档位」（该账户 per-account ?? effectiveSec）比较。此前 dirty 比
   // nextSessionSec —— 保存成功后 nextSessionSec 已切到新档，再点回原档时
   // dirty 恒 false，保存按钮消失（实机恶性 bug：保存按钮不跟随轮次切换）。
   const dirty = computed(() => {
     if (pending.value === null) return false
-    const base = doc.value?.perAccount?.['default'] ?? doc.value?.effectiveSec
+    const base = currentSec.value
     return base === undefined ? true : pending.value !== base
   })
   const flagLocked = computed(() => doc.value?.source === 'cli_or_env')

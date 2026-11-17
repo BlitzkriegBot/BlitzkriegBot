@@ -355,6 +355,129 @@ async fn a_shared_token_shows_one_books_row_per_venue_naturally() {
     );
 }
 
+/// 多族同 (venue,asset) 时行情卡显示哪一族（2026-11-17 实机报障：书簿
+/// 在刷新、行情卡的上/下报价冻住）。生产形状：Polymarket 同一资产同时挂
+/// 着 5m 与 15m 两族。`engine.round` 的 `(venue,asset)` 唯一化是「先到
+/// 先得」，行序 = discovery 到达顺序，于是卡上显示的族与倒计时实际跑的
+/// 网格无关 —— 5m 倒计时每 5 分钟翻页，卡上却是 15m 几乎不动的报价，
+/// 看起来就是「价格冻住」。选择权威是扫描器的当前网格
+/// （`scanner_round_duration`：`cfg.round_duration_sec` is the SELECTION
+/// authority），所以当前网格那一族必须赢，且与到达顺序无关。
+///
+/// 断言只写「当前网格那一族赢」，不写死 300/900 —— 网格是运行时量
+/// （`round_duration.set` 可改），测试读出来再用。
+#[tokio::test]
+async fn the_active_grid_family_wins_the_price_row_whatever_the_arrival_order() {
+    use crate::model::CryptoMarket;
+    use rust_decimal::Decimal;
+
+    // 两种对抗性到达顺序，逐位同判：先到的族不许因此赢。
+    for sibling_first in [true, false] {
+        let (core, registry, peer) = hot_reload_fixture().await;
+        let now = now_ms();
+        // 当前网格（倒计时真跑的那一族）与一个同时活着的兄弟族。
+        let active = {
+            let c = core.lock().await;
+            c.engine().expect("engine").scanner_round_duration()
+        };
+        assert!(active > 0, "the fixture boots an engine with a real grid");
+        let sibling = if active == 300 { 900 } else { 300 };
+
+        let mk = |dur: i64, up: &str| {
+            let slot = now / 1000 / dur;
+            // 生产形状（`extensions/polymarket/src/discovery.rs:139-164`）：
+            // discovery 按 CURRENT slot 拼 slug，拿到的是**当前这一轮**的
+            // end_date，`round_slot = end/dur` = 当前+1 —— 正在交易的一轮，
+            // 且 venue 钟偏移恒为 0（声明与网格对齐）。
+            let end = (slot + 1) * dur * 1000;
+            CryptoMarket {
+                asset: "BTC".to_string(),
+                condition_id: format!("cond-pm-{dur}-{end}"),
+                question_id: format!("q-pm-{dur}-{end}"),
+                up_token_id: format!("up-pm-{dur}-{end}"),
+                down_token_id: format!("down-pm-{dur}-{end}"),
+                up_price: up.parse().unwrap(),
+                down_price: Decimal::ONE - up.parse::<Decimal>().unwrap(),
+                expires_at_ms: end,
+                round_slot: end / 1000 / dur,
+                round_duration_sec: dur,
+                archive_verdict: false,
+                venue: "polymarket".to_string(),
+                neg_risk: false,
+                question: "BTC up or down".to_string(),
+            }
+        };
+        let active_row = mk(active, "0.90");
+        let sibling_row = mk(sibling, "0.10");
+        {
+            let mut c = core.lock().await;
+            let order = if sibling_first {
+                vec![sibling_row.clone(), active_row.clone()]
+            } else {
+                vec![active_row.clone(), sibling_row.clone()]
+            };
+            for row in order {
+                c.engine_on_data(
+                    crate::engine::DataEvent::RoundMarkets {
+                        markets: vec![row],
+                        now_ms: now,
+                    },
+                    now,
+                );
+            }
+        }
+        let reply = rpc(
+            &core,
+            &registry,
+            &peer,
+            r#"{"jsonrpc":"2.0","id":1,"method":"engine.round","params":{}}"#.to_string(),
+        )
+        .await;
+        let prices = reply["result"]["marketPrices"]
+            .as_array()
+            .expect("marketPrices array");
+        let pm: Vec<&Value> = prices
+            .iter()
+            .filter(|p| p["venue"] == "polymarket")
+            .collect();
+        assert_eq!(
+            pm.len(),
+            1,
+            "(venue,asset) stays unique across families (sibling_first={sibling_first}): {prices:?}"
+        );
+        let up: Decimal = pm[0]["up"]
+            .as_str()
+            .expect("decimal renders as a string")
+            .parse()
+            .expect("decimal");
+        assert_eq!(
+            up, active_row.up_price,
+            "the ACTIVE grid family ({active}s) must own the card's quote, not the \
+             sibling ({sibling}s) that merely arrived first (sibling_first={sibling_first})"
+        );
+        // 同一页的另一个读面（盘口深度）必须指向同一族、同一批 token ——
+        // 否则「盘口在刷、行情卡不动」就是两个族各画一半的假象。
+        let depth = {
+            let c = core.lock().await;
+            c.books_view(5, now)
+        };
+        let pm_depth: Vec<_> = depth
+            .iter()
+            .filter(|r| r.venue == "polymarket" && r.asset == "BTC")
+            .collect();
+        assert_eq!(
+            pm_depth.len(),
+            1,
+            "the depth view keeps one (venue,asset) row too: {depth:?}"
+        );
+        assert_eq!(
+            pm_depth[0].up_token_id, active_row.up_token_id,
+            "the depth row must carry the ACTIVE family ({active}s) tokens — the card \
+             above reads the same family's books (sibling_first={sibling_first})"
+        );
+    }
+}
+
 // ── E2（多族漏网 ③④）：读面过滤按行自身族钟 ─────────────────────────
 
 /// A daily (86400s) family rides the SAME scanner beside the 15m family

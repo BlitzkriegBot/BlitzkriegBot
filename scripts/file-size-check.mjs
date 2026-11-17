@@ -91,6 +91,10 @@ const ALLOW = [
   // #1199 第六轮：tests_risk_rounds.rs 新增 round_duration 落 SQLite 与
   // 下一会话读回的往返用例，1479→1562（+83 行）。
   { path: 'core/blitzkrieg_core/src/ipc/server/tests/tests_risk_rounds.rs', atAuthoring: 1562 },
+  // round-family price freeze fix (engine.round + engine.books share
+  // Scanner::live_round_rows): +34 lines (doc + method). Debt marker —
+  // the file may shrink or die, never grow past atAuthoring.
+  { path: 'core/blitzkrieg_core/src/scanner.rs', atAuthoring: 1526 },
   // #1199 第六轮：dispatch_boot_enablement_tests.rs 的 fixture 补 db_path
   // 与 env 断言迁 SQL，1483→1547（+64 行）。1547→1551: the #1199 第十次
   // 审计 T1-T3 测试盲区补钉（+4 行）。

@@ -879,22 +879,22 @@ impl Core {
     /// 与本视图同谓词。老语料（round_slot == 0）无条件放行，单族部署下
     /// 族钟 ≡ 全局网格（偏移 0、行声明 ≡ cfg），判定与升级前的
     /// `current_slot(now) + 1` 逐位一致。
+    ///
+    /// 选族（多族同 (venue,asset)）也收归同一入口
+    /// [`crate::scanner::Scanner::live_round_rows`]：深度行与行情卡必须指向
+    /// 同一族，否则同一页上「盘口在刷、行情卡不动」—— 用户在 2026-11-17
+    /// 的实机截图里看到的就是这个形状。
     pub fn books_view(&self, max_levels: usize, now: i64) -> Vec<AssetBooksView> {
         let Some(engine) = self.engine.as_ref() else {
             return Vec::new();
         };
         let scanner = engine.scanner();
-        let mut seen: std::collections::HashSet<(String, String)> =
-            std::collections::HashSet::new();
         // RFC-661 M3: natural rows only. The dual-key table holds every
         // venue's OWN (venue, token) rows (M1), so the round-state sweep IS
         // the whole display.
         let rows: Vec<AssetBooksView> = scanner
-            .round_state(now)
-            .markets
-            .iter()
-            .filter(|m| scanner.is_live_round_row(m, now))
-            .filter(|m| seen.insert((m.venue.clone(), m.asset.clone())))
+            .live_round_rows(now)
+            .into_iter()
             .map(|m| AssetBooksView {
                 venue: m.venue.clone(),
                 asset: m.asset.clone(),

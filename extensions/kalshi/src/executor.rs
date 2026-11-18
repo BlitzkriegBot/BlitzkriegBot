@@ -257,7 +257,6 @@ pub(crate) async fn executor_loop(host: Arc<dyn MarketHost>, client: Arc<KalshiR
     // Orders just placed, still absent from the venue's open-order list (the
     // orphan sweep's grace window).
     let mut recent_placements: Vec<(String, i64)> = Vec::new();
-    const ORPHAN_GRACE_MS: i64 = 30_000;
 
     // Seed the ledger from the venue so the reserve gate reflects real cash.
     match client.balance().await {
@@ -353,7 +352,7 @@ pub(crate) async fn executor_loop(host: Arc<dyn MarketHost>, client: Arc<KalshiR
             &client,
             &mut seen_trades,
             &mut recent_placements,
-            ORPHAN_GRACE_MS,
+            host.orphan_grace_ms(),
         )
         .await
         {

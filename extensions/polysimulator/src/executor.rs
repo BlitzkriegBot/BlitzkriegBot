@@ -405,7 +405,6 @@ pub(crate) async fn executor_loop(host: Arc<dyn MarketHost>, client: Arc<PolySim
     // next sweep, with the role the ack decided).
     let mut placements: std::collections::HashMap<String, Placement> =
         std::collections::HashMap::new();
-    const ORPHAN_GRACE_MS: i64 = 30_000;
     // Token id → the venue's own outcome word for it ("Up"/"Down"), watched
     // from every trade row the reconciles sweep sees. This is the POLARITY
     // side of the single-market verdict fallback: that endpoint names the
@@ -528,7 +527,7 @@ pub(crate) async fn executor_loop(host: Arc<dyn MarketHost>, client: Arc<PolySim
             &mut seen_trades,
             &mut placements,
             &mut outcome_polarity,
-            ORPHAN_GRACE_MS,
+            host.orphan_grace_ms(),
         )
         .await
         {

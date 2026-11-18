@@ -24,12 +24,6 @@ use tokio::sync::mpsc;
 /// persistently broken venue cannot turn the probe itself into a storm.
 const PROBE_COOLDOWN_MS: i64 = 60_000;
 
-/// A venue order the bridge itself placed is protected from the periodic
-/// orphan sweep for this long: the core's `known_venue_order_ids` may lag a
-/// freshly accepted order by one bridge turn, and sweeping our own resting
-/// entry would fight the engine.
-const ORPHAN_GRACE_MS: i64 = 20_000;
-
 /// Consecutive reconciliation sweeps that may fail before the bridge reports
 /// the sweep channel itself as broken: the host freezes trading on it (E31-b).
 const SWEEP_FAILURE_FREEZE: u32 = 3;
@@ -385,7 +379,7 @@ pub async fn spawn_if_configured(
                         let known: std::collections::HashSet<String> =
                             host.known_venue_order_ids().await.into_iter().collect();
                         let now = now_ms();
-                        recent_placements.retain(|(_, at)| now - *at < ORPHAN_GRACE_MS);
+                        recent_placements.retain(|(_, at)| now - *at < host.orphan_grace_ms());
                         for id in open_order_ids.clone() {
                             if known.contains(&id)
                                 || recent_placements.iter().any(|(rid, _)| *rid == id)

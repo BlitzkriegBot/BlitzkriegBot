@@ -230,7 +230,6 @@ pub(crate) async fn executor_loop(
     // Orders just placed, still absent from the venue's order list (the
     // orphan sweep's grace window).
     let mut recent_placements: Vec<(String, i64)> = Vec::new();
-    const ORPHAN_GRACE_MS: i64 = 30_000;
     // Token → (contract, fee) cache; the market row also routes identity.
     let mut token_idsentities: HashMap<String, TokenIdentity> = HashMap::new();
 
@@ -327,7 +326,7 @@ pub(crate) async fn executor_loop(
             &client,
             &mut in_flight,
             &mut recent_placements,
-            ORPHAN_GRACE_MS,
+            host.orphan_grace_ms(),
         )
         .await
         {

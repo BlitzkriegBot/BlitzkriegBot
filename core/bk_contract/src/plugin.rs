@@ -130,6 +130,10 @@ pub trait MarketHost: Send + Sync {
     /// sweep cancels any venue-open id NOT in this set (orphans left by a crash
     /// or a previous process).
     fn known_venue_order_ids(&self) -> BoxFuture<'_, Vec<String>>;
+    /// 孤儿扫描对新下单的宽限期（毫秒）。默认 0：`on_order_accepted` 已在同 tick 将 venue id 绑入 `known_venue_order_ids`，下一 sweep（~5s）前已可见，无需额外宽限。
+    fn orphan_grace_ms(&self) -> i64 {
+        0
+    }
     /// Report that an orphan venue order was discovered and cancelled.
     fn note_orphan_cancelled(&self, venue_order_id: &str) -> BoxFuture<'_, ()>;
     /// Surface a venue/plugin error to the core (never swallowed).

@@ -425,6 +425,8 @@ fn family_18_account_view() {
         day_realized_usd: d("1.25"),
         // 现金真值锚点（操作员裁决 2026-11-08）：累计 Seed 入金。
         seeded_total: d("100"),
+        // #1277: 老内核/未上报期初权益时为 None，此处按缺席写入，wire 上不出该键。
+        cumulative_net_pnl: None,
         updated_at_ms: 1_760_000_000_000,
     };
     // `status` is a plain wire tag string (§12.1) and `statusReason` only

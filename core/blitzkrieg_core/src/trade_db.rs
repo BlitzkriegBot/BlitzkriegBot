@@ -158,6 +158,8 @@ pub struct TradeSummary {
     pub total_trades: u64,
     pub wins: u64,
     pub losses: u64,
+    /// 净利恒等于 0 的平仓笔数：既非盈也非亏，不进胜率分母（issue #1277 胜率 single-口径）。
+    pub flat: u64,
     pub win_rate: f64,
     pub attributed_gross_pnl: f64,
     pub total_fees: f64,
@@ -291,13 +293,15 @@ impl TradeDb {
     fn fold_into(summary: &mut TradeSummary, rec: &TradeRecord) {
         let net = f64_of(rec.net_pnl_usd);
         summary.total_trades += 1;
-        if net >= 0.0 {
-            summary.wins += 1;
-        } else {
-            summary.losses += 1;
+        match net.total_cmp(&0.0) {
+            std::cmp::Ordering::Greater => summary.wins += 1,
+            std::cmp::Ordering::Equal => summary.flat += 1,
+            std::cmp::Ordering::Less => summary.losses += 1,
         }
-        summary.win_rate = if summary.total_trades > 0 {
-            (summary.wins as f64 / summary.total_trades as f64) * 100.0
+        // 胜率只对「分得胜负」的笔数求比：平手不进分母，不算输也不算赢。
+        let decided = summary.wins + summary.losses;
+        summary.win_rate = if decided > 0 {
+            (summary.wins as f64 / decided as f64) * 100.0
         } else {
             0.0
         };
@@ -782,6 +786,57 @@ mod tests {
                 .is_empty(),
             "the live db must not write beside the dry ledger"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1277 胜率 single-口径：净利 > 0 为胜，== 0 为平手（不进胜率分母，也不算负），< 0 为负。
+    /// 100 笔折叠后 wins + flat + losses = 100；win_rate = wins / (wins + losses)，
+    /// 平手笔稀释不进比。
+    #[test]
+    fn win_flat_loss_partitions_hundred_trades() {
+        let dir = std::env::temp_dir().join(format!("bktrade-wfl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("trades.jsonl");
+        let mut db = TradeDb::new(&path);
+
+        let mut win_row = TradeRecord::from_closed(&closed());
+        win_row.id = "wfl-win-1".into();
+        win_row.net_pnl_usd = rust_decimal_macros::dec!(1);
+
+        let mut flat_row = TradeRecord::from_closed(&closed());
+        flat_row.id = "wfl-flat-1".into();
+        flat_row.net_pnl_usd = rust_decimal_macros::dec!(0);
+
+        let mut loss_row = TradeRecord::from_closed(&closed());
+        loss_row.id = "wfl-loss-1".into();
+        loss_row.net_pnl_usd = rust_decimal_macros::dec!(-1);
+
+        for _ in 0..40 {
+            db.record(&win_row, 100);
+        }
+        for _ in 0..30 {
+            db.record(&flat_row, 100);
+        }
+        for _ in 0..30 {
+            db.record(&loss_row, 100);
+        }
+
+        let s = db.summary();
+        assert_eq!(s.total_trades, 100, "每一笔成交都进总数");
+        assert_eq!(s.wins, 40, "净利大于 0 的笔才是胜");
+        assert_eq!(s.flat, 30, "净利等于 0 的笔是平手，不进胜也进不了负");
+        assert_eq!(s.losses, 30, "净利小于 0 的笔才是负");
+        assert_eq!(s.wins + s.flat + s.losses, 100);
+        assert!(
+            (s.win_rate - (40.0 / 70.0 * 100.0)).abs() < 1e-9,
+            "胜率只在分出胜负的笔上求比，平手不进分母"
+        );
+
+        // summary.json 透传 flat；老报文缺该键时 serde 回落默认 0（向后兼容）。
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("summary.json")).unwrap())
+                .unwrap();
+        assert_eq!(summary["flat"], serde_json::json!(30));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

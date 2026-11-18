@@ -665,6 +665,12 @@ pub struct AccountView {
     /// 忽略；`default` 让老的 account.list 报文（无该键）仍能解析。
     #[serde(default, with = "crate::decimal")]
     pub seeded_total: Decimal,
+    /// 累计净 PnL = balance − opening_equity（账本口径，issue #1046/#1063）。
+    /// 与 `seeded_total` 不同：这是净利的SSOT，面板不得再按 `cash − seed`
+    /// 另算一套。`None` 当期初权益未知时（LIVE 尚未收到首笔 venue
+    /// equity），面板须显示「未知」，禁止回退到成交折叠。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cumulative_net_pnl: Option<Decimal>,
     pub updated_at_ms: i64,
 }
 

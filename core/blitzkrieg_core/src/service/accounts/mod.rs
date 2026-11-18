@@ -669,6 +669,16 @@ impl Core {
                 } else {
                     (ledger.balance(), ledger.available())
                 };
+                // issue #1277: cumulative_net_pnl is the single ledger truth for
+                // net PnL. opening_equity = configured seed (Dry/ReadOnly) or the
+                // account's persisted venue equity (Live); None until known.
+                let opening_equity = match self.config.mode {
+                    crate::model::Mode::Dry | crate::model::Mode::ReadOnly => {
+                        Some(self.config.dry_seed_balance)
+                    }
+                    crate::model::Mode::Live => a.opening_equity,
+                };
+                let cumulative_net_pnl = opening_equity.map(|oe| ledger.balance() - oe);
                 crate::schema::AccountView {
                     id: id.as_str().to_string(),
                     name: a.name.clone(),
@@ -690,6 +700,7 @@ impl Core {
                     open_positions,
                     day_realized_usd,
                     seeded_total: ledger.seeded_total(),
+                    cumulative_net_pnl,
                     updated_at_ms: a.updated_at_ms,
                 }
             })

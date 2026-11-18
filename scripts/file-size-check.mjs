@@ -85,9 +85,12 @@ const ALLOW = [
   { path: 'core/blitzkrieg_core/src/service/assembly.rs', atAuthoring: 1732 },
   // #1199 第十次审计: strategies.rs crossed the limit on the reload-rollback
   // fix (P1-15/16) — a failed reload now restores the old instance instead of
-  // blanking the dispatch (+21 lines). Debt marker — the file may shrink or
-  // die, never grow past atAuthoring.
-  { path: 'core/blitzkrieg_core/src/service/strategies.rs', atAuthoring: 1509 },
+  // blanking the dispatch (+21 lines). #1277 胜率 single-口径再写入 flat
+  // 桶与 totalTrades 行，1509→1522（+13 行）。Debt marker — the file may
+  // shrink or die, never grow past atAuthoring. 1509→1522: #1277 flat 桶
+  // 决胜口径（无逻辑变更，仅门限随创作行数同步；同 #1284 scanner.rs
+  // 前例 1526→1533→1534）。
+  { path: 'core/blitzkrieg_core/src/service/strategies.rs', atAuthoring: 1522 },
   // #1199 第六轮：tests_risk_rounds.rs 新增 round_duration 落 SQLite 与
   // 下一会话读回的往返用例，1479→1562（+83 行）。
   { path: 'core/blitzkrieg_core/src/ipc/server/tests/tests_risk_rounds.rs', atAuthoring: 1562 },

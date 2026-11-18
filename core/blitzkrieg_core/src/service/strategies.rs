@@ -1285,11 +1285,22 @@ impl Core {
         };
         let rows = if rows.is_empty() { &empty } else { &rows };
         let mut s = serde_json::json!({
-            "totalTrades": 0u64, "wins": 0u64, "losses": 0u64, "winRate": 0.0,
+            "totalTrades": 0u64, "wins": 0u64, "losses": 0u64, "flat": 0u64, "winRate": 0.0,
             "attributedGrossPnl": 0.0, "totalFees": 0.0, "attributedNetPnl": 0.0,
             "avgHoldTimeSec": 0.0, "bestTradePnl": 0.0, "worstTradePnl": 0.0,
         });
-        let (mut wins, mut losses, mut gross, mut fees, mut net, mut best, mut worst, mut holds) = (
+        let (
+            mut wins,
+            mut losses,
+            mut flats,
+            mut gross,
+            mut fees,
+            mut net,
+            mut best,
+            mut worst,
+            mut holds,
+        ) = (
+            0u64,
             0u64,
             0u64,
             0.0,
@@ -1302,10 +1313,10 @@ impl Core {
         for r in rows.iter() {
             let num = |k: &str| r.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
             let net_i = num("netPnlUsd");
-            if net_i >= 0.0 {
-                wins += 1
-            } else {
-                losses += 1
+            match net_i.total_cmp(&0.0) {
+                std::cmp::Ordering::Greater => wins += 1,
+                std::cmp::Ordering::Equal => flats += 1,
+                std::cmp::Ordering::Less => losses += 1,
             }
             gross += num("grossPnlUsd");
             fees += num("feesUsd");
@@ -1314,10 +1325,12 @@ impl Core {
             worst = worst.min(net_i);
             holds += num("holdTimeSec");
         }
-        let n = (wins + losses) as f64;
-        s["totalTrades"] = serde_json::json!(wins + losses);
+        let decided = wins + losses;
+        let n = decided as f64;
+        s["totalTrades"] = serde_json::json!(decided + flats);
         s["wins"] = serde_json::json!(wins);
         s["losses"] = serde_json::json!(losses);
+        s["flat"] = serde_json::json!(flats);
         s["winRate"] = serde_json::json!(if n > 0.0 {
             wins as f64 * 100.0 / n
         } else {

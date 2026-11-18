@@ -16,6 +16,7 @@
 
 pub use blitzkrieg_bk_contract::account;
 pub use blitzkrieg_bk_contract::decimal;
+pub use blitzkrieg_bk_contract::fee;
 pub use blitzkrieg_bk_contract::kline;
 pub use blitzkrieg_bk_contract::modes;
 pub use blitzkrieg_bk_contract::net;
@@ -25,6 +26,7 @@ pub use blitzkrieg_bk_contract::types;
 pub mod unified;
 
 pub use blitzkrieg_bk_contract::account::{AccountId, DEFAULT_ACCOUNT_ID, default_account_id};
+pub use blitzkrieg_bk_contract::fee::{FeeModel, FeeRole};
 pub use blitzkrieg_bk_contract::kline::{Kline, KlineInterval};
 pub use blitzkrieg_bk_contract::modes::{
     MarketCapabilities, MarketMode, MarketStructure, ModeError,

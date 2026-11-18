@@ -118,6 +118,37 @@ impl Core {
         self.engine.is_some()
     }
 
+    /// #1272 启动回填：把扫描器的网格池填成本部署真正会跑的族 ——
+    /// 进程默认族（venue-agnostic 桶）+ 每个账户 `ROUNDS` 声明的族 +
+    /// 每个账户的 per-account 覆盖。
+    ///
+    /// 只填池、不改任何全局量：一个账户的覆盖在重启后仍然是**该账户**的网格，
+    /// 而不是进程网格 —— 单张全局网格正是 #1272 的根因（账户 A 写 300s 让账户 B
+    /// 的 900s 市场全部 `NoMarkets`）。无引擎时是 no-op（hostless replay）。
+    pub fn seed_scanner_grids(&mut self, cfg: &crate::service::CoreConfig) {
+        // The account book is the venue authority: a bound account speaks for
+        // ITS venue, an unbound one for the venue-agnostic bucket — the same
+        // reading the data plane's boot family set uses.
+        let mut families: Vec<(String, i64)> =
+            vec![(String::new(), cfg.default_round_duration_sec)];
+        for a in self.accounts.account_list() {
+            for &duration_sec in &a.rounds {
+                families.push((a.venue.clone(), duration_sec));
+            }
+        }
+        for (account_id, &duration_sec) in &cfg.account_round_durations {
+            let venue = self
+                .accounts
+                .account(&blitzkrieg_market_api::AccountId::from(account_id.as_str()))
+                .map(|a| a.venue.clone())
+                .unwrap_or_default();
+            families.push((venue, duration_sec));
+        }
+        if let Some(engine) = self.engine.as_mut() {
+            engine.set_scanner_grids(families);
+        }
+    }
+
     /// #1170 (方案 A): install the strategy→round-family bindings (keys are
     /// `strategy_env_fold`ed package names) into the driving engine. A no-op
     /// without an engine (a hostless replay has nothing to bind). Called by

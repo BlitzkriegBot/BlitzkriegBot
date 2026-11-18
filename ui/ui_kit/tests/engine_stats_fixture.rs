@@ -253,4 +253,9 @@ const NOT_CARRIED: &[(&str, &str)] = &[
          排查面，no panel surface yet — operator reads it from engine.stats \
          directly (tests/env_probes.rs pins the field names)",
     ),
+    (
+        "jsonlWriteFailures",
+        "#1274 JSONL append failure counter; observability-only — operator reads \
+         it from engine.stats / /api/ping directly, no panel surface yet.",
+    ),
 ];

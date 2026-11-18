@@ -257,8 +257,18 @@ impl TradeDb {
     }
 
     /// Append a closed trade and update the summary (best effort, never panics).
+    ///
+    /// A durable write failure is logged but never interrupts trading: the
+    /// in-memory summary is authoritative for the run, and the account keeps
+    /// trading. The failure is reflected in `crate::jsonl::append_failures()`
+    /// (surfaced via `engine_stats` / `jsonlWriteFailures`).
     pub fn record(&mut self, rec: &TradeRecord, now_ms: i64) {
-        crate::jsonl::append(&self.jsonl_path, rec);
+        if !crate::jsonl::append(&self.jsonl_path, rec) {
+            tracing::warn!(
+                path = %self.jsonl_path.display(),
+                "trade jsonl append failed — trade kept in memory, not durable; trading continues"
+            );
+        }
         let bucket = self.by_account.entry(rec.account_id.clone()).or_default();
         Self::fold_into(bucket, rec);
         Self::fold_into(&mut self.summary, rec);
@@ -772,6 +782,68 @@ mod tests {
                 .is_empty(),
             "the live db must not write beside the dry ledger"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1274: a durable write failure (read-only store) must not silence the
+    /// trade — the in-memory summary keeps the trade, the account keeps
+    /// trading (not frozen), and the failure counter moves.
+    #[test]
+    fn record_survives_readonly_store_keeps_memory_and_counter() {
+        let dir = std::env::temp_dir().join(format!(
+            "bktrade-ro-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("trades.jsonl");
+
+        // Make the directory read-only BEFORE any file exists, so every append fails.
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut p = std::fs::metadata(&dir).unwrap().permissions();
+        p.set_mode(0o500);
+        std::fs::set_permissions(&dir, p).unwrap();
+
+        let mut db = TradeDb::new(&path);
+        let before = crate::jsonl::append_failures();
+
+        // All writes fail (read-only dir), but the in-memory summary still books the trade.
+        db.record(&TradeRecord::from_closed(&closed()), 100);
+        assert_eq!(
+            db.summary().total_trades,
+            1,
+            "first trade booked in memory despite write failure"
+        );
+        assert!(
+            crate::jsonl::append_failures() > before,
+            "failure counter must move after first failure"
+        );
+
+        let mut rec2 = TradeRecord::from_closed(&closed());
+        rec2.id = "hft-2".into();
+        db.record(&rec2, 200);
+        assert_eq!(
+            db.summary().total_trades,
+            2,
+            "second trade still accepted — not frozen"
+        );
+
+        let mut rec3 = TradeRecord::from_closed(&closed());
+        rec3.id = "hft-3".into();
+        db.record(&rec3, 300);
+        assert_eq!(
+            db.summary().total_trades,
+            3,
+            "a third trade is still accepted — account keeps trading"
+        );
+
+        // Restore permissions for cleanup.
+        let mut q = std::fs::metadata(&dir).unwrap().permissions();
+        q.set_mode(0o700);
+        std::fs::set_permissions(&dir, q).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

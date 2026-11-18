@@ -313,17 +313,27 @@ impl Core {
                 .expect("len checked above");
             // The journal records the eviction as consumed, so a replay after a
             // restart does not resurrect a credential the cap already dropped.
-            if let Some(path) = &self.close_credential_log {
-                crate::jsonl::append(path, &CloseCredentialLine::Consumed { trade_id: evicted });
+            if let Some(path) = &self.close_credential_log
+                && !crate::jsonl::append(path, &CloseCredentialLine::Consumed { trade_id: evicted })
+            {
+                tracing::warn!(
+                    path = %path.display(),
+                    "close credential journal append failed (eviction) — credential kept in memory, not durable; trading continues"
+                );
             }
         }
-        if let Some(path) = &self.close_credential_log {
-            crate::jsonl::append(
+        if let Some(path) = &self.close_credential_log
+            && !crate::jsonl::append(
                 path,
                 &CloseCredentialLine::Push {
                     trade_id: trade_id.clone(),
                     cred: Box::new(cred.clone()),
                 },
+            )
+        {
+            tracing::warn!(
+                path = %path.display(),
+                "close credential journal append failed (push) — credential kept in memory, not durable; trading continues"
             );
         }
         self.close_credentials.push_back((trade_id, cred));

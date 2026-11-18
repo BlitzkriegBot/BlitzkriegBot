@@ -631,9 +631,10 @@ pub async fn run(
     //
     // B1d (轮次多族): the loop walks the DECLARED (venue, duration) pairs —
     // the boot's global family on every plugin, plus every account `rounds`
-    // row — instead of one instance per plugin. Each pair starts its own
-    // discovery with that duration baked into the config (the plugin picks
-    // its series/slug from it); the pairs were pre-recorded in
+    // row, plus every persisted per-account round-duration override (#1272) —
+    // instead of one instance per plugin. Each pair starts its own discovery
+    // with that duration baked into the config (the plugin picks its
+    // series/slug from it); the pairs were pre-recorded in
     // `data_plane.discovery_mounted` by `at_boot`, and the set walk here is
     // the same information. A single-family deployment declares nothing but
     // the global value, so the walk degenerates to exactly the historical
@@ -666,10 +667,36 @@ pub async fn run(
             .into_iter()
             .map(|(v, d)| (resolve_source(&v), d))
             .collect();
-        pairs.sort();
+        // The global family sorts FIRST within a venue: the instance every
+        // deployment has always run keeps its duration, and the extra families
+        // are additions beside that primary, never a replacement of it.
+        pairs.sort_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| {
+                (a.1 != config.default_round_duration_sec)
+                    .cmp(&(b.1 != config.default_round_duration_sec))
+                    .then(a.1.cmp(&b.1))
+            })
+        });
         pairs.dedup();
         let reuse = data_plane.feed_reuse().expect("boot installs the cell");
+        // #1165 L3 (自覆盖), applied at BOOT as well as at the runtime mount:
+        // a plugin whose discovery walks its own declared family table
+        // (`supported_round_secs`) feeds every family in that table from the
+        // ONE instance already started — a second per-family instance would
+        // double its upstream queries and duplicate every batch. A family
+        // OUTSIDE the table (kalshi's [900]) still takes its own instance, and
+        // so does every family of a plugin with no table at all (predictfun,
+        // binance_spot): those discoveries bake the duration into their config
+        // and discover nothing for a family they were not started with.
+        let mut covered: std::collections::HashMap<String, Vec<i64>> =
+            std::collections::HashMap::new();
         for (venue, duration) in &pairs {
+            if covered
+                .get(venue)
+                .is_some_and(|table| table.contains(duration))
+            {
+                continue;
+            }
             let plugin: std::sync::Arc<dyn blitzkrieg_market_api::MarketPlugin> =
                 match actives.iter().find(|p| p.name() == *venue) {
                     Some(p) => std::sync::Arc::clone(p),
@@ -705,10 +732,17 @@ pub async fn run(
             }
             if let Err(e) = disc.start(host.clone(), cfg).await {
                 eprintln!("blitzkrieg-core: discovery start failed for {venue}@{duration}s: {e}");
-            } else if *duration == config.default_round_duration_sec {
-                eprintln!("blitzkrieg-core: discovery started for {venue}");
             } else {
-                eprintln!("blitzkrieg-core: discovery started for {venue} @ {duration}s family");
+                if *duration == config.default_round_duration_sec {
+                    eprintln!("blitzkrieg-core: discovery started for {venue}");
+                } else {
+                    eprintln!(
+                        "blitzkrieg-core: discovery started for {venue} @ {duration}s family"
+                    );
+                }
+                if let Some(table) = plugin.supported_round_secs() {
+                    covered.insert(venue.clone(), table);
+                }
             }
         }
         eprintln!("blitzkrieg-core: rust-native round discovery enabled");

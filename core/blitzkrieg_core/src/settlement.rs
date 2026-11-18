@@ -42,6 +42,7 @@ use blitzkrieg_market_api::{
     MarketResolution, RedemptionFailure, RedemptionRequest, SettlementQuery,
 };
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -123,6 +124,31 @@ pub const PRICE_SOURCE_BINARY_THRESHOLD: &str = "binary_threshold";
 /// are NOT substituted: booked price is 0, notional rides the receivable
 /// pool, venue truth redeems it later.
 pub const PRICE_SOURCE_UNOBSERVED: &str = "unobserved";
+
+/// Issue #1273: the single fallback price shared by the expiry sweep
+/// (`run_expiry_fallback_sweep`) and the manual force close
+/// (`force_close_expired_position`) — one threshold, one price-source set,
+/// both code paths, so a position can never be priced at 0.55 by one path
+/// and binary 1/0 by the other.
+///
+/// Binary settlement domain is {0, 1}:
+///   * `current_price > 0.5` → 1, `price_source = binary_threshold`
+///   * `0 < current_price <= 0.5` → 0, `price_source = binary_threshold`
+///   * `current_price == 0` → 0, `price_source = unobserved` — the dead feed
+///     is never repriced at entry price, last mid, or any mean.
+pub fn fallback_binary_price(current_price: Decimal) -> (Decimal, &'static str) {
+    if current_price.is_zero() {
+        return (Decimal::ZERO, PRICE_SOURCE_UNOBSERVED);
+    }
+    (
+        if current_price > dec!(0.5) {
+            Decimal::ONE
+        } else {
+            Decimal::ZERO
+        },
+        PRICE_SOURCE_BINARY_THRESHOLD,
+    )
+}
 
 /// One position's settlement, as computed from a venue resolution. Pure data:
 /// the caller decides whether it becomes a booking, which keeps the arithmetic
@@ -518,7 +544,12 @@ struct SettlementJournal {
 
 impl SettlementJournal {
     fn append(&self, line: &JournalLine) {
-        crate::jsonl::append(&self.path, line);
+        if !crate::jsonl::append(&self.path, line) {
+            tracing::warn!(
+                path = %self.path.display(),
+                "settlement journal append failed — settlement kept in memory, not durable; trading continues"
+            );
+        }
     }
 
     fn load(&self) -> Vec<JournalLine> {

@@ -9,11 +9,9 @@ use crate::model::*;
 use crate::schema::Event;
 use crate::service::config::UnverifiedExpiryPolicy;
 use crate::settlement::{
-    EXPIRY_ESTIMATE_SETTLE_AFTER_MS, PRICE_SOURCE_BINARY_THRESHOLD, PRICE_SOURCE_UNOBSERVED,
-    UNVERIFIED_EXPIRY_EXIT_REASON,
+    EXPIRY_ESTIMATE_SETTLE_AFTER_MS, UNVERIFIED_EXPIRY_EXIT_REASON, fallback_binary_price,
 };
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
 
 use super::Core;
 
@@ -87,16 +85,7 @@ impl Core {
             // (or credits zero cash under the cash policy), and venue truth
             // redeems it later. The 0.5 threshold is hard-coded per issue
             // #1238 — not an env/toml knob.
-            let (price, price_source) = if pos.current_price > Decimal::ZERO {
-                let settled = if pos.current_price > dec!(0.5) {
-                    Decimal::ONE
-                } else {
-                    Decimal::ZERO
-                };
-                (settled, PRICE_SOURCE_BINARY_THRESHOLD)
-            } else {
-                (Decimal::ZERO, PRICE_SOURCE_UNOBSERVED)
-            };
+            let (price, price_source) = fallback_binary_price(pos.current_price);
             let closed = self.positions.close_priced(
                 &pos.id,
                 price,

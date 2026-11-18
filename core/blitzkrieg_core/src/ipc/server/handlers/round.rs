@@ -57,10 +57,10 @@ pub(crate) async fn handle_round(
 /// only the scanner. The family the account's scanner now runs
 /// (`update.next_session_sec` — the override on a set, the default grid on a
 /// reset) needs a discovery instance polling it; without one the feed never
-/// carries that family's tokens, the scanner (grid_override = 选市权威)
-/// rejects every declared market of the stale families, and the account
-/// starves with "no live PairBook entry" — the exact live incident #1165
-/// closes. Reuses `enable_venue_at_runtime` verbatim (no second mechanism):
+/// carries that family's tokens, the scanner's grid pool (#1272) refuses every
+/// market of the families nothing polls, and the account starves with "no live
+/// PairBook entry" — the exact live incident #1165 closes. Reuses
+/// `enable_venue_at_runtime` verbatim (no second mechanism):
 /// its per-(venue, family) idempotence guard skips every family that
 /// already runs, and its feed mount now carries the venue-mounted guard
 /// inside, so a family addition on a live venue never restarts the feed.

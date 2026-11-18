@@ -18,6 +18,7 @@
 use super::*;
 use crate::model::{FillPolicy, OrderStatus, Side};
 use crate::position::OpenParams;
+use crate::service::config::UnverifiedExpiryPolicy;
 use rust_decimal_macros::dec;
 
 /// 900s 网格上 slot 1 的终点：`place` 在 now=1、round_slot=1 落进
@@ -117,6 +118,8 @@ fn stage_unanswered_query(c: &mut Core, condition_id: &str, token_id: &str, firs
 fn an_expired_never_answered_position_falls_back_closed() {
     let dir = scratch("fallback-closes");
     let mut c = fallback_core(&dir, false);
+    // 本用例钉的是 #684 的现金行为：显式退回 Cash 政策（默认已随 #1273 改为 Receivable）。
+    c.config.unverified_expiry_policy = UnverifiedExpiryPolicy::Cash;
     // 0.97 > 0.5 → 二值化结算价 1（旧语义会错按原 mid 0.40 记账，少回笼 3%）。
     let mut p = open_expiring_position(&mut c);
     p.current_price = dec!(0.97);
@@ -342,7 +345,8 @@ fn force_close_gates_and_audit() {
     );
     assert_eq!(c.positions().open_positions().len(), 1);
 
-    // (c) 过期持仓 + 审计路径在 → 平。兜底价 = 最后 mid；无 claim；审计行在。
+    // (c) 过期持仓 + 审计路径在 → 平。兜底价与扫掠同源（0.5 二值化）：0.40 → 0；
+    // 无 claim；审计行在。
     let (tx, mut rx) = mpsc::unbounded_channel();
     c.set_event_sink(tx);
     let closed = c
@@ -354,8 +358,8 @@ fn force_close_gates_and_audit() {
     );
     assert_eq!(
         closed.exit_price,
-        dec!(0.40),
-        "last known mid (the entry book)"
+        dec!(0),
+        "0.40 并阈二值化为 0，与扫掠同源 (issue #1273)"
     );
     assert!(c.positions().open_positions().is_empty());
     assert!(
@@ -663,15 +667,16 @@ fn fallback_close_carries_source_fallback() {
         .force_close_expired_position(&p.id, "uid:op", EXPIRES_MS + 1_000)
         .expect("expired + audited = closed");
     assert_eq!(closed.source, "fallback", "fallback close must be labeled");
+    // 0.40 并阈二值化为 0：兜底价随扫掠同源 (issue #1273)。
     assert_eq!(
         closed.original_fallback_price,
-        Some(dec!(0.40)),
+        Some(dec!(0)),
         "original fallback price preserved for audit"
     );
     // The trade record mirrors the closed position's provenance.
     let rec = &c.positions().closed_positions()[0];
     assert_eq!(rec.source, "fallback");
-    assert_eq!(rec.original_fallback_price, Some(dec!(0.40)));
+    assert_eq!(rec.original_fallback_price, Some(dec!(0)));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -968,6 +973,8 @@ fn binary_above_half_settles_one_and_credits_full_shares() {
         let dir_name = format!("binary-{}", price);
         let dir = scratch(&dir_name);
         let mut c = fallback_core(&dir, false);
+        // 本用例钉的是 #684 的现金行为：显式退回 Cash 政策（默认已随 #1273 改为 Receivable）。
+        c.config.unverified_expiry_policy = UnverifiedExpiryPolicy::Cash;
         let p = open_expiring_position(&mut c);
         let mut hi = p.clone();
         hi.current_price = price;
@@ -1044,4 +1051,149 @@ fn binary_at_or_below_half_settles_zero_no_credit() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #1273: the manual force close and the expiry sweep price from the
+/// same function — the same position facts yield identical `exit_price` and
+/// `price_source` on both paths (previously 0.55 priced at the raw mid on
+/// force close but binary 1 on the sweep).
+#[test]
+fn force_close_and_sweep_price_converge() {
+    let mark = dec!(0.55); // > 0.5 → binary 1 on both paths
+
+    // Path A: 手动强平（operator force close，审计路径配齐）。
+    let dir_a = scratch("conv-force");
+    let mut c_a = fallback_core(&dir_a, true);
+    let mut p_a = open_expiring_position(&mut c_a);
+    p_a.current_price = mark;
+    p_a.prev_price = mark;
+    c_a.positions_mut().restore_open(vec![p_a.clone()], None);
+    let closed_a = c_a
+        .force_close_expired_position(&p_a.id, "uid:op", EXPIRES_MS + 1_000)
+        .expect("force close lands");
+
+    // Path B: 兜底 sweep（过期后 10s 估计结算界限之外，场地零应答）。
+    let dir_b = scratch("conv-sweep");
+    let mut c_b = fallback_core(&dir_b, false);
+    let mut p_b = open_expiring_position(&mut c_b);
+    p_b.current_price = mark;
+    p_b.prev_price = mark;
+    c_b.positions_mut().restore_open(vec![p_b], None);
+    let sent = EXPIRES_MS + 100;
+    c_b.tick(sent).unwrap();
+    stage_unanswered_query(&mut c_b, "cond", "tok", sent);
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
+    c_b.tick(bound + 1_000).unwrap();
+    assert!(c_b.positions().open_positions().is_empty());
+    let closed_b = &c_b.positions().closed_positions()[0];
+
+    assert_eq!(
+        closed_a.exit_price, closed_b.exit_price,
+        "force close and sweep converge on exit price"
+    );
+    assert_eq!(
+        c_a.recent_trades(10)[0]["priceSource"],
+        c_b.recent_trades(10)[0]["priceSource"],
+        "force close and sweep converge on price source"
+    );
+    assert_eq!(closed_a.exit_price, dec!(1), "0.55 并阈结算为 1");
+    assert_eq!(
+        closed_a.price_source, "binary_threshold",
+        "price source names the binary threshold"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
+}
+
+/// Issue #1273: `Receivable` 政策下的兜底平仓不贷可花现金。0.55 并阈结算
+/// 为 1，名义过入应收池，现金账分文不入。
+#[test]
+fn receivable_policy_credits_no_cash_on_fallback_close() {
+    let dir = scratch("receivable-no-cash");
+    let mut c = fallback_core(&dir, false);
+    // 默认已是 Receivable；此处显式点名，让断言对缺省策略不敏感。
+    c.config.unverified_expiry_policy = UnverifiedExpiryPolicy::Receivable;
+
+    let mut p = open_expiring_position(&mut c);
+    p.current_price = dec!(0.55);
+    p.prev_price = dec!(0.55);
+    c.positions_mut().restore_open(vec![p], None);
+
+    let before = c.accounts().active_ledger().balance();
+
+    let sent = EXPIRES_MS + 100;
+    c.tick(sent).unwrap();
+    stage_unanswered_query(&mut c, "cond", "tok", sent);
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
+    c.tick(bound + 1_000).unwrap();
+
+    assert!(c.positions().open_positions().is_empty());
+    let closed = &c.positions().closed_positions()[0];
+    assert_eq!(closed.exit_price, dec!(1), "0.55 > 0.5 结算为 1");
+    assert_eq!(
+        c.recent_trades(10)[0]["priceSource"],
+        serde_json::json!("binary_threshold"),
+    );
+    // 1 × dust_shares = 5 过入应收池，现金账不增一分；审计恒等式仍成立。
+    assert_eq!(
+        c.engine_stats_at(bound + 2_000)["settlement"]["receivableUsd"],
+        serde_json::json!(5.0),
+    );
+    assert_eq!(
+        c.accounts().active_ledger().balance(),
+        before,
+        "Receivable 兜底平仓不贷可花现金",
+    );
+    let audit = c.run_accounting_audit(bound + 3_000);
+    assert!(
+        audit.ok,
+        "audit after receivable fallback close failed (see AuditReport fields)"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #1273: `current_price == 0`（UNOBSERVED，死 feed / 未曾观测）永不
+/// 贷可花现金：Cash 政策下 `amount = 0` 早返回；Receivable 政策下只结 0 的
+/// claim，现金同样不动。
+#[test]
+fn unobserved_expiry_credits_no_cash() {
+    for policy in [
+        UnverifiedExpiryPolicy::Cash,
+        UnverifiedExpiryPolicy::Receivable,
+    ] {
+        let dir = scratch("unobserved-no-cash");
+        let mut c = fallback_core(&dir, false);
+        c.config.unverified_expiry_policy = policy;
+
+        let mut p = open_expiring_position(&mut c);
+        p.current_price = dec!(0);
+        p.prev_price = dec!(0);
+        c.positions_mut().restore_open(vec![p], None);
+
+        let before = c.accounts().active_ledger().balance();
+
+        let sent = EXPIRES_MS + 100;
+        c.tick(sent).unwrap();
+        stage_unanswered_query(&mut c, "cond", "tok", sent);
+        let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
+        c.tick(bound + 1_000).unwrap();
+
+        assert!(c.positions().open_positions().is_empty());
+        let closed = &c.positions().closed_positions()[0];
+        assert_eq!(closed.exit_price, dec!(0), "dead feed books 0");
+        assert_eq!(
+            c.recent_trades(10)[0]["priceSource"],
+            serde_json::json!("unobserved"),
+            "price source names the unobserved feed"
+        );
+        assert_eq!(
+            c.accounts().active_ledger().balance(),
+            before,
+            "unobserved fallback credits no cash under {policy:?}",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

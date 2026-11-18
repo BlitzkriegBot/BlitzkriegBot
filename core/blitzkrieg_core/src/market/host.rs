@@ -4,6 +4,36 @@
 //! a thin, logic-free forward onto the corresponding `Core` method, so the
 //! plugin boundary carries no trading behaviour of its own.
 
+// ── Lock-poison policy: heal, never wedge (issue #1275, step 1) ──────────────
+//
+// Every `std::sync::RwLock`/`Mutex` cell in this file guards a short,
+// independent critical section over routing bookkeeping (which plugin owns
+// untagged orders, which venues reuse whose feed, which poll batches are
+// admitted). None of them guards the engine, the OME, the ledger or an order
+// state machine. If a holder panics mid-write the lock is poisoned; the
+// historical panic-on-poison accessor made EVERY later access panic too, so one
+// transient panic inside one plugin callback permanently wedged the whole venue
+// (every round registration, every order drain, every reconcile on this host)
+// while the process kept running and emitted no exit — a silent, unrecoverable
+// outage. `PoisonError::into_inner()` instead takes the same guard back and
+// keeps the venue live.
+//
+// Note `into_inner()` recovers the guard but does NOT clear the poison flag:
+// every later access takes this same cheap healing branch. That is deliberate —
+// uniform behaviour with no "sometimes poisoned" state to reason about.
+//
+// The trade-off is explicit and accepted: healing may observe the half-written
+// state the panicking holder left behind (for example one edge appended without
+// its sibling bookkeeping). That is strictly preferable to a permanent wedge
+// here because (a) this is advisory routing metadata, not balances, positions
+// or orders — a stale/partial entry can misroute one decision, it cannot
+// corrupt money; (b) the alternative is a hard wedge of the entire venue with
+// no error surfaced to anyone, which is worse in both availability and
+// diagnosability; and (c) each cell's operations are independently
+// idempotent/mergeable (`add_edge` dedupes, `consumers_of` filters), so a
+// partial entry is either harmless or overwritten by the next write. A panic in
+// one plugin's callback must cost at most that callback, never the venue.
+
 use crate::model as m;
 use crate::service::Core;
 use blitzkrieg_market_api as api;
@@ -57,7 +87,12 @@ impl FeedReuse {
     /// Append a declared edge (idempotent — the same declaration re-bound is
     /// a no-op). Returns true when the edge was newly added.
     pub fn add_edge(&self, consumer: &str, source: &str) -> bool {
-        let mut edges = self.edges.write().expect("feed reuse edges lock poisoned");
+        // Heal a poisoned edge list instead of wedging the fan-out (see the
+        // top-of-file policy).
+        let mut edges = self
+            .edges
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if edges
             .iter()
             .any(|e| e.consumer == consumer && e.source == source)
@@ -76,7 +111,7 @@ impl FeedReuse {
     pub fn consumers_of(&self, source: &str) -> Vec<String> {
         self.edges
             .read()
-            .expect("feed reuse edges lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .filter(|e| e.source == source)
             .map(|e| e.consumer.clone())
@@ -87,7 +122,7 @@ impl FeedReuse {
     pub fn consumes(&self, consumer: &str, source: &str) -> bool {
         self.edges
             .read()
-            .expect("feed reuse edges lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .any(|e| e.consumer == consumer && e.source == source)
     }
@@ -284,7 +319,7 @@ impl CoreHost {
         *self
             .active_plugin
             .write()
-            .expect("core host active plugin lock poisoned") = name.to_string();
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = name.to_string();
     }
 
     /// RFC-661 M2: install the `feed_source` fan-out. Called once by the
@@ -297,7 +332,7 @@ impl CoreHost {
         *self
             .feed_reuse
             .lock()
-            .expect("core host feed reuse lock poisoned") = Some(reuse);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reuse);
     }
 
     /// The fan-out cell for callers that must append a runtime-declared edge
@@ -307,7 +342,7 @@ impl CoreHost {
     pub fn feed_reuse(&self) -> Option<FeedReuse> {
         self.feed_reuse
             .lock()
-            .expect("core host feed reuse lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
@@ -353,7 +388,7 @@ impl CoreHost {
         *self
             .poll_admission
             .lock()
-            .expect("core host poll admission lock poisoned") = Some(gate);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(gate);
     }
 }
 
@@ -447,7 +482,7 @@ impl MarketHost for CoreHost {
             if let Some(gate) = self
                 .poll_admission
                 .lock()
-                .expect("core host poll admission lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .as_ref()
                 .cloned()
             {
@@ -472,7 +507,7 @@ impl MarketHost for CoreHost {
             let fallback = self
                 .active_plugin
                 .read()
-                .expect("core host active plugin lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
             let plugin = markets
                 .first()
@@ -574,7 +609,7 @@ impl MarketHost for CoreHost {
             let active = self
                 .active_plugin
                 .read()
-                .expect("core host active plugin lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
             let legacy_all = active.is_empty();
             c.pending_unbound()
@@ -603,7 +638,7 @@ impl MarketHost for CoreHost {
             let active = self
                 .active_plugin
                 .read()
-                .expect("core host active plugin lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
             let untagged_fallback = plugin == active && !active.is_empty();
             let legacy_all = active.is_empty();
@@ -689,7 +724,7 @@ impl MarketHost for CoreHost {
             let venue = self
                 .active_plugin
                 .read()
-                .expect("core host active plugin lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
             let mut c = self.core.lock().await;
             // Trades for KNOWN orders go through the OME reconcile; trades for
@@ -867,3 +902,88 @@ impl MarketHost for CoreHost {
 
 #[cfg(test)]
 mod tests;
+
+/// Regression coverage for the poison-heal policy above (issue #1275, step 1).
+///
+/// Kept inline in `host.rs` (rather than in `host/tests.rs`) because the
+/// change's blast radius is this one file, and it lets the source-scan assert
+/// the exact file that ships.
+#[cfg(test)]
+mod poison_heal_tests {
+    use super::*;
+
+    /// A panic while holding one of the host's locks must NOT wedge every later
+    /// access: the poisoned cell is recovered with `into_inner()` and stays
+    /// readable/writable. Also pins the accepted trade-off — the half-written
+    /// state left by the panicking holder is what the healed reads then see.
+    #[test]
+    fn poison_is_healed_and_the_cell_stays_usable() {
+        let reuse = FeedReuse::default();
+        assert!(reuse.add_edge("consumer", "source"));
+
+        let edges = std::sync::Arc::clone(&reuse.edges);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut guard = edges.write().unwrap();
+            // A partial write followed by a panic is exactly the state a
+            // poisoned lock exposes after healing.
+            guard.push(FeedReuseEdge {
+                consumer: "half".to_string(),
+                source: "written".to_string(),
+            });
+            panic!("holder panicked while holding the edges lock");
+        }));
+        assert!(panicked.is_err(), "the holder must have panicked");
+        assert!(
+            edges.read().is_err(),
+            "a panic inside the write section must poison the lock, otherwise \
+             this test proves nothing"
+        );
+
+        // The host's accessors heal instead of panicking...
+        assert!(reuse.add_edge("consumer2", "source"));
+        let mut consumers = reuse.consumers_of("source");
+        consumers.sort();
+        assert_eq!(
+            consumers,
+            vec!["consumer".to_string(), "consumer2".to_string()],
+            "reads after healing must see the pre-panic edge and the new one"
+        );
+        assert!(reuse.consumes("consumer2", "source"));
+
+        // ...which means the half-write is visible. That is the documented
+        // trade-off (advisory routing metadata, not money), asserted so any
+        // future change to the policy has to be deliberate.
+        assert!(
+            reuse.consumes("half", "written"),
+            "healing exposes the panicking holder's partial write by design"
+        );
+    }
+
+    /// The regression itself: no lock-poisoning `expect` may return to the
+    /// production region of this file. Scans the shipped source text rather
+    /// than a hand-maintained list, so a future edit that reintroduces one
+    /// fails here.
+    #[test]
+    fn production_source_has_no_poison_expect() {
+        let src = include_str!("host.rs");
+        // Everything from the first `#[cfg(test)]` onward is test code (both
+        // this module and `mod tests;`); the host lives before it.
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(
+            production.len() > 10_000 && production.contains("fn add_edge"),
+            "source scan looked at the wrong region: {} bytes",
+            production.len()
+        );
+        let offenders: Vec<(usize, &str)> = production
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.contains(".expect(") && line.contains("poisoned"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "lock-poisoning expects are back in production code (heal instead, \
+             see the top-of-file policy): {:?}",
+            offenders
+        );
+    }
+}

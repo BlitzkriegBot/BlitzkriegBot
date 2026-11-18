@@ -84,6 +84,14 @@ fn run_core(sandbox: &Path, args: &[&str], grace: Duration) -> Run {
         // `BK_CONFIG=none` is the documented way to run without a config file: an
         // operator's local TOML edit must not decide what this test observes.
         .env("BK_CONFIG", "none")
+        // Each child owns its database file: the default path resolves against the
+        // install root, so without this every parallel child hammers the SAME
+        // repository `data/blitzkrieg.sqlite` under WAL — concurrent writers
+        // plus hard-killed children leave it in a state the next import can't
+        // read ("no such table: main.orders"). An explicit BLITZKRIEG_DB_PATH is
+        // honoured verbatim, so this keeps the child hermetic: nothing it writes
+        // escapes the sandbox, and no two children share a file.
+        .env("BLITZKRIEG_DB_PATH", sandbox.join("blitzkrieg.sqlite"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

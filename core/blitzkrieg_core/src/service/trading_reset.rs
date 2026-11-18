@@ -672,15 +672,21 @@ impl Core {
                 "round_duration.set needs durationSec (one of {:?}) or reset: true".to_string(),
             ));
         }
-        // Validate the account exists in the book.
-        self.accounts
-            .account(&blitzkrieg_market_api::AccountId::from(account_id.as_str()))
-            .ok_or_else(|| {
-                CoreError::new(
-                    CoreErrorCode::InvalidParams,
-                    format!("round_duration.set: no such account `{account_id}`"),
-                )
-            })?;
+        // Validate the account exists in the book, and keep ITS venue: a grid
+        // anchor speaks for the account's own venue (an unbound account for the
+        // venue-agnostic bucket) — never for the whole deployment.
+        let account_venue = {
+            let acc = self
+                .accounts
+                .account(&blitzkrieg_market_api::AccountId::from(account_id.as_str()))
+                .ok_or_else(|| {
+                    CoreError::new(
+                        CoreErrorCode::InvalidParams,
+                        format!("round_duration.set: no such account `{account_id}`"),
+                    )
+                })?;
+            acc.venue.clone()
+        };
         // 秒切秒换：flagLocked（显式启动参数在管）时破坏性切换不赢，如实拒绝——在任何账簿动作之前判定。
         if self.config.round_duration_source == "cli_or_env" {
             return Err(CoreError::new(
@@ -744,9 +750,9 @@ impl Core {
         // reset: clear the account's override from memory (already removed above).
         if patch.reset {
             self.config.account_round_durations.remove(account_id);
-            if let Some(engine) = self.engine.as_mut() {
-                engine.set_scanner_round_duration(self.config.default_round_duration_sec);
-            }
+            // 不需要动引擎：池记录的是「本部署跑哪些网格」，不是「当前选中
+            // 哪一个」。该账户回落到进程默认族，而默认族在启动回填时就已入池，
+            // 所以清掉覆盖之后它的入场判定自动回到默认族。
             tracing::info!(
                 target: "risk",
                 actor = %actor,
@@ -768,13 +774,14 @@ impl Core {
             });
         }
         // Write path: duration_sec is Some (guaranteed by validation above).
-        // SQLite persist already done above (persist-first); now update memory + engine grid.
+        // SQLite persist already done above (persist-first); now update memory and
+        // anchor this account's family in the scanner's grid pool.
         let sec = sec.unwrap();
         self.config
             .account_round_durations
             .insert(account_id.clone(), sec);
         if let Some(engine) = self.engine.as_mut() {
-            engine.set_scanner_round_duration(sec);
+            engine.anchor_scanner_grid(&account_venue, sec);
         }
         tracing::info!(
             target: "risk",

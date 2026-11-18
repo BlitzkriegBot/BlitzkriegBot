@@ -2,6 +2,13 @@
 
 use super::*;
 
+// #1276 contract phase: the event envelope (`seq` / `scope` / `filter`) lives
+// in its own child module so this file stays under the 1500-line ratchet
+// (`scripts/file-size-check.mjs`). Re-exported below, so `crate::schema::*`
+// still presents ONE flat surface — callers cannot tell the two apart.
+mod event_contract;
+pub use event_contract::*;
+
 // ── 行情插件凭据（next_session）— market.credentials.status / .set ──────────
 
 /// One plugin's credential requirement, as the status readout reports it.

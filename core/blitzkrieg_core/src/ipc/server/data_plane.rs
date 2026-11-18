@@ -69,13 +69,15 @@ pub(super) struct DataPlaneRuntime {
 
 impl DataPlaneRuntime {
     /// The boot shape: every boot-selected plugin is mounted on the GLOBAL
-    /// duration (the historical single-instance posture), and every account
-    /// `rounds` family gains its own discovery instance — the boot half of
-    /// 轮次多族's instance pool. Feed mounts stay per-venue and are visible
-    /// through [`Self::venue_mounted`]. The reuse cell installs here seeded
-    /// with the BOOT-ACTIVE consumers' declared edges only — an inactive
-    /// plugin never gains a data-plane face (a later runtime bind appends
-    /// its edge through [`Self::feed_reuse`]).
+    /// duration (the historical single-instance posture), every account
+    /// `rounds` family gains its own discovery instance, and every PERSISTED
+    /// per-account round-duration override gains one too (#1272: the override
+    /// is a family the deployment runs, not a process-wide selection) — the
+    /// boot half of 轮次多族's instance pool. Feed mounts stay per-venue and
+    /// are visible through [`Self::venue_mounted`]. The reuse cell installs
+    /// here seeded with the BOOT-ACTIVE consumers' declared edges only — an
+    /// inactive plugin never gains a data-plane face (a later runtime bind
+    /// appends its edge through [`Self::feed_reuse`]).
     pub(super) fn at_boot(
         config: &CoreConfig,
         actives: &[std::sync::Arc<dyn blitzkrieg_market_api::MarketPlugin>],
@@ -98,6 +100,29 @@ impl DataPlaneRuntime {
                 } else {
                     pairs.insert((a.venue.clone(), dur));
                 }
+            }
+        }
+        // #1272 (网格池化): a PERSISTED per-account round-duration override is
+        // a family this deployment runs, so the boot's mount book carries it —
+        // the venue reading is `active_families`'s (a bound account speaks for
+        // ITS venue, an unbound one for every venue this boot enabled). Before
+        // this row the override lived only in process memory, so a restart
+        // silently dropped the family: the scanner admitted it and no instance
+        // polled it. An override whose account left the book speaks for
+        // nothing.
+        for (account_id, &duration_sec) in &config.account_round_durations {
+            let Some(acc) = accounts
+                .iter()
+                .find(|a| a.id.as_str() == account_id.as_str())
+            else {
+                continue;
+            };
+            if acc.venue.is_empty() {
+                for p in actives {
+                    pairs.insert((p.name().to_string(), duration_sec));
+                }
+            } else {
+                pairs.insert((acc.venue.clone(), duration_sec));
             }
         }
         // RFC-661 M2: the boot-seeded reuse edges — every boot-ACTIVE plugin

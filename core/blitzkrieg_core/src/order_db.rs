@@ -32,8 +32,14 @@ impl OrderDb {
 
     /// Append the order's current state. Best effort: a write failure must never
     /// interrupt trading (the in-memory OME stays authoritative for this run).
+    /// The failure is reflected in `crate::jsonl::append_failures()`.
     pub fn append(&self, order: &TrackedOrder) {
-        crate::jsonl::append(&self.jsonl_path, order);
+        if !crate::jsonl::append(&self.jsonl_path, order) {
+            tracing::warn!(
+                path = %self.jsonl_path.display(),
+                "order jsonl append failed — order kept in memory, not durable; trading continues"
+            );
+        }
     }
 
     /// Load the latest snapshot per order id (later lines win). Tolerant of a

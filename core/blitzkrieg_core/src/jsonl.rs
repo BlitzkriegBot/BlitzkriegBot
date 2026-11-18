@@ -243,6 +243,21 @@ pub(crate) fn tail_filtered<T: serde::de::DeserializeOwned>(
     (matched_rev, matched_total, whole_file)
 }
 
+/// Running count of failed JSONL appends since boot. Incremented inside
+/// [`append`] on every `false` return — serialization errors, open failures,
+/// write failures. Surfaced through `engine_stats` ("jsonlWriteFailures") so
+/// the panel / /api/ping can see that durable writes are being dropped.
+///
+/// Trading never stops on a write failure (fail-open): the in-memory state
+/// stays authoritative for the run. This counter is purely an observability
+/// signal — nothing freezes, nothing rejects on its value.
+static APPEND_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// Returns the number of failed `append` calls since boot.
+pub(crate) fn append_failures() -> u64 {
+    APPEND_FAILURES.load(Ordering::Relaxed)
+}
+
 /// Append one JSON object as a line to `path`, creating the parent directory.
 ///
 /// Best effort by construction: every failure is swallowed. That is the shared
@@ -252,16 +267,20 @@ pub(crate) fn tail_filtered<T: serde::de::DeserializeOwned>(
 /// failure must write its own bytes — or read the return value (E25 / #331:
 /// `true` when a line landed; the intent-audit sink warns once on `false`,
 /// without ever blocking the trade).
+///
+/// On every failure the [`APPEND_FAILURES`] counter is bumped so the failure
+/// is observable even when the caller does not act on the `bool`.
 pub(crate) fn append(path: &Path, value: &impl serde::Serialize) -> bool {
     use std::io::Write as _;
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let Ok(mut buf) = serde_json::to_vec(value) else {
+        APPEND_FAILURES.fetch_add(1, Ordering::Relaxed);
         return false;
     };
     buf.push(b'\n');
-    match std::fs::OpenOptions::new()
+    let ok = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
@@ -275,7 +294,11 @@ pub(crate) fn append(path: &Path, value: &impl serde::Serialize) -> bool {
         // silently swallowed two audit lines two tests were counting.
         Ok(mut f) => f.write_all(&buf).is_ok(),
         Err(_) => false,
+    };
+    if !ok {
+        APPEND_FAILURES.fetch_add(1, Ordering::Relaxed);
     }
+    ok
 }
 
 #[cfg(test)]
@@ -499,5 +522,42 @@ mod tests {
             |_| true,
         );
         assert!(rows.is_empty() && matched == 0 && whole);
+    }
+
+    /// #1274: a failed append bumps the failure counter so the failure is
+    /// observable even when the caller does not act on the `bool`. A read-only
+    /// directory forces the open to fail; the counter must move, the return
+    /// must be `false`, and no file must be created.
+    #[test]
+    fn append_failure_bumps_counter_and_returns_false() {
+        let ro_dir = std::env::temp_dir().join(format!(
+            "bk-jsonl-ro-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&ro_dir).expect("ro dir");
+        // Make the directory read-only BEFORE any file exists, so a create+
+        // append cannot succeed.
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut p = std::fs::metadata(&ro_dir).unwrap().permissions();
+        p.set_mode(0o500);
+        std::fs::set_permissions(&ro_dir, p).unwrap();
+
+        let before = append_failures();
+        let ro_path = ro_dir.join("append.jsonl");
+        // The file does not exist and the dir is read-only: open+create must fail.
+        assert!(!append(&ro_path, &serde_json::json!({ "n": 1 })));
+        let after_fail = append_failures();
+        assert!(after_fail > before, "failed append must bump the counter");
+        // No file was created.
+        assert!(!ro_path.exists(), "failed append must not create the file");
+        // Restore permissions for cleanup.
+        let mut q = std::fs::metadata(&ro_dir).unwrap().permissions();
+        q.set_mode(0o700);
+        std::fs::set_permissions(&ro_dir, q).unwrap();
+        let _ = std::fs::remove_dir_all(&ro_dir);
     }
 }

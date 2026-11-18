@@ -1106,12 +1106,16 @@ impl Core {
                         // does not resurrect a credential already unwound.
                         if let (true, Some(path)) =
                             (consumed.is_some(), self.close_credential_log.as_ref())
-                        {
-                            crate::jsonl::append(
+                            && !crate::jsonl::append(
                                 path,
                                 &CloseCredentialLine::Consumed {
                                     trade_id: d.trade_id.clone(),
                                 },
+                            )
+                        {
+                            tracing::warn!(
+                                path = %path.display(),
+                                "close credential journal append failed (consumed) — credential kept in memory, not durable; trading continues"
                             );
                         }
                         match consumed {

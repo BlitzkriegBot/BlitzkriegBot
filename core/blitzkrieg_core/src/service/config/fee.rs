@@ -165,13 +165,13 @@ pub fn round_duration_readout(core: &Core) -> crate::schema::RoundDurationResult
     let persisted = !per_account.is_empty();
     RoundDurationResult {
         effective_sec: effective,
-        // 引擎扫描器实际运行的轮长：per-account 覆盖写入后已通过
-        // `Engine::set_scanner_round_duration` 同步，故这里反映倒计时钟
-        // 真实跑的网格，与 effective_sec 的 default 网格分离（#1151）。
-        engine_active_sec: core
-            .engine
-            .as_ref()
-            .map(|e| e.scanner_round_duration())
+        // 倒计时钟真实跑的网格：DEFAULT 账户解析后的族（它自己的 per-account
+        // 覆盖，没有覆盖就是进程默认网格）。与 effective_sec 分离是 #1151 的
+        // 「无 split-brain」契约；重启后它从库里读回同一个值（#1272：per-account
+        // 覆盖不再靠一次全局写入存活，所以启动回填必须让它读得出来）。
+        engine_active_sec: per_account
+            .get(blitzkrieg_market_api::DEFAULT_ACCOUNT_ID)
+            .copied()
             .unwrap_or(effective),
         source: core.config().round_duration_source,
         per_account,

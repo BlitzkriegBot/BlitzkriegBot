@@ -54,6 +54,7 @@
     "tracked": 0
   },
   "illegalPriceRejected": 0,
+  "jsonlWriteFailures": 0,
   "kline": null,
   "lastError": {
     "code": "VENUE_ERROR",

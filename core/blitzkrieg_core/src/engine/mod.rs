@@ -877,6 +877,14 @@ impl Engine {
         self.cfg.max_orderbook_stale_ms
     }
 
+    /// The process default grid duration — the length of the grid the countdown
+    /// runs when no per-account override anchors a different family. Read by the
+    /// `round_duration.get` readout's `engine_active_sec` field and by tests that
+    /// need to name "the grid that's actually ticking" without hardcoding 300/900.
+    pub fn scanner_round_duration(&self) -> i64 {
+        self.scanner.round_duration_sec()
+    }
+
     /// The global sizing band: what a strategy without an override gets, and
     /// the CEILING every override is clamped to (E2-a). Also the band a report
     /// reads before any strategy is named (#202's worst-case-order view).
@@ -1310,24 +1318,36 @@ mod tests {
         }
     }
 
-    /// #1151：`set_scanner_round_duration` 必须把 `Engine.cfg.scanner` 和
-    /// `Engine.scanner.cfg` 两边都同步，且双向可逆（900→300→900），
-    /// 否则 `round_duration.set` 写入后倒计时钟与账户网格分裂。
+    /// #1272：per-account 写入只往网格池里 ADD 自己的族 —— 进程默认网格一个
+    /// 字节不动，兄弟账户的族也不会被关门。钉住的是行为（准入 + 默认网格），
+    /// 不是某个字段有没有被写。
     #[test]
-    fn set_scanner_round_duration_syncs_engine_clock_both_ways() {
+    fn anchoring_one_accounts_grid_never_moves_the_process_default() {
         let mut e = Engine::new(cfg());
-        assert_eq!(e.scanner_round_duration(), 900);
+        // 启动回填：进程默认族 900s。
+        e.set_scanner_grids(vec![(String::new(), 900)]);
         // 900s 网格：now=1_000_000ms → slot 1（边界 900_000）。
-        assert_eq!(e.scanner.current_slot(1_000_000), 1);
+        assert_eq!(e.scanner.slot_at("", 900, 1_000_000), 1);
+        assert!(e.scanner.admits_family("polymarket", 900));
 
-        e.set_scanner_round_duration(300);
-        assert_eq!(e.scanner_round_duration(), 300);
+        // 账户写入：只 ADD 300s。
+        e.anchor_scanner_grid("polymarket", 300);
         // 300s 网格：now=1_000_000ms → slot 3（边界 300_000/600_000/900_000）。
-        assert_eq!(e.scanner.current_slot(1_000_000), 3);
-
-        e.set_scanner_round_duration(900);
-        assert_eq!(e.scanner_round_duration(), 900);
-        assert_eq!(e.scanner.current_slot(1_000_000), 1);
+        assert_eq!(e.scanner.slot_at("polymarket", 300, 1_000_000), 3);
+        assert!(
+            e.scanner.admits_family("polymarket", 300),
+            "the anchoring account's own family enters"
+        );
+        assert!(
+            e.scanner.admits_family("polymarket", 900),
+            "a sibling account's 900s family keeps its grid"
+        );
+        // 进程默认网格（未声明时长行的回落网格）没被这次写入推动。
+        assert_eq!(
+            e.scanner.round_timing(1_000_000).slot,
+            1,
+            "the process default grid is not the account's grid"
+        );
     }
 
     fn market(end_ms: i64) -> CryptoMarket {

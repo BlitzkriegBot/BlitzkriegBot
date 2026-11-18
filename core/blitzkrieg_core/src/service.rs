@@ -1457,6 +1457,7 @@ mod tests {
     mod risk_bottom_line_963_tests;
     mod round_expiry_tests;
     mod round_family_b1b_tests;
+    mod round_grid_pool_1272_tests;
     mod settlement_service_tests;
     mod shadow_evolution_tests;
     mod strategy_dispatch_tests;

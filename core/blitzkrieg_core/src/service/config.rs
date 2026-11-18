@@ -490,13 +490,13 @@ pub struct CoreConfig {
     /// `false`.
     pub replay_scheduling: bool,
     /// Issue #991/#1002: what an unverifiable-expiry fallback close books.
-    /// `Cash` (default) is the #684 behaviour, byte-identical: the fallback
-    /// notional is credited to spendable cash at close time
-    /// (`Ledger::credit_expiry_fallback`). `Receivable` books the same
-    /// notional as a claim in the settlement receivable pool instead —
-    /// estimated money is not spendable money — and the claim redeems into
-    /// cash (with #998-style correction rows for any venue-vs-fallback
-    /// delta) when venue truth arrives. Read ONCE at boot
+    /// `Receivable` (default) is the #991 behaviour: the fallback notional is
+    /// booked as a claim in the settlement receivable pool — estimated money
+    /// is not spendable money — and the claim redeems into cash (with
+    /// #998-style correction rows for any venue-vs-fallback delta) when
+    /// venue truth arrives. `Cash` keeps the #684 behaviour, byte-identical:
+    /// the fallback notional is credited to spendable cash at close time
+    /// (`Ledger::credit_expiry_fallback`). Read ONCE at boot
     /// (`BK_UNVERIFIED_EXPIRY_POLICY=cash|receivable`); NOT hot-reloadable —
     /// a policy switch changes what already-booked journal rows mean, so it
     /// takes a restart (documented in `.env.example`).
@@ -519,11 +519,11 @@ pub struct CoreConfig {
 pub enum UnverifiedExpiryPolicy {
     /// #684 behaviour, unchanged: the fallback close credits spendable cash
     /// immediately at the bookkeeping price.
-    #[default]
     Cash,
     /// Issue #991: the fallback close books a receivable claim; cash moves
     /// only when venue truth redeems the claim (reconcile/resolution path),
     /// with correction rows for the delta.
+    #[default]
     Receivable,
 }
 
@@ -657,6 +657,7 @@ impl CoreConfig {
     /// [`CoreConfig::allow_zero_strategies`] is the acknowledged opt-out.
     pub fn install_engine(&self, core: &mut Core) -> Result<(), String> {
         core.enable_engine(crate::engine::Engine::new(self.engine_config()));
+        core.seed_scanner_grids(self);
         // #1170 (方案 A): push the parsed family bindings into the engine
         // BEFORE the strategy packages load — registration stamps each scope
         // from the engine's table, so every load/reload/rebuild inherits the

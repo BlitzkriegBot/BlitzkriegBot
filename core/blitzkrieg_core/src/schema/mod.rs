@@ -1312,9 +1312,10 @@ pub struct RoundDurationResult {
     /// accounts without an explicit `ACCOUNT_<ID>_ROUND_DURATION_SEC`).
     pub effective_sec: i64,
     /// 引擎扫描器当前实际运行的轮长网格（倒计时钟真实跑的值）。与
-    /// `effective_sec` 的 default 网格分离：per-account 覆盖写入后通过
-    /// `Engine::set_scanner_round_duration` 同步到引擎时钟，故本字段反映
-    /// 执行真相；无引擎时回落到 effective_sec。
+    /// `effective_sec` 的 default 网格分离：本字段是 DEFAULT 账户解析后的族
+    /// （它自己的 per-account 覆盖，没有覆盖就是进程默认网格），#1272 之后
+    /// 由 per-account 记录直接导出而不是一次全局写入 —— 重启后它从库里读回
+    /// 同一个值（#1151 的「无 split-brain」契约）。
     pub engine_active_sec: i64,
     /// One of `cli` / `env` / `runtime` / `toml` / `default` — the boot
     /// resolution's own report for the default grid.
@@ -1505,6 +1506,4 @@ pub struct MarketPluginUpdate {
 }
 
 /// [`MarketPluginUpdate::note`] — one spelling, used by the reply and the log.
-pub const MARKET_PLUGIN_SET_NOTE: &str = "next session: the data feed, discovery and executor are all built around \
-     the plugin chosen at boot, so a switch is a restart; an explicit \
-     --market-plugin flag still outranks this setting";
+pub const MARKET_PLUGIN_SET_NOTE: &str = "next session: the data feed, discovery and executor are all built around the plugin chosen at boot, so a switch is a restart; an explicit --market-plugin flag still outranks this setting";

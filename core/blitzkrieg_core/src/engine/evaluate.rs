@@ -49,35 +49,23 @@ impl Engine {
         }
     }
 
-    /// 返回引擎扫描器当前实际运行的轮长网格（`cfg.scanner.round_duration_sec`）。
-    /// 与 `CoreConfig.default_round_duration_sec` 分离：前者是倒计时钟真实跑的
-    /// 网格，后者是未配置账户的回落默认值。#1151：`round_duration.set` 写入后
-    /// 必须通过 `set_scanner_round_duration` 把两者对齐，否则“已生效”与倒计时
-    /// 分裂（split-brain）。
-    pub fn scanner_round_duration(&self) -> i64 {
-        self.cfg.scanner.round_duration_sec
+    /// 把一个账户的轮次网格锚进扫描器的网格池 —— per-account 写入的唯一落点。
+    ///
+    /// 池是「本部署跑哪些网格」的账本，写入只 ADD 自己的族：账户 A 锚 300s
+    /// 不会让账户 B 的 900s 市场变成 `NoMarkets`（#1272 的根因）。账户维度的
+    /// 入场判定（本账户锚点 vs 市场声明族）在风控闸门里做（#1140），那里知道
+    /// 账户；扫描器不知道，也不该替它猜。
+    ///
+    /// 这里刻意不碰 `cfg.scanner.round_duration_sec`：那是进程默认网格（未声明
+    /// 族的行与读数的回落），不是「当前选中的网格」—— per-account 写入改它就
+    /// 是跨账户串味的来源。
+    pub fn anchor_scanner_grid(&mut self, venue: &str, duration_sec: i64) {
+        self.scanner.anchor_grid(venue, duration_sec);
     }
 
-    /// 把引擎扫描器的轮长网格同步到 `sec`，并把同一值写回 `cfg.scanner`，使
-    /// 倒计时钟、策略上下文与 `round_duration.get` 的 engineActiveSec 读出一致。
-    /// `set_config` 保留 ScannerConfig 的其余字段（assets/min_round_age_sec/
-    /// min_time_left_sec），只替换 round_duration_sec。
-    ///
-    /// reset 分支传回 `default_round_duration_sec`（回落默认网格）。
-    ///
-    /// 多账户多网格：本方法是 per-family 扫描实例重挂/重键（B1d）的集成点。
-    /// 当前单 Engine 默认部署下只有一台 scanner，写入账户的覆盖值即同步为
-    /// 运行网格；不单独留一份“配置真相”在时钟上，也不对未写入账户的网格
-    /// 做隐式改写——其 per-account 覆盖（或缺省回落）由 `account_round_duration`
-    /// 逐账户解析。
-    pub fn set_scanner_round_duration(&mut self, sec: i64) {
-        self.cfg.scanner.round_duration_sec = sec;
-        self.scanner.set_config(self.cfg.scanner.clone());
-        // #1157: a runtime grid write makes the active grid the selection
-        // authority (off-grid declared markets are no longer entered). This is
-        // only set by the runtime write path — boot leaves it false, so a
-        // default/no-write boot keeps the historic per-market declared clock.
-        self.scanner.set_grid_override(true);
+    /// 整体替换网格池 —— 启动回填（进程默认族 + 每个账户锚定的族）。
+    pub fn set_scanner_grids(&mut self, families: impl IntoIterator<Item = (String, i64)>) {
+        self.scanner.set_grids(families);
     }
 
     /// RFC 568 阶段一：排空本周期收集的配对声明（Core 在 arb_precheck 过闸

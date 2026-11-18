@@ -4,6 +4,7 @@
 //! Async dispatch uses boxed futures (the same pattern as `MarketAdapter`), so
 //! every trait stays object-safe and this crate needs no async-trait dependency.
 
+use crate::fee::FeeModel;
 use crate::modes::{MarketCapabilities, MarketMode};
 use crate::types::*;
 use std::future::Future;
@@ -212,6 +213,28 @@ pub trait MarketPlugin: Send + Sync {
         None
     }
     fn executor(&self) -> Option<&dyn OrderExecutor> {
+        None
+    }
+
+    /// The venue's own fee curve (#1279, **contract stage — nothing calls
+    /// this yet**; submitted for operator approval before any implementation).
+    ///
+    /// `None` (the default) = undeclared: the kernel keeps charging the shipped
+    /// schedule (`exit_policy::official_schedule`, `0.07 * p * (1-p)`), which is
+    /// what every existing and third-party plugin does today. The default is
+    /// what makes this addition source-compatible — a plugin that says nothing
+    /// compiles and behaves exactly as before, which is the same shape
+    /// `declare_modes` / `supported_round_secs` / `round_labels` /
+    /// `required_credential_env` / `feed_source` already use.
+    ///
+    /// The undeclared fallback is not a convenience, it is the parity
+    /// requirement: `scripts/core-parity.mjs::assertPinnedFeeModel` holds the
+    /// kernel's `core.feeQuote` against `scripts/lib/fee-model.mjs`, so a
+    /// fallback that drifted by one Decimal ulp turns that gate red. Any wiring
+    /// of this accessor must reproduce the current arithmetic — same operation
+    /// ORDER, not merely the same algebra — or the gate must be changed
+    /// deliberately in the same change.
+    fn fee_model(&self) -> Option<&dyn FeeModel> {
         None
     }
     /// The round-length families this plugin can actually discover, in

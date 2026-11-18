@@ -21,8 +21,8 @@ use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 
 use crate::account::config::CrossVenueArbConfig;
-use crate::account::{AccountStatus, CredentialKeys};
-use crate::model::CoreError;
+use crate::account::{AccountId, AccountStatus, CredentialKeys};
+use crate::model::{CoreError, CoreErrorCode};
 
 /// One domain write's field→value changes, in the wire audit's camelCase
 /// spelling (`maxSingleLossUsd`, `stopLossPct`, …). The store maps them to
@@ -178,6 +178,158 @@ pub trait StoreApi: Send + Sync {
         vars: &BTreeMap<String, String>,
         reset_keys: &[&str],
     ) -> Result<(), CoreError>;
+
+    // ── Money facts (issue #1278 — CONTRACT STAGE, NO CALLERS) ───────────
+    //
+    // 下面两个方法是 #1278 的**接口定义**，不是实现：本提交里没有任何
+    // 调用方，也没有任何 backend 覆盖它们。把 `account_store.rs` 的裸 SQL
+    // 与四个 JSONL 资金写面接到这两个方法上，必须等运营者审批本契约之后
+    // 再做（Issue #1278：「审批前不得改 `risk/account_store.rs` 实现」）。
+    //
+    // 为什么默认实现返回 `Err` 而不是 `Ok(MemoryOnly { .. })`：本仓当前
+    // 最贵的一类缺陷正是「写盘失败静默成功」——`jsonl::append` 返回
+    // `bool`，四个资金写面（订单 / 成交 / 账本 / 结算）全部丢弃它；
+    // `Core::store` 是 `Option<Box<dyn StoreApi>>`，「没有 store」是一个
+    // 合法且无声的运行态。默认实现若返回 `Ok`，一个忘记实现的 backend
+    // 就会继续静默降级；返回 `Err` 把它变成一次响亮的失败。审批后应
+    // **删掉默认实现**，强制每个 backend 表态（见
+    // `docs/rust-core/RFC-1278-storeapi-v2-contract.md` §4 待决 D-1）。
+
+    /// Append one money fact durably. `WriteOutcome` forces every caller to
+    /// distinguish "landed" from "memory only" — the whole point of #1278:
+    /// today's four money write faces (order snapshot, closed-trade record,
+    /// ledger journal row, settlement journal line) cannot tell the
+    /// difference, because they all drop `jsonl::append`'s `bool`.
+    ///
+    /// `Err` = the backend was ASKED and refused/failed. `Ok(MemoryOnly)` =
+    /// the fact is authoritative in memory for this run and is NOT durable —
+    /// honest degradation, never silent success.
+    #[allow(dead_code)] // #1278 契约阶段，待审批后接线
+    fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            format!(
+                "append_money_fact({}): no backend implements this yet — #1278 contract stage",
+                fact.kind()
+            ),
+        ))
+    }
+
+    /// Upsert (`Some(value)`) or delete (`None`) one account-scoped setting.
+    /// The `StoreApi`-typed spelling of `AccountRiskDb::save_setting`
+    /// (`risk/account_store.rs`), which today carries bare SQL and is reached
+    /// only through the `account_risk_db: Option<AccountRiskDb>` side door —
+    /// not through this trait.
+    ///
+    /// `AccountScope` rather than a bare `&str` because an unscoped setting
+    /// write is exactly the bug class #1221/#1223 were: a write that lands on
+    /// a guessed account. Making the account a required, typed argument means
+    /// a future caller cannot forget it.
+    #[allow(dead_code)] // #1278 契约阶段，待审批后接线
+    fn put_setting(
+        &self,
+        scope: AccountScope<'_>,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<WriteOutcome, CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            format!(
+                "put_setting({}, {key}, {}): no backend implements this yet — #1278 contract stage",
+                scope.account.as_str(),
+                // Never the VALUE: a setting write may carry a secret-shaped
+                // string (DEV §7 / R2), and an error text is a log line.
+                if value.is_some() { "upsert" } else { "delete" }
+            ),
+        ))
+    }
+}
+
+// ── #1278 contract types (no callers yet) ────────────────────────────────
+//
+// 这一组类型的存在理由是**消灭 silent degradation**，不是方便：现状里
+// 「写没写下去」在四个资金写面上不可区分（`jsonl::append` → `bool`，
+// 调用方丢弃），所以调用方只能假装成功。`WriteOutcome` 把这件事变成
+// 一个必须被 `match` 的返回值。
+
+/// What one durable write actually did. Deliberately NOT a `bool`: `true`
+/// reads as "fine" at every call site, which is how the current four money
+/// write faces lost the distinction in the first place.
+#[allow(dead_code)] // #1278 契约阶段，待审批后接线
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteOutcome {
+    /// The fact is on disk (or in the carrier) and survives a restart.
+    Persisted,
+    /// The fact is authoritative for this run only. Every caller that gets
+    /// this MUST surface it — a money fact that exists only in memory is an
+    /// operator-visible fact, not a rounding error.
+    MemoryOnly { reason: MemoryOnlyReason },
+}
+
+/// Why a write did not become durable. `NoStoreConfigured` is the
+/// `Core::store == None` posture (backtester, most in-process tests) — legal
+/// but never silent; `ReadOnlyMode` is the `--readonly` structural refusal;
+/// `BackendRejected` carries the carrier's own message verbatim (R12 / DEV §7:
+/// never replace a raw error with a generic string).
+#[allow(dead_code)] // #1278 契约阶段，待审批后接线
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryOnlyReason {
+    /// This core was assembled without a store (`Core::store == None`).
+    NoStoreConfigured,
+    /// The process runs in the read-only posture; durable writes are
+    /// structurally refused rather than attempted and lost.
+    ReadOnlyMode,
+    /// The backend was asked and declined. The string is the backend's own
+    /// error text, passed through unaltered.
+    BackendRejected(String),
+}
+
+/// The account a scoped write targets. A struct rather than a bare `&str` so
+/// that adding scope (venue, book, round) later does not re-break every
+/// implementor, and so a call site physically cannot omit the account.
+#[allow(dead_code)] // #1278 契约阶段，待审批后接线
+#[derive(Debug, Clone, Copy)]
+pub struct AccountScope<'a> {
+    pub account: &'a AccountId,
+}
+
+#[allow(dead_code)] // #1278 契约阶段，待审批后接线
+impl<'a> AccountScope<'a> {
+    pub fn new(account: &'a AccountId) -> Self {
+        Self { account }
+    }
+}
+
+/// The four money facts the kernel currently persists as JSONL, each naming
+/// the type it ALREADY writes — this is a UNION OF EXISTING TYPES, not a
+/// second ledger model (R7: 记账口径不可擅动). No variant carries new
+/// arithmetic, a new field, or a new spelling; wiring the JSONL call sites
+/// onto this enum must not change one byte of what lands on disk.
+///
+/// - `Order` — `order_db::OrderDb::append` (`src/order_db.rs`)
+/// - `Fill` — `trade_db::TradeDb::record` (`src/trade_db.rs`)
+/// - `Ledger` — `Ledger::apply_tagged`'s journal append (`src/ledger.rs`)
+/// - `Settlement` — `SettlementJournal::append` (`src/settlement.rs`)
+#[allow(dead_code)] // #1278 契约阶段，待审批后接线
+#[derive(Debug, Clone, Copy)]
+pub enum MoneyFact<'a> {
+    Order(&'a crate::model::TrackedOrder),
+    Fill(&'a crate::trade_db::TradeRecord),
+    Ledger(&'a crate::ledger::JournalEntry),
+    Settlement(&'a crate::settlement::SettlementRecord),
+}
+
+impl MoneyFact<'_> {
+    /// The variant's name, for error text only. Never parsed, never logged
+    /// as data — it exists so a refusal names WHAT was refused.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            MoneyFact::Order(_) => "order",
+            MoneyFact::Fill(_) => "fill",
+            MoneyFact::Ledger(_) => "ledger",
+            MoneyFact::Settlement(_) => "settlement",
+        }
+    }
 }
 
 /// Test-only seam for the carrier decision (the same gating pattern as

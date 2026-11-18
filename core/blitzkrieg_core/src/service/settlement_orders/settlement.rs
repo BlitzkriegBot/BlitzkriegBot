@@ -1,4 +1,5 @@
 use super::*;
+use crate::settlement::fallback_binary_price;
 
 impl Core {
     // ── Market data (P0 bridge from Node; P3 ingests inside the core) ───────
@@ -842,14 +843,11 @@ impl Core {
                     .to_string(),
             ));
         };
-        // The same fallback price the sweep uses: last known mid, else entry
-        // (cost recovery). Bookkeeping value, never an invented payout. The
-        // basis is named on the record (issue #1002).
-        let (price, price_source) = if pos.current_price > Decimal::ZERO {
-            (pos.current_price, PRICE_SOURCE_CURRENT)
-        } else {
-            (pos.entry_price, PRICE_SOURCE_ENTRY_FALLBACK)
-        };
+        // The same fallback price the sweep uses: the 0.5 binary threshold on
+        // the last known mid; a dead feed books 0 at `unobserved` and is never
+        // repriced at entry price (cost recovery). Bookkeeping value, never an
+        // invented payout. The basis is named on the record (issue #1002).
+        let (price, price_source) = fallback_binary_price(pos.current_price);
         let closed = self
             .positions
             .close_priced(

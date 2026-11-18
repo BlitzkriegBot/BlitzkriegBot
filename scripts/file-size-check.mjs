@@ -91,10 +91,17 @@ const ALLOW = [
   // #1199 第六轮：tests_risk_rounds.rs 新增 round_duration 落 SQLite 与
   // 下一会话读回的往返用例，1479→1562（+83 行）。
   { path: 'core/blitzkrieg_core/src/ipc/server/tests/tests_risk_rounds.rs', atAuthoring: 1562 },
-  // round-family price freeze fix (engine.round + engine.books share
-  // Scanner::live_round_rows): +34 lines (doc + method). Debt marker —
-  // the file may shrink or die, never grow past atAuthoring.
-  { path: 'core/blitzkrieg_core/src/scanner.rs', atAuthoring: 1526 },
+  // #1284: rustfmt 尾迹把 scanner.rs 从 1526 涨到 1533（on_event 签名与
+  // 锁-推入链各换行展开，+7 行，无逻辑变更）；随后 clippy 修复在
+  // OffPoolLogCapture::levels 上加 `#[allow(dead_code)]`（scanner.rs:1494），
+  // 又 +1 行（1533→1534）。Debt marker — the file may shrink or die, never
+  // grow past atAuthoring. 1526→1533 rustfmt (+7); 1533→1534 clippy (+1).
+  { path: 'core/blitzkrieg_core/src/scanner.rs', atAuthoring: 1534 },
+  // #1284: settlement.rs grew past the limit on the #1238 binary-settlement
+  // fallback path (+fallback_binary_price, jsonl warn, dec import). Debt
+  // marker — split fallback_binary_price into its own module when the file
+  // is next touched; this ALLOW entry never grows past 1530.
+  { path: 'core/blitzkrieg_core/src/settlement.rs', atAuthoring: 1530 },
   // #1199 第六轮：dispatch_boot_enablement_tests.rs 的 fixture 补 db_path
   // 与 env 断言迁 SQL，1483→1547（+64 行）。1547→1551: the #1199 第十次
   // 审计 T1-T3 测试盲区补钉（+4 行）。

@@ -4,9 +4,9 @@
 //! fallback close books a receivable CLAIM instead of crediting cash; the
 //! claim redeems at venue truth (a resolution or a reconcile SELL fill) with
 //! #998 correction rows for the delta and a trade-record amend; the aging
-//! warn; the day-budget/breaker exclusion. The cash default's byte-identity is
-//! pinned by the pre-existing #684 tests (they never set the policy and keep
-//! passing unmodified).
+//! warn; the day-budget/breaker exclusion. The cash arm's byte-identity is
+//! pinned by the pre-existing #684 tests, which now opt into `Cash`
+//! explicitly (the default is `Receivable` since issue #1273).
 
 use super::*;
 use crate::model::{FillPolicy, OrderStatus, Side};

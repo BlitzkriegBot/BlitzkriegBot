@@ -483,7 +483,7 @@ async fn the_active_grid_family_wins_the_price_row_whatever_the_arrival_order() 
 /// A daily (86400s) family rides the SAME scanner beside the 15m family
 /// (polymarket lists 15m, kalshi lists a daily — the multi-family data
 /// plane B1d's discovery instances feed). The pre-E2 filter
-/// (`current_slot(now)+1` on the GLOBAL grid) dropped the daily row
+/// (`slot + 1` on the GLOBAL grid) dropped the daily row
 /// forever — a daily-grid slot number can never equal the global grid's
 /// +1 — so `books_view` and the `engine.round` price rows lost every
 /// foreign-family row. Both views now judge each row on its OWN (venue,

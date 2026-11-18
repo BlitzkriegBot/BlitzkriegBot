@@ -16,6 +16,7 @@
 
 pub mod account;
 pub mod decimal;
+pub mod fee;
 pub mod kline;
 pub mod modes;
 pub mod net;
@@ -24,6 +25,7 @@ pub mod types;
 pub mod unified;
 
 pub use account::{AccountId, DEFAULT_ACCOUNT_ID, default_account_id};
+pub use fee::{FeeModel, FeeRole};
 pub use kline::{Kline, KlineInterval};
 pub use modes::{MarketCapabilities, MarketMode, MarketStructure, ModeError};
 pub use plugin::{

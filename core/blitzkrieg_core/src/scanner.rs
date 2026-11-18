@@ -1,9 +1,8 @@
 //! Market scanner — round timing, clock offset and tradeable-window gates.
 //!
-//! Venue-agnostic round math: slot derivation, expiry countdown, the clock
-//! offset against the venue's reported end time, and the timing gates. The
-//! Polymarket-specific slug construction and Gamma JSON parsing now live in the
-//! Polymarket extension's `gamma` module.
+//! Venue-agnostic round math: slot derivation, expiry countdown, venue clock
+//! offset, timing gates. Polymarket slug/Gamma JSON lives in the `gamma`
+//! extension module.
 
 use crate::model::CryptoMarket;
 use std::collections::{HashMap, HashSet};
@@ -13,14 +12,12 @@ use std::collections::{HashMap, HashSet};
 /// scanner keys by venue.
 const DEFAULT_VENUE: &str = "";
 
-/// Duration labels live with the plugins that name their own round families
-/// (issue 648): a plugin declares `MarketPlugin::round_labels`, the registry
-/// aggregates them (`MarketPluginRegistry::round_labels`) and boot threads
-/// the map into `CoreConfig::round_labels` — the `round_duration.get`
-/// readout renders exactly what the plugins claimed. The kernel keeps no
-/// label table of its own; the Polymarket extension's `gamma::duration_label`
-/// is that plugin's own copy of its own vocabulary. What stays here is the
-/// venue-agnostic slot-grid math, which never needed a label.
+/// Duration labels live with the plugins that name them: a plugin declares
+/// `MarketPlugin::round_labels`, the registry aggregates them, and boot
+/// threads the map into `CoreConfig::round_labels` — `round_duration.get`
+/// renders exactly what the plugins claimed. The kernel keeps no label table;
+/// the Polymarket extension's `gamma::duration_label` is its own copy of its
+/// own vocabulary. What stays here is venue-agnostic slot-grid math.
 #[derive(Debug, Clone)]
 pub struct ScannerConfig {
     pub assets: Vec<String>,
@@ -40,12 +37,10 @@ impl Default for ScannerConfig {
     }
 }
 
-/// Why the tradeable window is closed, as data rather than a prose string.
-///
-/// The distinction matters for E2-b (#27): a strategy may declare an exemption
-/// for the two *window* gates, but NOT for [`TimingBlock::NoMarkets`] — a round
-/// with no discovered market has no priceable token, so nothing can be exempted
-/// into existing.
+/// Why the tradeable window is closed, as data rather than prose. The
+/// distinction matters for E2-b (#27): a strategy may exempt the two *window*
+/// gates, but NOT [`TimingBlock::NoMarkets`] — a round with no discovered
+/// market has no priceable token, so nothing can be exempted into existing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimingBlock {
     /// No markets discovered for the current round.
@@ -111,54 +106,53 @@ pub struct RoundTiming {
     pub time_left_sec: i64,
 }
 
+/// One anchored round grid — a `(venue, duration)` family this deployment
+/// runs. The pool replaces a single global round length as the admission
+/// authority: an account's grid write adds ITS family only, so a sibling's
+/// family keeps its grid instead of being closed off by a deployment-wide
+/// switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Grid {
+    /// Slot length of this family's rounds, in seconds — the divisor every
+    /// slot derivation for the family floors to.
+    pub duration_sec: i64,
+}
+
+impl Grid {
+    fn new(duration_sec: i64) -> Self {
+        Self { duration_sec }
+    }
+}
+
 pub struct Scanner {
     cfg: ScannerConfig,
     markets: Vec<CryptoMarket>,
-    /// #1157: true once `set_scanner_round_duration` has been called at runtime,
-    /// i.e. the operator overrode the boot grid. Once overridden, the active
-    /// grid (`cfg.round_duration_sec`) is the SELECTION authority: a market is
-    /// only tradable in the round its family matches the active grid, and
-    /// `market_decl` keeps governing settlement timing only. Before any
-    /// override (boot default grid) the historic per-market declared clock is
-    /// preserved — "无写入场景维持现行为", so a dry/default boot with declared
-    /// markets behaves exactly as before.
-    grid_override: bool,
-    /// RFC-661 M1: the `(venue, token)` dual-key index over `markets` —
-    /// every row lands under its OWN venue's token keys, so the same
-    /// byte-identical token under two venues is TWO independent instruments
-    /// (each with its own market row, book, clock, positions and trade
-    /// attribution). Rebuilt wholesale by `set_markets` (the table is small —
-    /// a round's listings — so a rebuild per feed beats an incremental
-    /// cache-invalidation contract). Insertion-order independent: the index
-    /// maps (venue, token) → row position, nothing else.
-    ///
-    /// #627's "one row per token globally" invariant is SUPERSEDED here.
+    /// Round-grid pool: `(venue, duration)` families this deployment runs.
+    /// Empty = historic posture (each market rides its own family clock,
+    /// nothing refused). The venue dim is NOT decoration: same duration on two
+    /// venues = two grids, each flooring to its own wall clock; the pool
+    /// records WHO anchored a family, so a per-account write never speaks for
+    /// a sibling account or venue.
+    grids: HashMap<(String, i64), Grid>,
+    /// RFC-661 M1: `(venue, token)` → row index over `markets`. Same token
+    /// under two venues = TWO independent instruments; rebuilt wholesale by
+    /// `set_markets`; supersedes #627's "one row per token globally".
     token_index: HashMap<(String, String), usize>,
-    /// The reverse index of `token_index`: token → the venues whose rows
-    /// hold it. The token-only legacy lookups (`market_for_token`) consult
-    /// this to tell "unique candidate" (resolve) from "ambiguous" (≥2 venues
-    /// hold the token — refuse, never first-hit by insertion order).
+    /// token → venues holding it: distinguishes "unique candidate" from
+    /// "ambiguous" (≥2 venues — refuse, never first-hit by insertion order).
     token_venues: HashMap<String, Vec<String>>,
-    /// Venue-reported actual round end (ms), keyed by **(venue, round duration
-    /// sec)** — the multi-family clock key (B1a). A venue can run SEVERAL
-    /// round-length families at once (PM 15m matches alongside PM 1h markets);
-    /// each family's expiry declaration lands in its own (venue, duration)
-    /// slot, so a 15m close must never freeze a 1h sibling's countdown.
-    /// Multi-plugin data planes keep one clock per venue on top of that: a
-    /// Kalshi declaration must not move the Polymarket expiry and vice versa.
-    /// The empty-string venue is the legacy bucket — markets (or corpora)
-    /// without a venue tag — and the legacy single-duration key is
-    /// `(DEFAULT_VENUE, cfg.round_duration_sec)`, so old replays behave
-    /// exactly as the per-venue-only clock did.
+    /// Venue-reported round end (ms), keyed by **(venue, duration sec)** — the
+    /// multi-family clock key (B1a): a 15m close never freezes a 1h sibling's
+    /// countdown; one clock per venue (Kalshi never moves Polymarket's expiry).
+    /// Empty venue = legacy bucket, keyed `(DEFAULT_VENUE, cfg.round_duration_sec)`.
     actual_end_time_ms: HashMap<(String, i64), i64>,
-    /// Venue time − local time (ms), keyed by VENUE only — the offset is the
-    /// venue's clock property, not a family's: the same venue's wall clock
-    /// serves every round duration it lists.
+    /// Venue time − local time (ms), keyed by VENUE only — shared by every
+    /// family the venue lists.
     clock_offset_ms: HashMap<String, i64>,
-    /// #1157: `(token, active grid)` pairs already logged at INFO. The guard is
-    /// `&self` (every tick), so the set is interior mutability. Repeats are
-    /// debug; the refusal does not read this set.
-    off_grid_refusal_logged: std::sync::Mutex<HashSet<(String, i64)>>,
+    /// `(venue, family duration)` pairs already logged at INFO when refused for
+    /// naming no anchored grid. `&self` gate every tick → interior mutability;
+    /// repeats are debug, never read by the refusal.
+    off_pool_refusal_logged: std::sync::Mutex<HashSet<(String, i64)>>,
 }
 
 impl Scanner {
@@ -166,12 +160,12 @@ impl Scanner {
         Self {
             cfg,
             markets: Vec::new(),
+            grids: HashMap::new(),
             token_index: HashMap::new(),
             token_venues: HashMap::new(),
             actual_end_time_ms: HashMap::new(),
             clock_offset_ms: HashMap::new(),
-            grid_override: false,
-            off_grid_refusal_logged: std::sync::Mutex::new(HashSet::new()),
+            off_pool_refusal_logged: std::sync::Mutex::new(HashSet::new()),
         }
     }
 
@@ -179,11 +173,60 @@ impl Scanner {
         self.cfg = cfg;
     }
 
-    /// #1157: mark the runtime grid as overridden by `set_scanner_round_duration`.
-    /// From this point on the active grid is the selection authority (see
-    /// `can_trade_reason_for` / `is_live_round_row`).
-    pub fn set_grid_override(&mut self, overridden: bool) {
-        self.grid_override = overridden;
+    /// Anchor ONE grid: the family an account (or the boot) runs — additive by
+    /// design, so anchoring 300s for account A never evicts B's 900s grid.
+    /// Empty `venue` anchors the legacy bucket.
+    pub fn anchor_grid(&mut self, venue: &str, duration_sec: i64) {
+        if duration_sec <= 0 {
+            return;
+        }
+        self.grids
+            .insert((venue.to_string(), duration_sec), Grid::new(duration_sec));
+    }
+
+    /// Replace the whole pool with `families` (boot path: complete truth at
+    /// once).
+    pub fn set_grids(&mut self, families: impl IntoIterator<Item = (String, i64)>) {
+        self.grids.clear();
+        for (venue, duration_sec) in families {
+            self.anchor_grid(&venue, duration_sec);
+        }
+    }
+
+    /// The anchored grids, sorted: legacy bucket first, then venue, then duration.
+    pub fn grid_keys(&self) -> Vec<(String, i64)> {
+        let mut keys: Vec<(String, i64)> = self.grids.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    /// The process default grid duration — countdown length when no per-account
+    /// override anchors a different family; `cfg.round_duration_sec`, exposed
+    /// read-only so callers outside the module (`round_duration.get`,
+    /// price-row family-selection) can name "the grid actually ticking".
+    pub fn round_duration_sec(&self) -> i64 {
+        self.cfg.round_duration_sec
+    }
+
+    /// Whether `(venue, duration_sec)` is a grid this deployment runs. Empty
+    /// pool → nothing refused; once anchored, the pool is the admission table —
+    /// enterable iff some anchored grid runs that duration.
+    pub fn admits_family(&self, venue: &str, duration_sec: i64) -> bool {
+        if self.grids.is_empty() {
+            return true;
+        }
+        if self.grids.contains_key(&(venue.to_string(), duration_sec)) {
+            return true;
+        }
+        self.grids.values().any(|g| g.duration_sec == duration_sec)
+    }
+
+    /// Slot of `duration_sec`'s grid on `venue`'s wall clock; every slot
+    /// derivation goes through here — grids are per (venue, duration).
+    pub fn slot_at(&self, venue: &str, duration_sec: i64, local_now_ms: i64) -> i64 {
+        let offset = self.clock_offset_ms.get(venue).copied().unwrap_or(0);
+        let venue_now = local_now_ms + offset;
+        venue_now / 1000 / duration_sec
     }
 
     pub fn markets(&self) -> &[CryptoMarket] {
@@ -194,10 +237,9 @@ impl Scanner {
         let up = asset.to_uppercase();
         self.markets.iter().find(|m| m.asset == up)
     }
-    /// The market a token belongs to (either side) on ONE venue — the
-    /// RFC-661 M1 venue-qualified lookup. Same-byte token under two venues
-    /// resolves to the venue's OWN row; a venue that holds no row for the
-    /// token returns `None` even when a sibling venue lists it.
+    /// RFC-661 M1 venue-qualified lookup: a same-byte token under two venues
+    /// resolves to the venue's OWN row; a venue holding no row returns `None`
+    /// even if a sibling lists it.
     pub fn market_for_token_on_venue(&self, venue: &str, token: &str) -> Option<&CryptoMarket> {
         let idx = *self
             .token_index
@@ -207,13 +249,9 @@ impl Scanner {
             .filter(|m| m.venue == venue && (m.up_token_id == token || m.down_token_id == token))
     }
 
-    /// The token-only legacy lookup (RFC-661 §4.3 compatible entry): resolves
-    /// ONLY on a unique candidate — the whole table holds exactly one row
-    /// carrying this token. Ambiguity (≥2 venues each hold a row) refuses
-    /// with `None` — NEVER a first-hit by insertion order (that would revive
-    /// #638's "first venue to arrive owns the row"). Single-venue
-    /// deployments and old corpora (one row per token by construction)
-    /// resolve exactly as before, byte-identical.
+    /// RFC-661 §4.3 legacy lookup: resolves ONLY on a unique candidate (the
+    /// whole table holds exactly one row carrying this token). Ambiguity
+    /// (≥2 venues) refuses `None` — never first-hit by insertion order (#638).
     pub fn market_for_token(&self, token: &str) -> Option<&CryptoMarket> {
         let venues = self.token_venues.get(token)?;
         if venues.len() != 1 {
@@ -222,9 +260,9 @@ impl Scanner {
         self.market_for_token_on_venue(&venues[0], token)
     }
 
-    /// The venues whose rows carry `token` (sorted, deterministic). The
-    /// ambiguity diagnostic: callers that must distinguish "unique candidate"
-    /// from "refused as ambiguous" read this to NAME the candidate venues.
+    /// The venues whose rows carry `token` (sorted, deterministic) — the
+    /// ambiguity diagnostic naming candidate venues for "unique candidate"
+    /// vs "refused as ambiguous".
     pub fn venues_holding_token(&self, token: &str) -> Vec<String> {
         let mut v = self.token_venues.get(token).cloned().unwrap_or_default();
         v.sort();
@@ -261,83 +299,62 @@ impl Scanner {
             .unwrap_or(0)
     }
 
-    /// Current round slot, floored to the round boundary using venue time.
-    /// The slot grid is global this deployment (every plugin runs the same
-    /// round length); only the expiry refinements are per-venue.
-    pub fn current_slot(&self, local_now_ms: i64) -> i64 {
-        let offset = self.clock_offset_ms();
-        let venue_now = local_now_ms + offset;
-        venue_now / 1000 / self.cfg.round_duration_sec
-    }
-
-    /// The round clock without a markets copy: slot, expiry and the two window
-    /// gates. This is the shape the evaluation hot path consumes — it walks the
-    /// scanner's live market list by reference, so cloning the owned snapshot
-    /// per call (two heap-allocated strings per market, twice per evaluate)
-    /// is pure waste there. `round_state` remains for callers that want the
-    /// owned markets snapshot.
+    /// Round clock without a markets copy: slot, expiry and the two window
+    /// gates — the shape the evaluation hot path consumes (it walks the live
+    /// market list by reference; `round_state` remains for snapshot callers).
     ///
-    /// With several venues live the global clock is the EARLIEST observed
-    /// expiry (grid default when none): a round is tradeable only while every
-    /// venue's market is still open, so the most conservative expiry gates the
-    /// shared window. With one venue this is exactly the old single-value
-    /// behaviour (the observed end replaces the grid, never min'ed with it).
+    /// Global clock is the EARLIEST observed expiry (grid default when none): a
+    /// round is tradeable only while every venue's market is open, so the most
+    /// conservative expiry gates the shared window. One venue = old
+    /// single-value behaviour (observed end replaces the grid, never min'ed
+    /// with it).
     pub fn round_timing(&self, local_now_ms: i64) -> RoundTiming {
         self.round_timing_for_venue(DEFAULT_VENUE, local_now_ms)
     }
 
-    /// The same clock, refined to ONE venue's observed expiry (empty venue =
-    /// the legacy bucket). Callers that already know the venue of the market
-    /// they judge (per-candidate gates, per-token exits) use this so one
-    /// venue's observed drift never freezes a sibling venue's trading.
+    /// Same clock, refined to ONE venue's observed expiry (empty venue = legacy
+    /// bucket). Callers that know the market's venue (per-candidate gates,
+    /// per-token exits) use this so one venue's observed drift never freezes a
+    /// sibling venue's trading.
     ///
-    /// 单族兼容（B1a 回放逐字节不变的关键）：这里 = `round_timing_for` 于
-    /// `(venue, cfg.round_duration_sec)` 的同族折叠。经旧入口写路径
-    /// （`observe_end_time_for_venue`）落表的所有观察都带 cfg 的 duration，
-    /// 单族语料下同族 min ≡ 旧的全表 min —— 断言钉在
+    /// 单族兼容（B1a 回放逐字节不变的关键）：此处 = `round_timing_for` 于
+    /// `(venue, cfg.round_duration_sec)` 的同族折叠；旧调用方的观察全带 cfg
+    /// duration，单族语料下同族 min ≡ 旧全表 min，断言钉在
     /// `legacy_venue_entry_equals_pre_b1a_semantics`。
     pub fn round_timing_for_venue(&self, venue: &str, local_now_ms: i64) -> RoundTiming {
         self.round_timing_for(venue, self.cfg.round_duration_sec, local_now_ms)
     }
 
-    /// E3 (轮次多族收尾): the legacy VENUE bucket's clock at an EXPLICIT
-    /// duration — `round_timing()` with only the duration refined. The
-    /// strategy-context sites (`evaluate`/`replay_candidates`/
-    /// `confirmed_diagnostics`) have no single candidate to name a venue,
-    /// so the venue dimension stays the historical legacy bucket (the same
-    /// fold `round_timing()` read) while the duration grid follows the
-    /// market rows' own declared family. A single-family table resolves the
-    /// duration to the configured grid, making this verbatim
-    /// `round_timing()`.
+    /// E3 (轮次多族收尾): the legacy VENUE bucket's clock at an explicit
+    /// duration — `round_timing()` with only the duration refined. Strategy
+    /// sites (`evaluate`/`replay_candidates`/`confirmed_diagnostics`) name no
+    /// venue, so the venue dimension stays the historical legacy bucket while
+    /// the duration grid follows the market rows' own declared family. A
+    /// single-family table resolves the duration to the configured grid —
+    /// verbatim `round_timing()`.
     pub fn round_timing_legacy_at(&self, duration_sec: i64, local_now_ms: i64) -> RoundTiming {
         self.round_timing_for(DEFAULT_VENUE, duration_sec, local_now_ms)
     }
 
-    /// The multi-family clock (B1a): the round timing of ONE (venue, duration)
-    /// family. The slot grid comes from the FAMILY's duration
-    /// (`duration` sec per slot, venue-offset adjusted), the family's own
-    /// declaration is authoritative, and the conservative fallback folds ONLY
-    /// same-duration observations — a PM 1h market's time_left must never be
-    /// pinned to 0 by a kalshi 15m sibling's expiry (cross-family decay is
-    /// not contagion).
+    /// Multi-family clock (B1a): round timing of ONE (venue, duration) family.
+    /// Slot grid uses the family's duration (venue-offset adjusted); the
+    /// family's own expiry declaration is authoritative; conservative fallback
+    /// folds ONLY same-duration observations — a PM 1h market's `time_left`
+    /// never pinned to 0 by a kalshi 15m sibling's expiry (cross-family decay
+    /// is not contagion).
     pub fn round_timing_for(
         &self,
         venue: &str,
         duration_sec: i64,
         local_now_ms: i64,
     ) -> RoundTiming {
-        let offset = self.clock_offset_ms.get(venue).copied().unwrap_or(0);
-        let venue_now = local_now_ms + offset;
-        let slot = venue_now / 1000 / duration_sec;
+        let slot = self.slot_at(venue, duration_sec, local_now_ms);
         let grid = (slot + 1) * duration_sec * 1000;
         // Same-family fold only: the family key carries the duration, so a
-        // sibling family's (much nearer) expiry never gates this clock. A
-        // venue with no own declaration reads the earliest same-duration
-        // expiry — the conservative shared window (a round is tradeable only
-        // while every same-duration venue's market is still open); with no
-        // declaration at all in the family, the family's own grid. Single-
-        // family deployments fold the whole table, byte-identical with the
-        // pre-B1a `round_timing_for_venue` behaviour.
+        // sibling family's nearer expiry never gates this clock. No own
+        // declaration → earliest same-duration expiry (conservative shared
+        // window), else the family grid; single-family deployments fold the
+        // whole table, byte-identical with pre-B1a `round_timing_for_venue`.
         let earliest_in_family = self
             .actual_end_time_ms
             .iter()
@@ -366,13 +383,12 @@ impl Scanner {
     }
 
     /// The (venue, duration) clocks that have SPOKEN (an in-band expiry
-    /// declaration landed in their slot), as ordered unique pairs — the key
-    /// set of `round_timing_for`. The per-venue rows the panel renders walk
-    /// this in B1a's wire assembly: one row per family, `durationSec` carried.
-    ///
-    /// 排序确定（插入序不稳定）：legacy venue（空串）恒排最前，其余按
-    /// venue 名字典序、同 venue 内按 duration 升序 —— 门禁可逐字节断言
-    /// 行序。`observed_venue_keys`（旧口径）从这里派生 unique venues。
+    /// declaration landed in their slot), as ordered unique pairs — the key set
+    /// of `round_timing_for`; B1a wire assembly renders one row per family with
+    /// `durationSec` carried. Sort deterministic: legacy venue first, then venue
+    /// name lexicographic, then duration ascending — gates can assert row order
+    /// byte-for-byte. `observed_venue_keys` (legacy mouthpiece) derives unique
+    /// venues from here.
     pub fn observed_clock_keys(&self) -> Vec<(String, i64)> {
         let mut keys: Vec<(String, i64)> = self
             .actual_end_time_ms
@@ -396,16 +412,14 @@ impl Scanner {
         keys
     }
 
-    /// The venues that have SPOKEN (an in-band expiry declaration landed in
-    /// their clock slot) plus the legacy bucket when it holds a value — the
-    /// key set of `round_timing_for_venue`. Read-only views (`engine.round`
-    /// 的 per-venue 轮次行) walk this instead of guessing: a venue without a
-    /// declaration has no authoritative clock of its own, and inventing one
-    /// for the panel would contradict the conservative window the trading
-    /// side actually consumes.
+    /// The venues that have SPOKEN plus the legacy bucket when it holds a value
+    /// — the key set of `round_timing_for_venue`. Read-only views walk this
+    /// instead of guessing: a venue without a declaration has no authoritative
+    /// clock, and inventing one for the panel would contradict the conservative
+    /// window the trading side consumes.
     ///
-    /// 排序确定（插入序不稳定，BTreeMap 没用上）：legacy bucket（空串）
-    /// 恒排最前，其余按 venue 名字典序 —— 门禁可逐字节断言行序。
+    /// Sort deterministic: legacy bucket first, then venue name lexicographic —
+    /// gates can assert row order byte-for-byte.
     pub fn observed_venue_keys(&self) -> Vec<String> {
         let mut venues: Vec<String> = Vec::new();
         for (v, _) in self.observed_clock_keys() {
@@ -433,12 +447,11 @@ impl Scanner {
             .map_err(|b| b.to_string())
     }
 
-    /// The same check as [`Self::can_trade`], as a structured reason so the
-    /// engine can tell a waivable window gate from the structural precondition
-    /// (E2-b / #27). The expiry gate reads the EARLIEST expiry across venues
-    /// (a round whose any-venue market is about to close is not tradeable),
-    /// while presence/age stay global — this is the whole-table verdict the
-    /// replay wake math relies on.
+    /// Same check as [`Self::can_trade`] as a structured reason: waivable window
+    /// gate vs structural precondition (E2-b / #27). Expiry gate reads the
+    /// EARLIEST expiry across venues (any-venue market about to close → not
+    /// tradeable); presence/age stay global — the whole-table verdict replay
+    /// wake math relies on.
     pub fn can_trade_reason(&self, local_now_ms: i64) -> Result<(), TimingBlock> {
         let t = self.round_timing(local_now_ms);
         if self.markets.is_empty() {
@@ -459,21 +472,16 @@ impl Scanner {
         Ok(())
     }
 
-    /// Per-market form of [`Self::can_trade_reason`]: the expiry gate reads
-    /// THE MARKET'S OWN venue clock, so one venue running hot-to-expiry no
-    /// longer freezes a sibling venue's candidates (multi-plugin data plane).
-    /// Presence and age remain global (they describe the shared round).
+    /// Per-market [`can_trade_reason`]: the expiry gate reads the market's own
+    /// venue clock — one venue running hot never freezes a sibling's candidates
+    /// (multi-plugin data plane); presence/age stay global.
     ///
-    /// B1c-family refinement (E2): the clock is the market's OWN (venue,
-    /// duration) family — `round_timing_for` on the row's declared
-    /// `round_duration_sec` (`0` = legacy/undeclared → the configured global
-    /// grid, exactly the pre-E2 read). The previous shape folded to
-    /// `(venue, cfg.round_duration_sec)`, a grid the row's family key never
-    /// speaks under: an 86400s declaration lands in `(venue, 86400)`
-    /// (engine writes per feed duration), so the global-900s read could never
-    /// see it and every gate verdict was computed off a stale grid instead of
-    /// the family's own. Single-family tables resolve every row to
-    /// `cfg.round_duration_sec` — the projection is identical, byte for byte.
+    /// B1c-family refinement (E2): clock is the market's own (venue, duration)
+    /// family — `round_timing_for` on `round_duration_sec` (`0` = legacy →
+    /// configured grid, exactly pre-E2). Old shape folded to
+    /// `(venue, cfg.round_duration_sec)`, which an 86400s declaration never
+    /// speaks under, so every verdict ran off a stale grid. Single-family tables
+    /// resolve every row to `cfg.round_duration_sec` — identical to pre-E2.
     pub fn can_trade_reason_for(
         &self,
         market: &CryptoMarket,
@@ -487,43 +495,38 @@ impl Scanner {
         } else {
             self.cfg.round_duration_sec
         };
-        // #1157: once the runtime grid has been overridden, the active grid is
-        // the selection authority — a market whose family does not match the
-        // active grid is not in this round and cannot be entered. This is a
-        // structural precondition (NoMarkets is never waivable), so a strategy
-        // exemption cannot force an off-grid entry. market_decl keeps governing
-        // settlement timing (`family_duration` above feeds `round_timing_for`),
-        // but it no longer governs which round a market may be traded in.
-        if self.grid_override && family_duration != self.cfg.round_duration_sec {
-            // #1157: INFO once per (token, active grid); repeats are debug.
-            // Drop the lock before logging so a subscriber cannot re-enter.
-            let grid = self.cfg.round_duration_sec;
+        // 查表即准入：市场的 (venue, 族时长) 必须是本部署锚定的网格之一。
+        // 结构性前置（`NoMarkets` 永不可豁免）；池里没有这个族 = 无账户声明
+        // 过它，配置事实而非本账户与市场的冲突（后者由风控闸门判，#1140）。
+        if !self.admits_family(&market.venue, family_duration) {
+            // INFO once per (venue, family); repeats are debug. Drop the lock
+            // before logging so a subscriber cannot re-enter.
             let first = {
                 let mut seen = self
-                    .off_grid_refusal_logged
+                    .off_pool_refusal_logged
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                seen.insert((market.up_token_id.clone(), grid))
+                seen.insert((market.venue.clone(), family_duration))
             };
             if first {
                 tracing::info!(
                     target: "engine",
                     market = %market.asset,
+                    venue = %market.venue,
                     token = %market.up_token_id,
                     declared = market.round_duration_sec,
-                    grid,
                     family = family_duration,
-                    "round grid override: market family does not match the active grid — entry refused (market_decl keeps governing settlement timing only)"
+                    "round grid pool: no account anchors this market's round family — entry refused (add the family to an account's ROUNDS or set its round duration)"
                 );
             } else {
                 tracing::debug!(
                     target: "engine",
                     market = %market.asset,
+                    venue = %market.venue,
                     token = %market.up_token_id,
                     declared = market.round_duration_sec,
-                    grid,
                     family = family_duration,
-                    "round grid override: market family does not match the active grid — entry refused (market_decl keeps governing settlement timing only)"
+                    "round grid pool: no account anchors this market's round family — entry refused"
                 );
             }
             return Err(TimingBlock::NoMarkets);
@@ -544,33 +547,25 @@ impl Scanner {
         Ok(())
     }
 
-    /// E2 (multi-family read views): whether `market` is a row of the round
-    /// CURRENTLY BEING TRADED — the shared filter predicate of the two
-    /// per-market read views (`books_view`, the `marketPrices` rows of
-    /// `engine.round`). The #560 contract ("expiry slot = the clock's current
-    /// slot + 1, `round_slot == 0` legacy rows always pass") judged every row
-    /// on the GLOBAL grid (`current_slot(now) + 1`): a row whose family runs
-    /// its own round length (a PM daily discovery stamps `(slot, 86400)`)
-    /// never equals the 900s grid's `+1`, so BOTH views silently dropped every
-    /// foreign-family row — B1d's multi-family discovery instances fed rows
-    /// the panel could never show. The predicate therefore judges each row on
-    /// ITS OWN (venue, duration) family clock: the row's declared
-    /// `round_duration_sec` (0 = legacy/undeclared → the configured global
-    /// grid) picks the family, `round_timing_for` derives that family's
-    /// current slot, and the row is live iff its slot is that family's +1.
+    /// Whether `market` is a row of the round currently being traded — shared
+    /// predicate of `books_view` and `engine.round`'s `marketPrices` rows.
+    /// Judges each row on ITS OWN (venue, duration) family clock: declared
+    /// `round_duration_sec` (0 = legacy → configured grid) picks the family,
+    /// `round_timing_for` derives that family's slot, live iff row's slot =
+    /// family's slot + 1.
     ///
-    /// `round_slot == 0` stays an unconditional pass (old corpora, the #560
-    /// bridge). Single-family deployments (every row declares or defaults to
-    /// the configured grid, offsets 0) resolve the family clock to exactly the
-    /// global grid — the verdict is bit-identical with the pre-E2
-    /// `current_slot(now) + 1` comparison.
+    /// The #560 contract (`round_slot == 0` legacy rows always pass; expiry
+    /// slot = clock's current slot + 1) judged every row on the GLOBAL grid, so
+    /// foreign-family rows (a PM daily stamping `(slot, 86400)`) never matched
+    /// the 900s grid's `+1` and were silently dropped. `round_slot == 0` stays
+    /// an unconditional pass (old corpora, #560 bridge); single-family
+    /// deployments resolve the family clock to exactly the global grid —
+    /// bit-identical with pre-E2 `slot + 1`.
     ///
-    /// #1165 L4 (读视图真相): the grid override is a SELECTION authority only
-    /// (`can_trade_reason_for`) — it never filters the read views. An in-flight
-    /// off-grid round stays visible until its natural settlement (#1129
-    /// semantics): the override write must not blank the round a position is
-    /// currently held in, and the engine clock must never be synthesized into
-    /// a fake countdown for a family whose rows have not landed yet.
+    /// #1165 L4: the grid pool is an ADMISSION table only
+    /// (`can_trade_reason_for`) — it never filters read views. An in-flight
+    /// round whose family was never anchored stays visible until natural
+    /// settlement (#1129).
     pub fn is_live_round_row(&self, market: &CryptoMarket, local_now_ms: i64) -> bool {
         if market.round_slot == 0 {
             return true;
@@ -584,20 +579,15 @@ impl Scanner {
         market.round_slot == t.slot + 1
     }
 
-    /// 读视图的选族唯一入口：`engine.round` 的行情行（行情卡的上/下报价）
-    /// 与 `engine.books` 的深度行都从这里取，保证同一页上两个读面指向
-    /// 同一族、同一份书。
+    /// 唯一选族入口：`engine.round` 行情行与 `engine.books` 深度行都从此取，
+    /// 同一页两读面指向同一族、同一份书。两步：(1) 按行自身族钟过滤正在
+    /// 交易的一轮（[`Self::is_live_round_row`]）；(2) 多族同 (venue, asset) 时，
+    /// 把当前网格族 (cfg.round_duration_sec = 权威) 稳定排最前，再按 (venue,
+    /// asset) 先到先得。单族部署排序键恒 0，行序与结论不变。
     ///
-    /// 两步（顺序即语义）：
-    /// 1. 按行自身族钟过滤「正在交易的一轮」（[`Self::is_live_round_row`]）；
-    /// 2. 多族同 (venue, asset) 时选哪一族。历史行为是「先到先得」，行序
-    ///    = discovery 到达顺序 —— 于是卡上可能是一个账户根本没在交易的族：
-    ///    5m 倒计时每 5 分钟翻页，卡上却是 15m 几乎不动的报价，看起来就是
-    ///    「书簿在刷、价格冻住」，而且两个读面各自先到先得时还会互相矛盾
-    ///    （盘口深度显示 A 族、行情卡显示 B 族）。选择权威是本扫描器的当前
-    ///    网格（`cfg.round_duration_sec` is the SELECTION authority），所以
-    ///    把当前网格那一族**稳定**排到最前，再按 (venue, asset) 先到先得。
-    ///    单族部署里所有行同族，排序键恒 0，行序与结论逐位不变。
+    /// 旧「先到先得」让卡上显示一个账户没在交易的族：5m 倒计时每 5 分钟
+    /// 翻页，卡上却是 15m 几乎不动的报价，看起来「书簿在刷、价格冻住」；
+    /// 两读面还互相矛盾（盘口深度显示 A 族、行情卡显示 B 族）。
     pub fn live_round_rows(&self, local_now_ms: i64) -> Vec<&CryptoMarket> {
         let active_grid = self.cfg.round_duration_sec;
         let mut rows: Vec<&CryptoMarket> = self
@@ -621,12 +611,12 @@ impl Scanner {
     /// Record the venue-reported end time and derive the clock offset — in the
     /// reporting market's OWN venue slot.
     ///
-    /// A declaration more than two rounds out (in either direction) is
-    /// REFUSED rather than adopted: a discovery bug feeding a strike-ladder
-    /// expiry (years ahead) or a long-stale timestamp would otherwise hijack
-    /// the round clock, and every timing decision (`time_left_sec`, the exit
-    /// policy's clock, the D-31 floor) drifts with it. The slot grid keeps
-    /// running on its own cadence until an in-band declaration arrives.
+    /// A declaration more than two rounds out (in either direction) is REFUSED
+    /// rather than adopted: a discovery bug feeding a strike-ladder expiry
+    /// (years ahead) or a long-stale timestamp would otherwise hijack the round
+    /// clock, and every timing decision (`time_left_sec`, the exit policy's
+    /// clock, the D-31 floor) drifts with it. The slot grid keeps running on
+    /// its own cadence until an in-band declaration arrives.
     pub fn observe_end_time(&mut self, end_ms: i64, local_now_ms: i64) {
         self.observe_end_time_for_venue(DEFAULT_VENUE, end_ms, local_now_ms);
     }
@@ -679,15 +669,77 @@ mod tests {
     use rust_decimal_macros::dec;
     use std::sync::{Arc, Mutex};
 
+    /// 网格池的准入语义：锚定一个账户的族，绝不关闭同部署里别的族。
+    /// 这是 #1272 的根因所在 —— 单张全局网格下，账户 A 写 300s 会让账户 B
+    /// 的 900s 市场全部 NoMarkets；池化后 A 的写入只 ADD 自己的族。
+    #[test]
+    fn anchoring_a_sibling_grid_never_evicts_another_family() {
+        let mut s = Scanner::new(ScannerConfig {
+            round_duration_sec: 900,
+            ..Default::default()
+        });
+        assert!(s.admits_family("polymarket", 900));
+        assert!(s.admits_family("polymarket", 300));
+
+        s.anchor_grid("polymarket", 900);
+        s.anchor_grid("polymarket", 300);
+        assert!(
+            s.admits_family("polymarket", 900),
+            "the sibling account's 900s family keeps its grid"
+        );
+        assert!(s.admits_family("polymarket", 300));
+        assert!(
+            !s.admits_family("polymarket", 60),
+            "a family nobody anchored is not enterable"
+        );
+
+        // 池以 (venue, duration) 为键：同族在别的 venue 上锚定同样有效（venue 记录谁锚定的，不是谁可以交易）。
+        s.set_grids(vec![("kalshi".to_string(), 3600)]);
+        assert_eq!(
+            s.grid_keys(),
+            vec![("kalshi".to_string(), 3600)],
+            "set_grids replaces the pool wholesale (the boot path)"
+        );
+        assert!(s.admits_family("polymarket", 3600));
+        assert!(
+            !s.admits_family("polymarket", 900),
+            "a wholesale boot pool speaks only for what it lists"
+        );
+
+        s.anchor_grid("polymarket", 0);
+        s.anchor_grid("polymarket", -300);
+        assert_eq!(s.grid_keys().len(), 1);
+    }
+
+    /// slot 计算一律带键：同一 venue 上，不同族各自按自己的网格取整，共用该 venue 的墙钟偏移（偏移属 venue 而非族）。
+    #[test]
+    fn slot_at_floors_each_family_on_its_own_grid() {
+        let mut s = Scanner::new(ScannerConfig {
+            round_duration_sec: 900,
+            ..Default::default()
+        });
+        let now = 1_000_000i64;
+        assert_eq!(s.slot_at("polymarket", 900, now), 1);
+        assert_eq!(s.slot_at("polymarket", 300, now), 3);
+        assert_eq!(s.slot_at("polymarket", 3600, now), 0);
+
+        // venue 偏移对该 venue 的每个族一致生效（这里 +500 ms 不跨边界）。
+        s.observe_end_time_for_venue("polymarket", 1_800_500, now);
+        assert_eq!(s.clock_offset_ms.get("polymarket").copied(), Some(500));
+        assert_eq!(s.slot_at("polymarket", 900, now), 1);
+        assert_eq!(s.slot_at("polymarket", 300, now), 3);
+        // 一个从未开口的 venue 没有偏移，按本地钟走。
+        assert_eq!(s.slot_at("kalshi", 300, now), 3);
+    }
+
     #[test]
     fn slot_and_round_state_math() {
         let s = Scanner::new(ScannerConfig {
             round_duration_sec: 900,
             ..Default::default()
         });
-        // 900_000 ms boundary: slot 1, expiry 1_800_000.
         let now = 1_000_000i64;
-        assert_eq!(s.current_slot(now), 1);
+        assert_eq!(s.slot_at(DEFAULT_VENUE, 900, now), 1);
         let r = s.round_state(now);
         assert_eq!(r.expires_at_ms, 1_800_000);
         assert_eq!(r.time_left_sec, 800);
@@ -701,17 +753,14 @@ mod tests {
             ..Default::default()
         });
         let now = 1_000_000i64;
-        // Local expected end for slot 1 = 1_800_000; the venue says 1_800_500.
         s.observe_end_time(1_800_500, now);
         assert_eq!(s.clock_offset_ms(), 500);
     }
 
     #[test]
     fn observed_venue_keys_lists_who_spoke_legacy_first_and_deterministically() {
-        // #550（症状②）的口径来源：per-venue 轮次行只列「已经开口」的
-        // venue —— legacy bucket（空串）恒排最前，其余字典序；未开口的
-        // venue（没有 in-band 声明）绝不出现，显示链不发明 trading 侧
-        // 不消费的钟。
+        // #550 症状②：per-venue 轮次行只列「已开口」的 venue，legacy bucket 恒
+        // 排最前，其余字典序；未开口的 venue 绝不出现。
         let mut s = Scanner::new(ScannerConfig {
             round_duration_sec: 900,
             ..Default::default()
@@ -739,7 +788,6 @@ mod tests {
             ],
             "the legacy bucket leads the list"
         );
-        // An out-of-band (refused) declaration does not make a venue "speak".
         s.observe_end_time_for_venue("ghost", now + 10 * 365 * 86_400_000, now);
         assert!(
             !s.observed_venue_keys().contains(&"ghost".to_string()),
@@ -760,15 +808,12 @@ mod tests {
                 .copied()
                 .unwrap_or(0)
         };
-        // A strike-ladder expiry years ahead (the kalshi discovery bug fed a
-        // 2045 close into this path) must not hijack the round clock.
+        // A strike-ladder expiry years ahead must not hijack the round clock.
         s.observe_end_time(now + 10 * 365 * 86_400_000, now);
         assert_eq!(observed(&s), 0, "out-of-band declaration refused");
         assert_eq!(s.clock_offset_ms(), 0);
-        // Same for a stale timestamp far in the past.
         s.observe_end_time(now - 3 * 900_000, now);
         assert_eq!(observed(&s), 0);
-        // In-band (≤ 2 rounds out) still lands.
         s.observe_end_time(now + 1_800_000, now);
         assert_eq!(observed(&s), now + 1_800_000);
     }
@@ -781,7 +826,6 @@ mod tests {
             min_time_left_sec: 180,
             ..Default::default()
         });
-        // No markets → blocked.
         assert!(s.can_trade(1_000_000).is_err());
         s.set_markets(vec![CryptoMarket {
             asset: "BTC".into(),
@@ -834,7 +878,6 @@ mod tests {
             neg_risk: true,
             question: "".into(),
         }]);
-        // Round is 10s old at t=1_000_000 + ... → age 10s < 30s.
         assert_eq!(
             s.can_trade_reason(900_000),
             Err(TimingBlock::TooYoung {
@@ -854,8 +897,8 @@ mod tests {
 
     #[test]
     fn only_the_window_gates_are_exemptible() {
-        // A per-strategy declaration may waive the window gates; a round with no
-        // market at all is a structural precondition and never waivable.
+        // Per-strategy declarations may waive window gates; no market at all is
+        // a structural precondition — never waivable.
         assert!(!TimingBlock::NoMarkets.exemptible());
         assert!(
             TimingBlock::TooYoung {
@@ -881,13 +924,10 @@ mod tests {
         );
     }
 
-    // ── B1a：多族 (venue, duration) 时钟键 ──────────────────────────────
-
     #[test]
     fn cross_family_clocks_get_their_own_slot_and_expiry() {
-        // 同一时刻（无任何观察、无偏移）两个族各推各的 slot/expiry：
-        // 900s 族与 3600s 族在 now = 1_000_000（slot 边界 900_000 与
-        // 3_600_000 的整倍数相差甚远）必须得出不同的 slot 与到期，证明
+        // 同一时刻，900s 族与 3600s 族各推各的 slot/expiry：now = 1_000_000
+        // 远离两条网格的 slot 边界，两族必须得出不同的 slot 与到期 —
         // slot 网格跟族走，不再全局一根尺。
         let s = Scanner::new(ScannerConfig {
             round_duration_sec: 3600,
@@ -896,7 +936,7 @@ mod tests {
         let now = 1_000_000i64;
         let f15 = s.round_timing_for("polymarket", 900, now);
         let f1h = s.round_timing_for("polymarket", 3600, now);
-        // 900s grid: slot 1, expiry 1_800_000。3600s grid: slot 0, expiry 3_600_000。
+        // 900s: slot 1, expiry 1_800_000。3600s: slot 0, expiry 3_600_000。
         assert_eq!(f15.slot, 1);
         assert_eq!(f15.expires_at_ms, 1_800_000);
         assert_eq!(f15.time_left_sec, 800);
@@ -911,20 +951,20 @@ mod tests {
 
     #[test]
     fn a_15m_observation_never_pollutes_a_1h_clock() {
-        // 族内折叠隔离证明：kalshi@900 的到期声明落表后，polymarket@3600
-        // 在「自己没有声明」时的兜底折叠只扫同 duration 键 —— 15m 的
-        // observed expiry（近得多）不得把 1h 的 time_left 钉死。
+        // 族内折叠隔离：kalshi@900 的到期声明落表后，polymarket@3600 的
+        // 兜底折叠只扫同 duration 键，15m 的 observed expiry 不得把 1h 的
+        // time_left 钉死。
         let mut s = Scanner::new(ScannerConfig {
             round_duration_sec: 900,
             ..Default::default()
         });
         let now = 1_000_000i64;
-        // A kalshi 15m declaration, in-band for the 900s family.
+        // kalshi 15m declaration, in-band for the 900s family; polymarket 1h
+        // too — the 1h family has its own voice.
         s.observe_end_time_for("kalshi", 900, 1_800_500, now);
-        // A polymarket 1h declaration too — the 1h family has its OWN voice.
         s.observe_end_time_for("polymarket", 3600, 3_600_200, now);
 
-        // PM@3600 reads its OWN declaration (authoritative per family).
+        // PM@3600 reads its own declaration (authoritative per family).
         let pm_1h = s.round_timing_for("polymarket", 3600, now);
         assert_eq!(
             pm_1h.expires_at_ms, 3_600_200,
@@ -933,22 +973,22 @@ mod tests {
         assert_eq!(pm_1h.time_left_sec, 2_600);
 
         // A 1h venue that has NOT spoken folds ONLY same-duration clocks:
-        // the 15m expiry (1_800_500) must not appear in its fold.
+        // the 15m expiry must not appear in its fold.
         let other_1h = s.round_timing_for("kalshi", 3600, now);
         assert_eq!(
             other_1h.expires_at_ms, 3_600_200,
             "the 1h fold sees the only 1h declaration, never the 15m one"
         );
 
-        // And the 15m family keeps its own clock despite the 1h presence.
+        // The 15m family keeps its own clock despite the 1h presence.
         let k15 = s.round_timing_for("kalshi", 900, now);
         assert_eq!(k15.expires_at_ms, 1_800_500);
         assert_eq!(k15.time_left_sec, 800);
     }
     #[test]
     fn family_fallback_folds_within_the_same_duration_only() {
-        // 兜底 earliest_observed 折叠的同族性：唯一声明在 15m 族，1h 族
-        // 无任何声明 → 1h 兜底走自己的网格（不是 15m 的 observed）。
+        // 兜底 earliest_observed 折叠同族：唯一声明在 15m 族 → 1h 兜底走
+        // 自己的网格，不是 15m 的 observed。
         let mut s = Scanner::new(ScannerConfig {
             round_duration_sec: 900,
             ..Default::default()
@@ -964,7 +1004,6 @@ mod tests {
             silent_1h.slot, 0,
             "the 1h slot grid runs on the family duration"
         );
-        // The 15m family's own fold still sees the declaration.
         let fold_15 = s.round_timing_for("polymarket", 900, now);
         assert_eq!(
             fold_15.expires_at_ms, 1_800_300,
@@ -974,12 +1013,9 @@ mod tests {
 
     #[test]
     fn legacy_venue_entry_equals_pre_b1a_semantics() {
-        // 回放逐字节不变的关键证明：多 venue 单族观察表下，旧入口
-        // `round_timing_for_venue` 的结果与升级前语义一致。升级前：
-        // slot = current_slot（cfg 网格 + venue 偏移），折叠 = 全表
-        // `>0` min（升级前全表 = 单族表，同族折叠 ≡ 全表 min），own
-        // declaration 权威。这些期望值是升级前语义的手工演算（同一
-        // 公式），不是改动后的输出。
+        // 关键证明：多 venue 单族观察表下，旧入口与升级前语义一致：slot =
+        // 全局网格，折叠 = 全表 `>0` min，own declaration 权威；期望值为
+        // 升级前语义的手工演算，不是改动后的输出。
         let mut s = Scanner::new(ScannerConfig {
             round_duration_sec: 900,
             ..Default::default()
@@ -1010,15 +1046,15 @@ mod tests {
             "single-family fold ≡ the pre-B1a whole-table min"
         );
 
-        // The same values through the new keyed entry — the legacy entry IS
-        // the (venue, cfg.duration) projection.
+        // Same values through the new keyed entry — legacy entry IS the
+        // (venue, cfg.duration) projection.
         let pm2 = s.round_timing_for("polymarket", 900, now);
         assert_eq!(pm.slot, pm2.slot);
         assert_eq!(pm.expires_at_ms, pm2.expires_at_ms);
         assert_eq!(pm.time_left_sec, pm2.time_left_sec);
 
-        // The global entry (`round_timing`, legacy bucket) is byte-untouched:
-        // the empty-venue clock folds the same single-family table.
+        // Global entry (`round_timing`, legacy bucket) byte-untouched:
+        // empty-venue clock folds the same single-family table.
         let global = s.round_timing(now);
         assert_eq!(global.slot, 1);
         assert_eq!(global.expires_at_ms, 1_800_200);
@@ -1027,8 +1063,7 @@ mod tests {
 
     #[test]
     fn observe_end_time_for_writes_family_keys_and_keeps_offset_per_venue() {
-        // 写路径：多族声明各落各族键；偏移仍按 venue 一份（后来族的声明
-        // 刷新同一 venue 的偏移，不另立族表）。
+        // 写路径：多族声明各落各族键；偏移仍按 venue 一份，不另立族表。
         let mut s = Scanner::new(ScannerConfig {
             round_duration_sec: 900,
             ..Default::default()
@@ -1037,8 +1072,7 @@ mod tests {
         s.observe_end_time_for("polymarket", 900, 1_800_500, now);
         s.observe_end_time_for("polymarket", 3600, 3_600_900, now);
 
-        // The 900s family stores its value under the family key (visible
-        // through the read path; the map is private, so assert by clock).
+        // The 900s family value lands under its family key; assert via read path (map private).
         assert_eq!(
             s.round_timing_for("polymarket", 900, now).expires_at_ms,
             1_800_500
@@ -1048,10 +1082,7 @@ mod tests {
             3_600_900
         );
 
-        // Offset stays per venue: the LAST in-band declaration refreshed the
-        // same (single) offset entry — 3_600_900 − local expected 1h end.
-        // Local expected end for the 3600s family at now = (1_000_000/1000/
-        // 3600 + 1) * 3600 * 1000 = 3_600_000 → offset 900.
+        // Offset stays per venue: last declaration refreshes single entry — 3_600_900 − expected 1h end (3_600_000) → offset 900.
         assert_eq!(s.clock_offset_ms(), 900);
 
         // Guard semantics copied verbatim: non-positive refused.
@@ -1061,16 +1092,14 @@ mod tests {
             1_800_500,
             "0 refused"
         );
-        // Out-of-band (this family's own 2-round band) refused: the ghost's
-        // own key stays absent, and its read falls back to the conservative
-        // same-family clock — the polymarket declaration that IS in band.
+        // Out-of-band refused: ghost's key absent; read falls back to the sibling's same-family clock.
         s.observe_end_time_for("ghost", 900, now + 10 * 365 * 86_400_000, now);
         assert_eq!(
             s.round_timing_for("ghost", 900, now).expires_at_ms,
             1_800_500,
-            "the refused declaration leaves no ghost key; the family fold reads the in-band sibling"
+            "the refused declaration leaves no ghost key"
         );
-        // A non-positive duration is a malformed call — ignored wholesale.
+        // A non-positive duration is malformed — ignored wholesale.
         s.observe_end_time_for("polymarket", 0, 1_800_500, now);
         assert!(
             !s.observed_clock_keys()
@@ -1082,8 +1111,7 @@ mod tests {
 
     #[test]
     fn observed_clock_keys_dedupe_and_order_deterministically() {
-        // 去重保序：legacy venue 恒最前；其余按 (venue, duration) 字典序；
-        // 同 (venue,duration) 只一行（去重）；未开口的 venue/族绝不出现。
+        // 去重保序：legacy venue 恒最前，其余 (venue,duration) 字典序，同 (venue,duration) 去重，未开口的 venue/族绝不出现。
         let mut s = Scanner::new(ScannerConfig {
             round_duration_sec: 900,
             ..Default::default()
@@ -1096,7 +1124,7 @@ mod tests {
         s.observe_end_time_for("polymarket", 3600, 3_600_500, now);
         s.observe_end_time_for("kalshi", 900, 1_800_500, now);
         s.observe_end_time_for("kalshi", 3600, 3_600_200, now);
-        s.observe_end_time_for("kalshi", 900, 1_800_600, now); // refresh, not a new key
+        s.observe_end_time_for("kalshi", 900, 1_800_600, now);
         s.observe_end_time_for("", 900, 1_800_200, now);
         assert_eq!(
             s.observed_clock_keys(),
@@ -1111,7 +1139,6 @@ mod tests {
         // A refused declaration never opens a key.
         s.observe_end_time_for("ghost", 900, now + 10 * 365 * 86_400_000, now);
         assert!(!s.observed_clock_keys().iter().any(|(v, _)| v == "ghost"));
-        // The legacy venue list derives from the clock keys, order intact.
         assert_eq!(
             s.observed_venue_keys(),
             vec![
@@ -1125,21 +1152,18 @@ mod tests {
 
     #[test]
     fn out_of_band_family_declarations_are_refused_per_family_band() {
-        // 守卫带按族轮长算：3600s 族的 ±2 轮 = ±7200s，900s 族拒收的
-        // 30 分钟外声明在 1h 族 in-band。
+        // 守卫带按族轮长算：3600s 族 ±2 轮 = ±7200s，900s 族拒收 30 分钟外声明，30 分钟外在 1h 族 in-band。
         let mut s = Scanner::new(ScannerConfig {
             round_duration_sec: 900,
             ..Default::default()
         });
         let now = 1_000_000i64;
-        // 3_600_000ms out: refused by the 900s family (band ±1_800_000)…
         s.observe_end_time_for("kalshi", 900, now + 3_600_000, now);
         assert!(
             !s.observed_clock_keys()
                 .contains(&("kalshi".to_string(), 900)),
             "outside the 15m family's ±2-round band"
         );
-        // …but in-band for the 3600s family (band ±7_200_000).
         s.observe_end_time_for("kalshi", 3600, now + 3_600_000, now);
         assert_eq!(
             s.round_timing_for("kalshi", 3600, now).expires_at_ms,
@@ -1148,10 +1172,7 @@ mod tests {
         );
     }
 
-    // ── E2：入场 timing 门按行自身族钟（多族漏网 ①）────────────────────
-
-    /// Local row fixture (the engine test module's `venue_market` shape):
-    /// a 900s-declared BTC row expiring at `end_ms` on `venue`.
+    /// Local row fixture: 900s-declared BTC row expiring at `end_ms` on `venue`.
     fn gate_market(end_ms: i64, venue: &str) -> CryptoMarket {
         CryptoMarket {
             asset: "BTC".into(),
@@ -1171,14 +1192,9 @@ mod tests {
         }
     }
 
-    /// A daily (86400s) market's declaration lands in its (venue, 86400)
-    /// family clock — a key the pre-E2 read (`round_timing_for_venue` =
-    /// (venue, cfg 900s)) could never consult, so `can_trade_reason_for`
-    /// judged the row on the global grid and mis-timed every verdict. The
-    /// gate must read the row's OWN family: inside the daily family's active
-    /// window the market trades even while the global 900s grid sits in a
-    /// different phase; a same-venue 900s row still answers to the 900s
-    /// family, unchanged.
+    /// An 86400s market's declaration lands in its (venue, 86400) family clock
+    /// — pre-E2's keyed entry could never consult it, so `can_trade_reason_for`
+    /// mis-timed every verdict; the gate reads the row's OWN family.
     #[test]
     fn entry_timing_gate_judges_a_daily_market_on_its_own_family_clock() {
         let mut s = Scanner::new(ScannerConfig {
@@ -1187,10 +1203,9 @@ mod tests {
             min_time_left_sec: 180,
             ..Default::default()
         });
-        // now = 1_000_000ms: the 900s grid is 100s into slot 1 (800s left).
-        let now = 1_000_000i64;
-        // The daily market's declaration, in-band for the 86400s family:
-        // the round ends one day after the grid slot now sits in.
+        let now = 1_000_000i64; // 900s grid: 100s into slot 1 (800s left).
+        // The daily market's declaration, in-band for the 86400s family: the
+        // round ends one day after the grid slot now sits in.
         let daily_end = (now / 1000 / 86_400 + 1) * 86_400 * 1000;
         s.observe_end_time_for("polymarket", 86_400, daily_end, now);
         let mut daily = gate_market(daily_end, "polymarket");
@@ -1213,11 +1228,8 @@ mod tests {
             "the family clock carries the daily declaration, not the 900s grid"
         );
 
-        // The gate stays honest WITHIN the family: pull the daily close into
-        // the force-exit window (an in-band refusal would be the guard, so
-        // instead judge at a `now` where the family clock itself runs low —
-        // shift the declaration to end 100s out; 100s < 100_000ms band) and
-        // the same row is refused.
+        // Gate stays honest within the family: shift the declaration to end
+        // 100s out (100s < 100_000ms band) and the same row is refused.
         let mut s2 = Scanner::new(ScannerConfig {
             round_duration_sec: 900,
             min_round_age_sec: 0,
@@ -1240,11 +1252,10 @@ mod tests {
         );
     }
 
-    /// The single-family legacy path is byte-identical: a row declaring 0
-    /// (or the configured 900s) answers to the (venue, cfg) family — the
-    /// exact clock `round_timing_for_venue` folded to before E2 — so every
-    /// pre-E2 verdict (including the sibling-venue per-market refinement)
-    /// reproduces bit for bit.
+    /// Single-family legacy path is byte-identical: a row declaring 0 (or the
+    /// configured 900s) answers to the (venue, cfg) family — the exact clock
+    /// `round_timing_for_venue` folded to before E2 — every pre-E2 verdict
+    /// (including sibling-venue per-market refinement) reproduces bit for bit.
     #[test]
     fn entry_timing_gate_legacy_rows_still_answer_to_the_global_family() {
         let mut s = Scanner::new(ScannerConfig {
@@ -1261,9 +1272,9 @@ mod tests {
         let kalshi = gate_market(kalshi_end, "kalshi");
         s.set_markets(vec![poly.clone(), kalshi.clone()]);
 
-        // The pre-E2 per-venue verdict, verbatim: at 1_630_000 the polymarket
-        // close sits 170s out (< 180 → blocked) and kalshi's 320s out (ok) —
-        // the exact numbers the pre-E2 test pinned.
+        // Pre-E2 per-venue verdict, verbatim: at 1_630_000 polymarket close is
+        // 170s out (< 180 → blocked) and kalshi's 320s out (ok) — the exact
+        // numbers the pre-E2 test pinned.
         let now = 1_630_000i64;
         assert_eq!(
             s.can_trade_reason_for(&poly, now),
@@ -1292,14 +1303,14 @@ mod tests {
         );
     }
 
-    /// #1157: once `set_scanner_round_duration` has been called at runtime, the
-    /// active grid is the selection authority — a market whose declared family
-    /// does not match the active grid is not tradable in this round
-    /// (`NoMarkets`, not waivable), while `market_decl` still governs settlement
-    /// timing only. Before any override the historic per-market declared clock
-    /// is preserved.
+    /// #1272: admission authority is the grid pool (lookup table), not "the
+    /// one current grid". Pins: after account A anchors 300s, account B's 900s
+    /// market still enters — cross-account bleed fixed (a single global grid
+    /// would return `NoMarkets`, since write is per-account while the grid
+    /// was global). Also pins no-write behavior: no grids anchored → a
+    /// 300s-declared market trades its own clock even when the default is 900s.
     #[test]
-    fn runtime_grid_override_makes_active_grid_the_selection_authority() {
+    fn pool_membership_is_the_admission_authority() {
         let mut s = Scanner::new(ScannerConfig {
             round_duration_sec: 900,
             min_round_age_sec: 0,
@@ -1309,72 +1320,74 @@ mod tests {
         let now = 1_000_000i64;
         s.set_markets(vec![gate_market(1_800_000, "polymarket")]);
 
-        // Before any override: a 5m-declared market trades on its own declared
-        // clock even though the boot grid is 900s — historic behavior preserved
-        // ("无写入场景维持现行为").
+        // Nothing anchored: historic posture, a declared market rides its
+        // own clock.
         let mut m5 = gate_market(1_800_000, "polymarket");
         m5.round_duration_sec = 300;
         assert!(
             s.can_trade_reason_for(&m5, now).is_ok(),
-            "no override: declared market trades its own clock"
+            "nothing anchored: a declared market trades its own clock"
         );
 
-        // Runtime override to 1h: mirror Engine::set_scanner_round_duration.
-        s.cfg.round_duration_sec = 3600;
-        s.set_grid_override(true);
+        // Boot backfill (process default 900s) + account A's per-account
+        // write anchors 300s.
+        s.set_grids(vec![
+            ("polymarket".to_string(), 900),
+            ("polymarket".to_string(), 300),
+        ]);
 
-        // A 5m-declared market is no longer in the active 1h round → blocked,
-        // and the block is structural (NoMarkets, never waivable).
-        assert_eq!(
-            s.can_trade_reason_for(&m5, now),
-            Err(TimingBlock::NoMarkets),
-            "override: 5m market not in the 1h round"
+        // Account B's 900s market: pool has 900 → enters. #1272 regression.
+        let mut m15 = gate_market(1_800_000, "polymarket");
+        m15.round_duration_sec = 900;
+        assert!(
+            s.can_trade_reason_for(&m15, now).is_ok(),
+            "a sibling account's 900s market keeps entering after A anchors 300s"
         );
-
-        // A 1h-declared market IS in the active round (slot 1 of the 3600s grid).
+        // Account A's 300s market: pool has 300 → enters.
+        assert!(
+            s.can_trade_reason_for(&m5, now).is_ok(),
+            "the anchoring account's own family enters"
+        );
+        // A family nobody anchors → structural NoMarkets (not exemptible).
         let mut m1h = gate_market(3_600_000, "polymarket");
         m1h.round_duration_sec = 3600;
-        m1h.round_slot = 1;
-        assert!(
-            s.can_trade_reason_for(&m1h, now).is_ok(),
-            "override: 1h market in the 1h round"
+        assert_eq!(
+            s.can_trade_reason_for(&m1h, now),
+            Err(TimingBlock::NoMarkets),
+            "a family nobody anchors is not enterable"
         );
-
-        // An undeclared market falls back to the active grid → in the active round.
-        let mut m0 = gate_market(3_600_000, "polymarket");
+        // Undeclared rows ride the cfg grid (900), pool has it → enters.
+        let mut m0 = gate_market(1_800_000, "polymarket");
         m0.round_duration_sec = 0;
         assert!(
             s.can_trade_reason_for(&m0, now).is_ok(),
-            "override: undeclared market rides the active grid"
+            "undeclared rows ride the configured grid"
         );
 
-        // #1165 L4: the override is a SELECTION authority only — the read views
-        // keep every row's own family clock. The in-flight 5m round (the round
-        // a position is held in when the grid was overridden: its expiry slot
-        // is the 5m family's current slot + 1, expiry 1350 s → slot 4 at
-        // now=1000 s) stays a live read row until natural settlement, even
-        // though entries into its family are refused.
+        // #1165 L4: pool is admission-only, not a read-view filter —
+        // in-flight rounds stay visible. 5m family slot at now=1000s is 3,
+        // so round_slot 4 is in-flight.
         let mut m5_inflight = gate_market(1_350_000, "polymarket");
         m5_inflight.round_duration_sec = 300;
         m5_inflight.round_slot = 4;
         assert!(
             !s.is_live_round_row(&m5, now),
-            "override: a 5m row whose family round already settled is not live"
+            "a 5m row whose family round already settled is not live"
         );
         assert!(
             s.is_live_round_row(&m5_inflight, now),
-            "override: the in-flight 5m round stays visible until natural settlement"
+            "the in-flight 5m round stays visible until natural settlement"
         );
         assert!(
-            s.is_live_round_row(&m1h, now),
-            "override: 1h row live on 1h grid"
+            s.is_live_round_row(&m15, now),
+            "the 900s row is live on the 900s grid"
         );
     }
 
-    /// #1157: repeated evaluations of one `(token, grid)` emit INFO once
-    /// (further hits are DEBUG). A new token or grid logs again.
+    /// 拒绝日志去重口径：一个 `(venue, 族时长)` 只 INFO 一次（重复是 DEBUG），
+    /// 换 venue 或换族再 INFO 一次。去重键是「族」而非「token」。
     #[test]
-    fn off_grid_refusal_info_is_once_per_token_and_grid() {
+    fn off_pool_refusal_info_is_once_per_venue_and_family() {
         use tracing::Level;
         use tracing_subscriber::layer::SubscriberExt as _;
         use tracing_subscriber::registry;
@@ -1385,7 +1398,7 @@ mod tests {
             min_time_left_sec: 0,
             ..Default::default()
         });
-        s.set_grid_override(true);
+        s.anchor_grid("polymarket", 300);
         let now = 1_000_000i64;
         let mut sol = gate_market(1_800_000, "polymarket");
         sol.asset = "SOL".into();
@@ -1394,13 +1407,13 @@ mod tests {
         sol.round_duration_sec = 900;
         s.set_markets(vec![sol.clone()]);
 
-        let (capture, got) = OffGridLogCapture::new();
+        let (capture, got) = OffPoolLogCapture::new();
         tracing::subscriber::with_default(registry().with(capture), || {
             for _ in 0..3 {
                 assert_eq!(
                     s.can_trade_reason_for(&sol, now),
                     Err(TimingBlock::NoMarkets),
-                    "off-grid entry stays refused on every tick"
+                    "an unanchored family stays refused on every tick"
                 );
             }
         });
@@ -1408,7 +1421,7 @@ mod tests {
         assert_eq!(
             levels.iter().filter(|l| **l == Level::INFO).count(),
             1,
-            "INFO once for the repeated (token, grid): {levels:?}"
+            "INFO once for the repeated (venue, family): {levels:?}"
         );
         assert_eq!(
             levels.iter().filter(|l| **l == Level::DEBUG).count(),
@@ -1416,20 +1429,16 @@ mod tests {
             "the two repeats are debug, not info: {levels:?}"
         );
         assert_eq!(
-            s.off_grid_refusal_logged.lock().expect("set").len(),
+            s.off_pool_refusal_logged.lock().expect("set").len(),
             1,
-            "the dedupe set grows once for the repeated market"
+            "the dedupe set grows once for the repeated family"
         );
 
         let mut eth = sol.clone();
         eth.asset = "ETH".into();
         eth.up_token_id = "eth-up".into();
-        let (capture, got) = OffGridLogCapture::new();
+        let (capture, got) = OffPoolLogCapture::new();
         tracing::subscriber::with_default(registry().with(capture), || {
-            assert_eq!(
-                s.can_trade_reason_for(&eth, now),
-                Err(TimingBlock::NoMarkets)
-            );
             assert_eq!(
                 s.can_trade_reason_for(&eth, now),
                 Err(TimingBlock::NoMarkets)
@@ -1438,20 +1447,17 @@ mod tests {
         let levels = got.lock().expect("capture").clone();
         assert_eq!(
             levels.iter().filter(|l| **l == Level::INFO).count(),
-            1,
-            "a different token on the same grid logs INFO once: {levels:?}"
+            0,
+            "the same (venue, family) does not log INFO again: {levels:?}"
         );
-        assert_eq!(s.off_grid_refusal_logged.lock().expect("set").len(), 2);
+        assert_eq!(s.off_pool_refusal_logged.lock().expect("set").len(), 1);
 
-        s.cfg.round_duration_sec = 3600;
-        let (capture, got) = OffGridLogCapture::new();
+        let mut kalshi = sol.clone();
+        kalshi.venue = "kalshi".into();
+        let (capture, got) = OffPoolLogCapture::new();
         tracing::subscriber::with_default(registry().with(capture), || {
             assert_eq!(
-                s.can_trade_reason_for(&sol, now),
-                Err(TimingBlock::NoMarkets)
-            );
-            assert_eq!(
-                s.can_trade_reason_for(&sol, now),
+                s.can_trade_reason_for(&kalshi, now),
                 Err(TimingBlock::NoMarkets)
             );
         });
@@ -1459,51 +1465,39 @@ mod tests {
         assert_eq!(
             levels.iter().filter(|l| **l == Level::INFO).count(),
             1,
-            "the same token on a new active grid logs INFO once more: {levels:?}"
+            "a sibling venue's same family logs INFO once: {levels:?}"
         );
-        assert_eq!(s.off_grid_refusal_logged.lock().expect("set").len(), 3);
+        assert_eq!(s.off_pool_refusal_logged.lock().expect("set").len(), 2);
 
-        let mut on_grid = sol.clone();
-        on_grid.round_duration_sec = 3600;
+        s.anchor_grid("polymarket", 900);
         assert!(
-            s.can_trade_reason_for(&on_grid, now).is_ok(),
-            "a family that matches the active grid is not an off-grid refusal"
+            s.can_trade_reason_for(&sol, now).is_ok(),
+            "an anchored family is not a refusal"
         );
         assert_eq!(
-            s.off_grid_refusal_logged.lock().expect("set").len(),
-            3,
-            "an on-grid row does not join the dedupe set"
+            s.off_pool_refusal_logged.lock().expect("set").len(),
+            2,
+            "an admitted row does not join the dedupe set"
         );
     }
 
-    /// `target = "engine"` events for the #1157 line. Thread-local subscriber.
+    /// `target = "engine"` events for the grid-pool refusal line.
     #[derive(Clone)]
-    struct OffGridLogCapture(Arc<Mutex<Vec<tracing::Level>>>);
+    struct OffPoolLogCapture(Arc<Mutex<Vec<tracing::Level>>>);
 
-    impl OffGridLogCapture {
+    impl OffPoolLogCapture {
         fn new() -> (Self, Arc<Mutex<Vec<tracing::Level>>>) {
             let buf = Arc::new(Mutex::new(Vec::new()));
             (Self(buf.clone()), buf)
         }
-    }
 
-    struct OffGridMessage<'a>(&'a mut String);
-
-    impl tracing::field::Visit for OffGridMessage<'_> {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            if field.name() == "message" {
-                self.0.push_str(&format!("{value:?}"));
-            }
-        }
-
-        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-            if field.name() == "message" {
-                self.0.push_str(value);
-            }
+        #[allow(dead_code)]
+        fn levels(&self) -> Vec<tracing::Level> {
+            self.0.lock().expect("capture").clone()
         }
     }
 
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for OffGridLogCapture {
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for OffPoolLogCapture {
         fn on_event(
             &self,
             event: &tracing::Event<'_>,
@@ -1513,14 +1507,28 @@ mod tests {
                 return;
             }
             let mut msg = String::new();
-            event.record(&mut OffGridMessage(&mut msg));
-            if !msg.contains("round grid override") {
-                return;
+            event.record(&mut OffPoolMessage(&mut msg));
+            if msg.contains("round grid pool") {
+                self.0
+                    .lock()
+                    .expect("capture")
+                    .push(*event.metadata().level());
             }
-            self.0
-                .lock()
-                .expect("capture")
-                .push(*event.metadata().level());
+        }
+    }
+
+    struct OffPoolMessage<'a>(&'a mut String);
+
+    impl tracing::field::Visit for OffPoolMessage<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.push_str(&format!("{value:?}"));
+            }
+        }
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "message" {
+                self.0.push_str(value);
+            }
         }
     }
 }

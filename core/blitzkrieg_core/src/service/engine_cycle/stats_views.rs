@@ -460,6 +460,11 @@ impl Core {
             "tops": self.stats.tops,
             "spots": self.stats.spots,
             "rounds": self.stats.rounds,
+            // #1274: JSONL append failure count — durable writes that were
+            // dropped. Trading never stops on this (fail-open); it is purely
+            // an observability signal, readable via `engine.stats` and the
+            // panel's `/api/ping` probe.
+            "jsonlWriteFailures": crate::jsonl::append_failures(),
             // issue #1199 R2: is the OPEN database an empty one? `true` = the
             // store is open and carries NO data (zero `account_risk` rows, no
             // `import_v1` marker) — the panel's reads and writes are landing
@@ -869,7 +874,7 @@ impl Core {
     /// 深度卡每资产出现两行、选择器按 (venue,asset) 撞重复 key。与
     /// `engine.round` 同判据：到期 slot = 当前 slot + 1（正在交易的一轮），
     /// round_slot == 0（老语料 serde default）照旧放行；再先到先得唯一化。
-    /// 判定钟由调用方传入（`round_state` / `current_slot` 同风格）：窗口边
+    /// 判定钟由调用方传入（`round_state` / `slot_at` 同风格）：窗口边
     /// 界附近「喂入轮恰好是视图当下认定的 trading slot」是真实链路里插件
     /// 5s 轮询自带的性质，测试要精确钉住这个关系就不能赌宿主墙钟不翻格。
     ///
@@ -877,13 +882,12 @@ impl Core {
     /// `is_live_round_row` —— 每行按自己的 (venue, duration) 族钟判定
     /// 「到期 slot = 该族当前 slot + 1」，`engine.round` 行情行（ipc/server）
     /// 与本视图同谓词。老语料（round_slot == 0）无条件放行，单族部署下
-    /// 族钟 ≡ 全局网格（偏移 0、行声明 ≡ cfg），判定与升级前的
-    /// `current_slot(now) + 1` 逐位一致。
+    /// 族钟 ≡ 全局网格（偏移 0、行声明 ≡ cfg），判定与升级前「全局网格
+    /// slot + 1」逐位一致。
     ///
     /// 选族（多族同 (venue,asset)）也收归同一入口
     /// [`crate::scanner::Scanner::live_round_rows`]：深度行与行情卡必须指向
-    /// 同一族，否则同一页上「盘口在刷、行情卡不动」—— 用户在 2026-11-17
-    /// 的实机截图里看到的就是这个形状。
+    /// 同一族，否则同一页上「盘口在刷、行情卡不动」。
     pub fn books_view(&self, max_levels: usize, now: i64) -> Vec<AssetBooksView> {
         let Some(engine) = self.engine.as_ref() else {
             return Vec::new();

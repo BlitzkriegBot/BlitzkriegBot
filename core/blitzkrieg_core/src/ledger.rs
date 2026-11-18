@@ -219,8 +219,13 @@ impl Ledger {
                 ref_: ref_.to_string(),
                 fee_source: fee_source.to_string(),
             };
-            if let Some(path) = self.journal_path.clone() {
-                crate::jsonl::append(&path, &entry);
+            if let Some(path) = self.journal_path.clone()
+                && !crate::jsonl::append(&path, &entry)
+            {
+                tracing::warn!(
+                    path = %path.display(),
+                    "ledger journal append failed — entry kept in memory, not durable; trading continues"
+                );
             }
             if self.journal.len() == JOURNAL_CAP {
                 self.journal.pop_front();

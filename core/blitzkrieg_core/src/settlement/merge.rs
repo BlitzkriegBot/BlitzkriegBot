@@ -9,7 +9,8 @@
 
 use rust_decimal::Decimal;
 
-use super::{JournalLine, MergeClaim, SettlementBook, backoff_ms};
+use super::claims::MergeClaim;
+use super::{JournalLine, SettlementBook, backoff_ms};
 
 impl SettlementBook {
     // ── Merge receivables (#461) ────────────────────────────────────────────

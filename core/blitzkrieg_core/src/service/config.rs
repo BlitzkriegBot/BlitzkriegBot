@@ -11,17 +11,27 @@
 //! the split. Items that were file-private in `service.rs` keep their old
 //! visibility from the service module's point of view via `pub(super)`.
 
-use super::Core;
 use crate::model::*;
-use crate::ome::AppliedFillRecord;
 use crate::position::PositionConfig;
-use crate::reconcile::{AuditReport, CashIdentity};
 use crate::risk::RiskConfig;
+use crate::sim::FillModel;
 use rust_decimal::Decimal;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
+mod engine;
 mod fee;
+mod records;
+mod types;
+
+#[cfg(test)]
+mod tests;
+
+pub use engine::*;
 pub use fee::*;
+pub use records::*;
+pub use types::*;
 
 #[derive(Debug, Clone)]
 pub struct CoreConfig {
@@ -46,7 +56,7 @@ pub struct CoreConfig {
     /// account → falls back to `default_round_duration_sec`. This is the
     /// single source of truth for timing math (slot derivation, expiry, stop
     /// tightening) — replacing the old global `round_duration_sec`.
-    pub account_round_durations: std::collections::HashMap<String, i64>,
+    pub account_round_durations: HashMap<String, i64>,
     /// #1170 (方案 A): per-strategy round-family bindings — the strategy name
     /// (in [`crate::engine::strategy_env_fold`] spelling) → the round duration
     /// (sec) the package trades. Populated at boot from the
@@ -56,7 +66,7 @@ pub struct CoreConfig {
     /// market rows — the multi-family cache poisoning #1170 diagnosed becomes
     /// structurally impossible. Empty map = every strategy unbound: the
     /// historic dispatch, byte-identical.
-    pub strategy_round_families: std::collections::HashMap<String, i64>,
+    pub strategy_round_families: HashMap<String, i64>,
     /// Fallback round length for accounts without an explicit
     /// `ACCOUNT_<ID>_ROUND_DURATION_SEC`. Populated from
     /// `ACCOUNT_DEFAULT_ROUND_DURATION_SEC` env key (default 900), or from
@@ -85,7 +95,7 @@ pub struct CoreConfig {
     /// slug families. The kernel holds no hardcoded label table of its own:
     /// `round_duration.get` renders exactly the labels the plugins claimed,
     /// and a duration missing here reads unlabeled.
-    pub round_labels: std::collections::BTreeMap<i64, &'static str>,
+    pub round_labels: BTreeMap<i64, &'static str>,
     /// Where the effective round length came from — one of `cli` / `env` /
     /// `runtime` / `toml` / `default`. The boot resolution owns the spelling;
     /// `round_duration.get` surfaces it so the UI can say "an explicit flag
@@ -115,7 +125,7 @@ pub struct CoreConfig {
     /// 打开 [`crate::store::SqliteStore`] 并 fail-closed（打开失败拒绝启动，
     /// 绝不静默降级成无存储）。`None` = 无存储（回测、多数进程内测试）：
     /// 所有写面如实拒绝，绝不写 `.env`。`.env` 的读面不受本字段影响。
-    pub db_path: Option<std::path::PathBuf>,
+    pub db_path: Option<PathBuf>,
     /// Every registered plugin's DECLARED credential env names (issue 648,
     /// `plugin → [env var name]` from `MarketPlugin::required_credential_env`),
     /// computed once at boot from the registry — the same report posture as
@@ -123,7 +133,7 @@ pub struct CoreConfig {
     /// validation and the RFC #541 ready predicates all read it from here; the
     /// kernel holds no hardcoded venue→env table of its own. Empty map = no
     /// credential-bearing plugin is compiled in.
-    pub credential_vars: std::collections::BTreeMap<String, Vec<String>>,
+    pub credential_vars: BTreeMap<String, Vec<String>>,
     /// The account book's own legacy path (`user_layer/configs/accounts.toml`
     /// in production; retired as a configuration source by issue 751/923 —
     /// now the write-gate basis) — the write half of `account.venue.set`
@@ -336,7 +346,7 @@ pub struct CoreConfig {
     pub entry_maker_timeout_ms: i64,
     /// Fill-realism model for the dry matcher (P-1.2). Default = identity, so the
     /// live/dry path is unchanged; a backtest raises slippage/latency/probability.
-    pub fill_model: crate::sim::FillModel,
+    pub fill_model: FillModel,
     /// Where to mirror every market-data event the engine consumes (P-1.3).
     /// None = off (default). Used to build the local L2/tick corpus a backtest
     /// replays.
@@ -553,508 +563,6 @@ impl UnverifiedExpiryPolicy {
 /// quietly sit in the panel's receivable number forever.
 pub const RECEIVABLE_MAX_AGE_MS_DEFAULT: i64 = 172_800_000;
 
-impl CoreConfig {
-    /// Build the engine config from this core config — the ONE mapping used by
-    /// both the live server and the backtester, so a replay drives the identical
-    /// engine a live run would (P-1.2).
-    pub fn engine_config(&self) -> crate::engine::EngineConfig {
-        crate::engine::EngineConfig {
-            scanner: crate::scanner::ScannerConfig {
-                assets: self.assets.clone(),
-                round_duration_sec: self.default_round_duration_sec,
-                min_round_age_sec: self.min_round_age_sec,
-                min_time_left_sec: self.positions.exit.min_time_left_sec,
-            },
-            trend: crate::signal::TrendConfig {
-                confirm_sec: self.trend_confirm_sec,
-                window_floor_ms: self.trend_window_floor_ms,
-                ..Default::default()
-            },
-            spread_arb: {
-                let mut sa = crate::signal::SpreadArbConfig {
-                    trend_confirm_sec: self.trend_confirm_sec,
-                    ..Default::default()
-                };
-                if let Some(v) = self.spread_arb_trend_entry_factor {
-                    sa.trend_entry_factor = v;
-                }
-                if let Some(v) = self.spread_arb_entry_min_obi {
-                    sa.entry_min_obi = v;
-                }
-                if let Some(v) = self.spread_arb_entry_max_spread_pct {
-                    sa.entry_max_spread_pct = v;
-                }
-                if let Some(v) = self.spread_arb_entry_dip_max_pct {
-                    sa.entry_dip_max_pct = v;
-                }
-                if let Some(v) = self.spread_arb_entry_bounce_min_pct {
-                    sa.entry_bounce_min_pct = v;
-                }
-                if let Some(v) = self.spread_arb_entry_bounce_window_sec {
-                    sa.entry_bounce_window_sec = v;
-                }
-                sa
-            },
-            size_usd: self.size_usd,
-            min_shares: self.min_shares,
-            max_shares: self.max_shares,
-            size_pct: self.size_pct,
-            // #205: the runtime freshness budget. It flows through this one
-            // mapping, so a live server and a backtest replay see the same value.
-            max_orderbook_stale_ms: self.max_orderbook_stale_ms,
-            strategy_sizes: self
-                .strategy_limits
-                .iter()
-                .map(|(name, limit)| (name.clone(), limit.sizing()))
-                .collect(),
-            ..Default::default()
-        }
-    }
-
-    /// Issue #1189 (PR-D): the share band for one account — account row wins,
-    /// a missing row falls back to the global `min_shares` / `max_shares`.
-    pub fn share_band_for(&self, account_id: &str) -> (Decimal, Decimal) {
-        (
-            self.account_min_shares
-                .get(account_id)
-                .copied()
-                .unwrap_or(self.min_shares),
-            self.account_max_shares
-                .get(account_id)
-                .copied()
-                .unwrap_or(self.max_shares),
-        )
-    }
-
-    /// Issue #1189 (PR-D): the market plugin for one account — account row
-    /// wins, a missing row falls back to the caller-supplied `fallback`
-    /// (the `RUNTIME_MARKET_PLUGIN` env or a compiled default; resolved by
-    /// the caller, never hard-coded here).
-    pub fn market_plugin_for(&self, account_id: &str, fallback: &str) -> String {
-        self.account_market_plugins
-            .get(account_id)
-            .cloned()
-            .unwrap_or_else(|| fallback.to_string())
-    }
-
-    /// Install the engine described by this config (the live server's startup
-    /// step, reused verbatim by the backtester).
-    ///
-    /// The strategy selection is applied through the same `set_strategy_enabled`
-    /// the IPC method uses, so a session started with `--enable-strategy` and one
-    /// toggled at runtime end up in exactly the same state (including the Shadow
-    /// Evolution re-registration the toggle triggers). Afterwards the effective
-    /// enabled-set is persisted (when `strategy_state_path` is configured) so
-    /// the next boot replays it — the boot lists and the runtime toggles write
-    /// the same file, and the last explicit intent wins.
-    ///
-    /// Returns `Err` when an EXPLICIT request resolved to zero live strategies
-    /// (#265): the operator named strategies and not one of them exists, so the
-    /// kernel would boot with a healthy-looking banner and trade nothing. The
-    /// refusal belongs to the caller (the server ends the boot, the backtester
-    /// fails the run) rather than to this method, so the facts stay inspectable
-    /// and an embedded caller decides what a zero-strategy engine means to it.
-    /// [`CoreConfig::allow_zero_strategies`] is the acknowledged opt-out.
-    pub fn install_engine(&self, core: &mut Core) -> Result<(), String> {
-        core.enable_engine(crate::engine::Engine::new(self.engine_config()));
-        core.seed_scanner_grids(self);
-        // #1170 (方案 A): push the parsed family bindings into the engine
-        // BEFORE the strategy packages load — registration stamps each scope
-        // from the engine's table, so every load/reload/rebuild inherits the
-        // binding without another push.
-        core.apply_strategy_round_families(&self.strategy_round_families);
-        self.load_strategy_dir(core);
-        self.load_lua_strategy_dir(core);
-        for name in &self.enabled_strategies {
-            // E27 (§8.2): the startup `--enable-strategy` request runs through
-            // the SAME handshake as `strategy.enable`: a strategy the active
-            // plugin cannot serve is SKIPPED with an ERROR line — never
-            // enabled silently, never able to trade in a market it declared
-            // itself unfit for.
-            let (found, applied, refusal) = core.set_strategy_enabled_checked(name, true);
-            if let Some(reason) = refusal {
-                tracing::error!(
-                    strategy = name,
-                    reason = reason,
-                    "startup enable refused by the market-mode handshake; strategy skipped"
-                );
-                continue;
-            }
-            if !found || !applied {
-                tracing::warn!(
-                    strategy = name,
-                    "unknown strategy requested at startup; ignored"
-                );
-            }
-        }
-        for name in &self.disabled_strategies {
-            if !core.set_strategy_enabled(name, false) {
-                tracing::warn!(
-                    strategy = name,
-                    "unknown strategy requested at startup; ignored"
-                );
-            }
-        }
-        // The persisted enabled-set survives a plugin switch: a strategy the
-        // HANDSHAKE refused at boot stays in `strategy-state.json` under its
-        // name, so switching the market plugin back (or to any other plugin
-        // that serves it) re-enables it with no manual re-toggling. What is
-        // recorded is the operator's INTENT; the handshake gate keeps the
-        // refused strategy OFF for this session without erasing the intent.
-        // (2026-10: the first cut saved the effective set only, so one
-        // plugin switch silently stripped every incompatible strategy from
-        // the file — and switching back brought nothing back.) An explicit
-        // `--disable-strategy` / runtime disable still removes the name:
-        // that is a decision, not a market mismatch.
-        if let Some(path) = &self.strategy_state_path {
-            let mut enabled = core.enabled_strategy_names();
-            for name in &self.enabled_strategies {
-                if !enabled.contains(name) && !self.disabled_strategies.contains(name) {
-                    let known = core.strategy_names().iter().any(|n| n == name);
-                    if known {
-                        // Registered but handshake-refused this boot: keep
-                        // the intent so a future session can serve it.
-                        enabled.push(name.clone());
-                    }
-                }
-            }
-            crate::strategy_state::save(std::path::Path::new(path), &enabled);
-        }
-        // ④ 统一映射：install_engine 换掉了整个 Engine（插件切换、进化重
-        // 注册），Engine 内存里的 confirmed 映射会一起丢 —— 账本是唯一真值
-        // 源，每次安装后把 confirmed 事件回灌一遍。revocation 走
-        // `unified.revoke`（service 层同步删 Engine 条目），Engine 自身只有
-        // put 语义。
-        if let Some(e) = core.engine.as_mut() {
-            for event in core.unified_ledger.events() {
-                e.put_unified_mapping(event.clone());
-            }
-        }
-        self.strategy_startup_self_check(core)
-    }
-
-    /// The startup self-check (#265): state what was REQUESTED, what RESOLVED and
-    /// what is enabled, and refuse a boot that resolves an explicit request to
-    /// nothing.
-    ///
-    /// The line is printed unconditionally, refusals included, because it is the
-    /// contract `scripts/walk-forward-sweep.mjs` reads back out of the kernel's
-    /// log: a replay that could not resolve the strategies it asked for must be
-    /// recognisable as such rather than arriving as a report with zero trades
-    /// ("the strategy had no signal" and "there was no strategy" have to be
-    /// different answers).
-    ///
-    /// A name the operator ALSO disabled explicitly is not part of the request —
-    /// `--enable-strategy x --disable-strategy x` asked for nothing — so it can
-    /// never be the reason this refuses.
-    ///
-    /// "Resolved" is asked of the live registry (`Core::strategy_names`), not of
-    /// the enable loop: the question is whether the name exists as a strategy in
-    /// this process, which is exactly what a missing library makes false. The
-    /// persisted set is deliberately not consulted — a name that no longer
-    /// resolves there was never requested by this invocation.
-    pub(super) fn strategy_startup_self_check(&self, core: &Core) -> Result<(), String> {
-        let requested: Vec<&str> = self
-            .requested_strategies
-            .iter()
-            .map(String::as_str)
-            .filter(|n| !self.disabled_strategies.iter().any(|d| d.as_str() == *n))
-            .collect();
-        let registered = core.strategy_names();
-        let resolved = requested
-            .iter()
-            .filter(|n| registered.iter().any(|r| r == *n))
-            .count();
-        let enabled = core.enabled_strategy_names();
-        eprintln!(
-            "blitzkrieg-core: strategy startup self-check: requested={} resolved={} enabled=[{}]",
-            requested.len(),
-            resolved,
-            enabled.join(", ")
-        );
-        if requested.is_empty() || resolved > 0 || self.allow_zero_strategies {
-            return Ok(());
-        }
-        Err(format!(
-            "refusing to start: none of the {} explicitly requested strateg{} resolved to a live \
-         strategy ({}), so this kernel would run with no strategy at all — while reporting \
-         itself healthy (the engine's live set is [{}]). Take the libraries from the strategy \
-         directory (`--strategy-dir`, `BK_STRATEGY_DIR`, or the default `user_layer/strategies` \
-         of the checkout the binary lives in) — every library there is refused unless it sits \
-         under an approved strategy root (`{}` under a repository root, or a directory named \
-         in {}) — or acknowledge the empty set with --allow-zero-strategies. See the \
-         `strategy auto-load` lines above for what was rejected and why",
-            requested.len(),
-            if requested.len() == 1 { "y" } else { "ies" },
-            requested.join(", "),
-            enabled.join(", "),
-            crate::strategy_engine::loader::APPROVED_ROOTS.join("`, `"),
-            crate::strategy_engine::loader::ENV_ALLOW_DIRS,
-        ))
-    }
-
-    /// Auto-load every strategy library under `strategy_dir` and enable it.
-    ///
-    /// This is the "drop a strategy in the folder and it works" path: the tree
-    /// is walked (bounded depth) so both a bare `libfoo.dylib` and a
-    /// `cargo build --release` product under `target/release/` are found, each
-    /// library goes through the same policy-checked dlopen the IPC
-    /// `strategy.load` uses, and a load that fails is reported and skipped —
-    /// one broken file never blocks the rest or the kernel itself. Duplicate
-    /// copies of the same strategy (debug + release) are skipped after the
-    /// first registration: the engine refuses a second instance of a live name.
-    /// Runs BEFORE `enabled_strategies` so a config that names a just-loaded
-    /// library enables it in the same pass.
-    pub(super) fn load_strategy_dir(&self, core: &mut Core) {
-        #[cfg(feature = "strategy-loading")]
-        let Some(dir) = &self.strategy_dir else {
-            return;
-        };
-        #[cfg(feature = "strategy-loading")]
-        {
-            let mut libs = Vec::new();
-            collect_strategy_libs(std::path::Path::new(dir), 0, &mut libs);
-            // Plain path order. It used to rank the shipped legs first
-            // (spread_arb, then trend_follow, then mean_reversion) so a
-            // debug/release pair resolved to a predictable winner; with no
-            // shipped strategies the ranking had no reachable branch left, and
-            // path order alone still makes the first copy the one that wins.
-            libs.sort();
-            for path in libs {
-                // E27 (§8.2 row 1): the startup scan is the LOG-ONLY handshake
-                // site — an incompatible library registers disabled with the
-                // mismatch on its receipt; the enable gate is where refusal
-                // happens.
-                let receipt = core.load_strategy_lib_scan(&path.to_string_lossy());
-                // The success receipt is exactly "<name>@<version> registered
-                // into the engine dispatch…"; a duplicate registration is
-                // REJECTED with a message that itself contains the word
-                // "registered", so the match must be on the full success shape.
-                // A duplicate is benign — debug and release builds of the same
-                // crate both land in the tree — so it is reported as skipped,
-                // not failed, and the first copy (sorted order) wins.
-                if receipt.contains("already registered") {
-                    eprintln!(
-                        "blitzkrieg-core: strategy auto-load skipped (duplicate): {}",
-                        path.display()
-                    );
-                    continue;
-                }
-                let ok = receipt.contains("registered into the engine dispatch");
-                // The message text must NOT contain the substring "auto-load":
-                // the E30 gate takes the FIRST stream line carrying that
-                // marker plus the package name, so a tracing line here would
-                // shadow the receipt eprintln below.
-                tracing::info!(path = %path.display(), ok, receipt = %receipt, "strategy package scanned");
-                // The receipt IS this line's payload: the E30 gate
-                // (lua-sandbox-check.mjs) parses `auto-load (ok|FAILED): …`
-                // from the stream — a fixed-shape status summary (name@version,
-                // registration phrase, disabled marker), not free kernel text.
-                eprintln!(
-                    "blitzkrieg-core: strategy auto-load {}: {}",
-                    if ok { "ok" } else { "FAILED" },
-                    receipt
-                );
-            }
-        }
-        #[cfg(not(feature = "strategy-loading"))]
-        {
-            let _ = core;
-        }
-    }
-
-    /// E30 (§6.6): scan `lua_strategy_dir` for Lua strategy packages and
-    /// register each one DISABLED — the Lua mirror of `load_strategy_dir`.
-    /// Load failures are reported and skipped, never fatal; a duplicate name
-    /// is skipped (the first package in sorted order wins, like dylibs).
-    pub(super) fn load_lua_strategy_dir(&self, core: &mut Core) {
-        let Some(dir) = &self.lua_strategy_dir else {
-            return;
-        };
-        for pkg in
-            crate::strategy_engine::lua_loader::discover_lua_packages(std::path::Path::new(dir))
-        {
-            let receipt = core.load_lua_package_inner(&pkg, false);
-            if receipt.contains("already registered") {
-                eprintln!(
-                    "blitzkrieg-core: lua strategy auto-load skipped (duplicate): {}",
-                    pkg.display()
-                );
-                continue;
-            }
-            let ok = receipt.contains("registered into the engine dispatch");
-            // Same "no auto-load substring" rule as the dylib scan above —
-            // the tracing line must not shadow the receipt eprintln below.
-            tracing::info!(pkg = %pkg.display(), ok, receipt = %receipt, "lua strategy package scanned");
-            // Same contract as the dylib scan above: the E30 gate parses
-            // `auto-load (ok|FAILED): <receipt>` from the stream — a fixed-shape
-            // status summary, not free kernel text.
-            eprintln!(
-                "blitzkrieg-core: lua strategy auto-load {}: {}",
-                if ok { "ok" } else { "FAILED" },
-                receipt
-            );
-        }
-    }
-}
-
-/// Depth-bounded walk gathering `*.dylib`/`*.so` files under `dir`.
-///
-/// Bounded because `strategy_dir` may point at a crate checkout whose `target/`
-/// tree is enormous; 6 levels comfortably covers `target/<profile>/deps/` while
-/// never descending into the dependency graph's own build dirs. Symlinks are
-/// not followed (a loop must not hang startup); unreadable subtrees are skipped.
-pub(super) fn collect_strategy_libs(
-    dir: &std::path::Path,
-    depth: usize,
-    out: &mut Vec<std::path::PathBuf>,
-) {
-    const MAX_DEPTH: usize = 6;
-    if depth > MAX_DEPTH {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(ft) = entry.file_type() else { continue };
-        let path = entry.path();
-        if ft.is_dir() {
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if name.starts_with('.')
-                || name == "deps"
-                || name == "build"
-                || name == "incremental"
-                || name.contains("probe")
-                || name.contains("devcheck")
-            {
-                continue;
-            }
-            collect_strategy_libs(&path, depth + 1, out);
-        } else if matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("dylib") | Some("so")
-        ) {
-            // Probe libraries (`devcheck_probe`) are generated into this tree by
-            // `strategy-devcheck`, loaded through IPC `strategy.load`, and deleted
-            // again. Auto-loading one at startup would make that gate measure a
-            // strategy it did not register.
-            if let Some(file_name) = path.file_name().and_then(|f| f.to_str())
-                && (file_name.contains("probe") || file_name.contains("devcheck"))
-            {
-                continue;
-            }
-            out.push(path);
-        }
-    }
-}
-
-/// Entry caps and sizing for one strategy (E2-a). Every field is optional;
-/// `None` = inherit the global value (no cap / global sizing). A per-strategy
-/// sizing override can only tighten the global risk band, never widen it.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StrategyLimit {
-    /// Max simultaneously open positions held by the strategy.
-    pub max_open_positions: Option<usize>,
-    /// Max notional (USD, sum of entry cost) held open by the strategy. A new
-    /// entry is rejected when open notional + its own notional would exceed it.
-    #[serde(with = "crate::decimal::opt", default)]
-    pub max_open_notional_usd: Option<Decimal>,
-    /// Target notional per entry (USD). Clamped to the global `size_usd`.
-    #[serde(with = "crate::decimal::opt", default)]
-    pub size_usd: Option<Decimal>,
-    /// Floor on shares per entry. Raised to the global `min_shares` when lower.
-    #[serde(with = "crate::decimal::opt", default)]
-    pub min_shares: Option<Decimal>,
-    /// Ceiling on shares per entry. Clamped to the global `max_shares`.
-    #[serde(with = "crate::decimal::opt", default)]
-    pub max_shares: Option<Decimal>,
-    /// Relative allocation weight (E16/#98): a leg with a weight gets a weighted
-    /// share of the per-entry budget instead of an identical one. Scales the
-    /// leg's own size override or the global `size_usd`; a weight can only
-    /// shrink the budget, and a non-positive weight disables the leg's entries
-    /// entirely.
-    #[serde(with = "crate::decimal::opt", default)]
-    pub size_weight: Option<Decimal>,
-    /// This leg's own equity-relative budget (#202). `None` = the global
-    /// `size_pct`; a value is clamped to it when the global is armed, and
-    /// stands alone when the global is off.
-    #[serde(with = "crate::decimal::opt", default)]
-    pub size_pct: Option<Decimal>,
-}
-
-impl StrategyLimit {
-    /// The sizing knobs this limit overrides (`None` across the board when it
-    /// configures only caps — the engine then uses the globals).
-    pub fn sizing(&self) -> crate::engine::StrategySize {
-        crate::engine::StrategySize {
-            size_usd: self.size_usd,
-            min_shares: self.min_shares,
-            max_shares: self.max_shares,
-            size_weight: self.size_weight,
-            size_pct: self.size_pct,
-        }
-    }
-}
-
-/// E-VA: one strategy's VIRTUAL quota — a risk-layer budget on the
-/// (account, strategy) axis that exists NEXT TO the real cash ledger, never
-/// inside it. A strategy declaring `atomic_batch` (and listed here) reserves
-/// its whole candidate batch against this pot BEFORE the first leg goes out;
-/// an over-cap batch is refused whole, through the same StrategyLimit
-/// rejection accounting (`limit.virtualCap` bucket) — pair legs land
-/// together or not at all.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VirtualAccountLimit {
-    /// The pot's ceiling: the strategy's combined outstanding virtual
-    /// reservation on each listed account (its resting reservations plus any
-    /// not-yet-released batch hold). `None` = no virtual quota (the strategy
-    /// keeps the per-order real-ledger path).
-    #[serde(with = "crate::decimal::opt", default)]
-    pub max_batch_notional_usd: Option<Decimal>,
-    /// Which account scopes this strategy's pot covers. Empty = the pot is
-    /// not armed anywhere (the default-off posture).
-    #[serde(default)]
-    pub accounts: Vec<String>,
-}
-
-/// Overridable Shadow Evolution thresholds (all optional).
-#[derive(Debug, Clone, Default)]
-pub struct ShadowEvolutionTuning {
-    pub min_sample_count: Option<u32>,
-    pub min_win_rate_improvement: Option<Decimal>,
-    pub min_profit_factor_improvement: Option<Decimal>,
-    pub min_observation_secs: Option<i64>,
-    pub cooldown_secs: Option<i64>,
-    pub variant_count: Option<usize>,
-    /// Rolling metrics window (seconds). Settable from the config file, which
-    /// expresses it in minutes (`evaluation_window_minutes`).
-    pub evaluation_window_secs: Option<i64>,
-    /// Per-evolution step ceiling (Lock 2). `main` clamps this to the built-in
-    /// ceiling before it gets here — a config file may tighten the gradient lock
-    /// but nothing may widen it.
-    pub max_gradient: Option<Decimal>,
-    /// Directory for the per-strategy audit files (`<dir>/<strategy>.jsonl`).
-    /// Defaults to `data/evolution`; a harness points it at a scratch directory
-    /// so an experiment never writes into the operator's real audit history.
-    pub audit_dir: Option<String>,
-    /// E13 (#95): start in the unattended mode (`auto_evolve`). The switch is
-    /// also runtime-toggleable and its LAST runtime state is persisted, so this
-    /// only seeds the very first boot.
-    pub auto_evolve: Option<bool>,
-    /// Seconds between DEEP evolution rounds (the config file expresses this
-    /// in minutes; `main` converts).
-    pub evolution_cycle_secs: Option<i64>,
-    /// Seconds an undecided proposal stays decidable (default 7 days).
-    pub proposal_ttl_secs: Option<i64>,
-    /// Knobs one DEEP-cycle variant moves simultaneously (>= 1).
-    pub deep_dims: Option<usize>,
-}
-
 impl Default for CoreConfig {
     fn default() -> Self {
         Self {
@@ -1068,18 +576,18 @@ impl Default for CoreConfig {
             max_consecutive_losses: 3,
             breaker_cooldown_sec: 300,
             round_duration_source: "default",
-            account_round_durations: std::collections::HashMap::new(),
+            account_round_durations: HashMap::new(),
             // #1170 (方案 A): empty = every strategy unbound (the historic
             // whole-table dispatch).
-            strategy_round_families: std::collections::HashMap::new(),
+            strategy_round_families: HashMap::new(),
             default_round_duration_sec: 900,
             round_duration_sec: 900,
             allowed_round_secs: Vec::new(),
-            round_labels: std::collections::BTreeMap::new(),
+            round_labels: BTreeMap::new(),
             runtime_config_path: None,
             env_file_path: None,
             db_path: None,
-            credential_vars: std::collections::BTreeMap::new(),
+            credential_vars: BTreeMap::new(),
             accounts_config_path: None,
             manual_ops_audit_path: None,
             unified_ledger_path: None,
@@ -1189,299 +697,5 @@ impl Default for CoreConfig {
             // Issue #991 boundary 1: the shipped 48h aging bound.
             receivable_max_age_ms: RECEIVABLE_MAX_AGE_MS_DEFAULT,
         }
-    }
-}
-
-/// Append-only journal of the OME's applied-fill idempotency table (issue #178).
-///
-/// The table used to be memory-only, so a restart forgot which venue trade ids
-/// had already been booked and the venue's own re-delivery (a WS replay or the
-/// REST sweep's recent-trade window) booked the same fill a second time — the
-/// position doubled and the cash moved twice. Rebuilding it from `trades.jsonl`
-/// is not possible: that log stores ONE AGGREGATED record per CLOSED position and
-/// carries no venue trade ids at all, so there is nothing to fold a fill key from.
-///
-/// Same shape as the order log: one line per MUTATION (a key's applied size, or
-/// a tombstone when it is evicted), folded latest-wins on load. The file lives
-/// beside the order log because it is the OME's state, and it is compacted to the
-/// live table on restore so it cannot grow across restarts.
-pub(super) struct AppliedFillLog {
-    pub(super) path: std::path::PathBuf,
-}
-
-impl AppliedFillLog {
-    pub(super) fn new(path: impl AsRef<std::path::Path>) -> Self {
-        Self {
-            path: path.as_ref().to_path_buf(),
-        }
-    }
-
-    pub(super) fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-
-    /// Append the mutations. Best effort, like every other log here: a write
-    /// failure must never interrupt trading (the in-memory table stays
-    /// authoritative for this run, and the OME warns when its journal is full).
-    pub(super) fn append(&self, records: &[AppliedFillRecord]) {
-        if records.is_empty() {
-            return;
-        }
-        if let Some(dir) = self.path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let mut buf = String::new();
-        for r in records {
-            match serde_json::to_string(r) {
-                Ok(line) => {
-                    buf.push_str(&line);
-                    buf.push('\n');
-                }
-                Err(e) => tracing::warn!(error = %e, "cannot serialize applied-fill record"),
-            }
-        }
-        use std::io::Write as _;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-        {
-            if let Err(e) = f.write_all(buf.as_bytes()) {
-                tracing::warn!(error = %e, path = %self.path.display(), "applied-fill log append failed");
-            }
-        } else {
-            tracing::warn!(path = %self.path.display(), "cannot open applied-fill log");
-        }
-    }
-
-    /// Load the mutations in file order (the OME folds them). Unparseable lines
-    /// are skipped, never fatal: a corrupt tail must not stop the core from
-    /// starting, and every record kept is a duplicate the table will refuse.
-    pub(super) fn load(&self) -> Vec<AppliedFillRecord> {
-        crate::jsonl::load::<AppliedFillRecord>(
-            &self.path,
-            "applied-fill log: skipped unparseable lines",
-        )
-    }
-
-    /// Rewrite the log as the current table (one line per live key). Called after
-    /// a restore, so the file is the table rather than every mutation ever made.
-    pub(super) fn compact(&self, snapshot: &[AppliedFillRecord]) {
-        let mut buf = String::new();
-        for r in snapshot {
-            match serde_json::to_string(r) {
-                Ok(line) => {
-                    buf.push_str(&line);
-                    buf.push('\n');
-                }
-                Err(e) => tracing::warn!(error = %e, "cannot serialize applied-fill record"),
-            }
-        }
-        // #463: atomic rewrite — the compact runs right after a restore, which
-        // is exactly when a torn file would be trusted as the dedup table.
-        if !crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
-            tracing::warn!(path = %self.path.display(), "applied-fill log compact failed");
-        }
-    }
-}
-
-/// In-kernel accounting audit state (issue #189). Session-scoped: the anchor and
-/// the strike counter describe THIS run's observations, and the durable record is
-/// the audit JSONL.
-#[derive(Debug, Clone, Default)]
-pub(super) struct AuditRuntime {
-    /// Last audit instant (0 = never).
-    pub(super) last_at_ms: i64,
-    /// Last audit that was written to the log even though it passed (heartbeat).
-    pub(super) last_heartbeat_ms: i64,
-    /// The baseline the anchored cash identity is measured from. Taken at the
-    /// first audit whose structural checks pass and NEVER moved while the books
-    /// are wrong — re-anchoring would hide the drift it exists to expose.
-    pub(super) anchor: Option<CashIdentity>,
-    pub(super) report: Option<AuditReport>,
-    /// Consecutive cross-source-only failures; two in a row halt (a single one
-    /// can be a stale venue read).
-    pub(super) cross_source_failures: u32,
-    /// New entries are currently blocked by a failing audit.
-    pub(super) halted: bool,
-    pub(super) halt_reason: String,
-    pub(super) runs: u64,
-    pub(super) failures: u64,
-    /// Where each audit appends its verdict (None = no persistence).
-    pub(super) audit_log_path: Option<String>,
-    /// The last time each venue's cash was SET from that venue rather than
-    /// moved by a fill: venue → `(at_ms, delta)`. The plugin host does this
-    /// deliberately when nothing rests, so the trade-leg check can tell the
-    /// venue's own correction from a local inconsistency instead of halting
-    /// entries over it. Keyed by venue: a realign explains a residual only on
-    /// the book that venue's cash belongs to.
-    pub(super) last_realign: std::collections::HashMap<String, (i64, Decimal)>,
-    /// Issue #921: the audit-instant at which a venue's standing correction was
-    /// last CLAIMED as the explanation for a trade-leg residual (venue →
-    /// at_ms). Present = the correction is spent: it cannot excuse a second
-    /// residual until the venue overwrites the slot with a fresher correction
-    /// (which clears this entry below in `realign_venue_cash`). Mirrors
-    /// `AuditInput.realign_explained_at` into the per-venue runtime state.
-    pub(super) realign_explained: std::collections::HashMap<String, i64>,
-}
-
-/// The kernel's last recorded error, as `engine.stats.lastError` exposes it.
-///
-/// One slot with exactly one writer ([`Core::note_error`]): whichever path went
-/// wrong last — venue refusal, safety net, or the kernel's own refusal of a leg
-/// — the panel banner and any outside observer read the same fact, with the code
-/// that classifies it and the instant it happened. Before #180 the only such
-/// slot was `last_venue_error`, which the taker rejection below never touched,
-/// so `lastError` stayed empty (or stale) while orders were being refused.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LastError {
-    pub ts_ms: i64,
-    pub code: CoreErrorCode,
-    pub message: String,
-}
-
-impl LastError {
-    /// How the LEGACY `engine.stats.lastVenueError` key renders this record.
-    ///
-    /// The shipped panel (`ui/webapp/webui/src/pages/Overview.vue`) renders this
-    /// string as free text, and that is the compatibility this method owes: the
-    /// shape `{ tsMs, message }` and the "last error, newest wins" instant are
-    /// unchanged, so the banner keeps working without a frontend change.
-    ///
-    /// It is NOT byte-identical to the pre-#180 strings on every path, and the
-    /// earlier claim that it was is wrong. The venue-reject path is identical
-    /// (`{:?}` on the code, a colon, the message). The self-check and reconcile
-    /// paths carried NO code prefix before #180 — they were bare prose
-    /// (`"trading self-check failed: …"`, `"reconciliation sweep failed (n): …"`)
-    /// — and now gain one, because one slot with one writer cannot render two
-    /// shapes. Nothing shipped parses those two strings: the panel shows them as
-    /// text, and the only test that reads the key asserts `contains`, not
-    /// equality. `lastError` above is the structured form to migrate to.
-    pub fn legacy_message(&self) -> String {
-        format!("{:?}: {}", self.code, self.message)
-    }
-}
-
-/// One placement's result: the order's id, the status the OME now holds for it,
-/// and — when the kernel itself refused the leg after accepting it (a
-/// dry/read-only taker whose book cannot fill it) — the structured reason.
-///
-/// `status == Rejected` with a `rejection` is the leg the venue would have
-/// killed; `status == Rejected` without one is a leg an external actor (the
-/// venue, a reconcile) retired. Before #180 the drier path returned neither, so
-/// `orders.place` answered a bare `REJECTED` and the caller could not tell "no
-/// crossing liquidity" from "not enough depth" from "risk said no".
-#[derive(Debug, Clone)]
-pub struct PlaceOutcome {
-    pub order_id: OrderId,
-    pub status: OrderStatus,
-    pub rejection: Option<CoreError>,
-}
-
-/// Upper bound on the kernel's pending-close exit-reason table (issue #190).
-///
-/// The table holds one entry per token whose closing SELL has been submitted but
-/// not yet filled — a *pending-close* ledger, not a history — so its live
-/// working set is the engine's tradeable fan-out: the round's tokens across the
-/// configured assets (8 tokens × 3 assets = 24 on the shipped Polymarket
-/// deployment) plus whatever manual flattens add on top. 64 is ≈2.5× the widest
-/// live set, so a legitimate session never reaches the bound; it exists so a leak
-/// is bounded for the life of the process instead of growing forever. Eviction
-/// prefers entries whose position is already gone (stale by construction) and
-/// drops the oldest otherwise; both are counted in `engine.stats.exitReasons`.
-pub(super) const EXIT_REASON_TABLE_MAX: usize = 64;
-
-/// The counter-evidence bar for the dry settlement ladder: a partner-token bid
-/// at or above this names the held leg the loser. Same value as the live
-/// venue path's own decisiveness bar (Gamma's DECISIVE_HIGH, 0.99) — the two
-/// ladders demand the same strength of verdict before they book money.
-pub(crate) const COUNTER_DECISIVE_HIGH: Decimal = rust_decimal_macros::dec!(0.99);
-
-/// #351: a dry-mode taker leg in flight — the fill model prices travel time
-/// (`taker_latency_ms`) and report time (`taker_rtt_ms`), so the leg must
-/// never fill on the decision-time quote. Stage 1 (match) fires at the first
-/// drain with `now >= execute_at_ms` against the book as it stood then
-/// (strictly no future data); stage 2 (report) books the fill or the kill at
-/// the first drain with `now >= report_at_ms`.
-#[derive(Debug, Clone)]
-pub(super) struct InflightTaker {
-    pub(super) order_id: OrderId,
-    /// When the leg arrives at the venue and is matched.
-    pub(super) execute_at_ms: i64,
-    /// When the report (fill or kill) reaches the local books.
-    pub(super) report_at_ms: i64,
-    /// Stage 1: the price the venue would have printed — walk VWAP plus the
-    /// model's slippage, full size (FOK is all-or-nothing).
-    pub(super) matched_price: Option<Decimal>,
-    /// Stage 1: why the venue would have killed the FOK.
-    pub(super) rejected_msg: Option<String>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Issue #1189 (PR-D): the account row wins; a missing row falls back to
-    /// the global band.
-    #[test]
-    fn share_band_for_account_rows_win() {
-        let mut config = CoreConfig::default();
-        config
-            .account_min_shares
-            .insert("A".to_string(), Decimal::from(10));
-        config
-            .account_max_shares
-            .insert("A".to_string(), Decimal::from(20));
-        config
-            .account_min_shares
-            .insert("B".to_string(), Decimal::from(5));
-        config
-            .account_max_shares
-            .insert("B".to_string(), Decimal::from(50));
-        assert_eq!(
-            config.share_band_for("A"),
-            (Decimal::from(10), Decimal::from(20))
-        );
-        assert_eq!(
-            config.share_band_for("B"),
-            (Decimal::from(5), Decimal::from(50))
-        );
-        // No row for C: the global band stands.
-        assert_eq!(
-            config.share_band_for("C"),
-            (config.min_shares, config.max_shares)
-        );
-    }
-
-    /// Issue #1189 (PR-D): the account row wins; a missing row falls back to
-    /// the caller-supplied fallback.
-    #[test]
-    fn market_plugin_for_account_rows_win() {
-        let mut config = CoreConfig::default();
-        config
-            .account_market_plugins
-            .insert("A".to_string(), "polymarket".to_string());
-        config
-            .account_market_plugins
-            .insert("B".to_string(), "kalshi".to_string());
-        assert_eq!(config.market_plugin_for("A", "fallback"), "polymarket");
-        assert_eq!(config.market_plugin_for("B", "fallback"), "kalshi");
-        // No row for C: the fallback stands.
-        assert_eq!(config.market_plugin_for("C", "fallback"), "fallback");
-    }
-
-    /// Issue #1189 (PR-D): empty maps resolve every account to the global
-    /// band — the historical single-account behaviour, byte for byte.
-    #[test]
-    fn share_band_for_empty_map_matches_global() {
-        let config = CoreConfig::default();
-        assert_eq!(
-            config.share_band_for("any"),
-            (config.min_shares, config.max_shares)
-        );
-        assert!(config.account_min_shares.is_empty());
-        assert!(config.account_max_shares.is_empty());
-        assert!(config.account_market_plugins.is_empty());
     }
 }

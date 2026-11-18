@@ -4,7 +4,7 @@
 
 use crate::model::*;
 use crate::ome::Ome;
-use crate::position::{DailyLossStore, OpenPosition, PositionManager};
+use crate::position::{DailyLossStore, PositionManager};
 use crate::risk::{LossBreakers, RiskGate};
 use crate::schema::Event;
 use crate::settlement::SettlementBook;
@@ -17,15 +17,25 @@ use tokio::sync::mpsc;
 
 mod accounts;
 mod assembly;
+mod assembly_boot;
+mod assembly_risk_db;
 mod cockpit_env;
 mod config;
+mod config_gates;
 mod daily_loss_gate;
 mod engine_cycle;
+mod extensions;
 mod helpers;
+mod persistence;
+mod pricing;
 mod risk_admission;
+mod round_duration;
 mod settlement_orders;
 mod strategies;
+mod trading_exit;
 mod trading_reset;
+mod trading_risk_limits;
+mod trading_round_duration;
 mod views;
 
 pub use config::*;
@@ -43,6 +53,12 @@ pub(crate) use risk_admission::{AccountGate, GLOBAL_KILL_ACCOUNT, GateReason};
 // #861: the runtime risk-state cell (path + parsed file) the Core struct
 // holds — same re-export shape as FreezeBook above.
 pub(crate) use risk_admission::RiskStateCell;
+
+// Helpers moved out of the hub into domain children; re-exported so external
+// paths (`crate::service::marketable_exit_price`, `crate::service::build_lua_scope`,
+// `crate::service::reconcile_config_gates` / `_for`) keep resolving.
+pub(crate) use config_gates::{reconcile_config_gate_for, reconcile_config_gates};
+pub(crate) use pricing::marketable_exit_price;
 
 pub struct Core {
     pub(crate) config: CoreConfig,
@@ -571,233 +587,6 @@ const FAST_EVAL_FALLBACK_MS: i64 = 2_000;
 /// time-quantised stamps stay exactly what the every-tick pass produced.
 pub(super) const EXIT_REPORT_BEAT_MS: i64 = 1_000;
 
-impl Core {
-    /// B1b: the round-length family a token belongs to — the market's declared
-    /// duration when it carries one (#354), else the account's own grid
-    /// (`ACCOUNT_<ID>_ROUND_DURATION_SEC`), else the default grid.
-    /// `0` = the token belongs to no live market AND no grid is set anywhere;
-    /// B1b readers (`effective_round_duration_sec`) treat a 0 as "no clock fact".
-    fn round_family_of_token(&self, account_id: &str, token_id: &str) -> i64 {
-        let account_dur = self.account_round_duration(account_id);
-        match self
-            .engine
-            .as_ref()
-            .and_then(|e| e.market_for_token(token_id))
-            .map(|m| m.round_duration_sec)
-        {
-            Some(d) if d > 0 => d,
-            _ => account_dur,
-        }
-    }
-
-    /// Resolve the round duration for a specific account: the account's own
-    /// `ACCOUNT_<ID>_ROUND_DURATION_SEC` if set, else `default_round_duration_sec`.
-    fn account_round_duration(&self, account_id: &str) -> i64 {
-        self.config
-            .account_round_durations
-            .get(account_id)
-            .copied()
-            .unwrap_or(self.config.default_round_duration_sec)
-    }
-
-    /// B1b: the round-length family ONE order was admitted under, resolved
-    /// three-state through B1a's `effective_round_duration_sec` (read only):
-    /// the order's OWN stamp when it carries one, else the market's declared
-    /// duration while the engine still names the token's market, else the
-    /// account's grid. `0` = no clock fact at all — the caller's gate
-    /// decides what that means.
-    ///
-    /// Single-family discipline: with every stamp 0 (pre-B1b archives) and
-    /// every market declaring the configured grid (or 0, the legacy corpora),
-    /// this folds to the account's grid — the value every consumer read
-    /// before B1b, byte-for-byte.
-    fn order_eff_round_sec(&self, account_id: &str, o: &TrackedOrder) -> i64 {
-        let market_decl = self
-            .engine
-            .as_ref()
-            .and_then(|e| e.market_for_token(&o.token_id))
-            .map(|m| m.round_duration_sec);
-        o.effective_round_duration_sec(market_decl, self.account_round_duration(account_id))
-    }
-
-    /// B1b: the round-length family ONE position was opened under — the
-    /// position-shaped twin of [`Core::order_eff_round_sec`]: same tri-state
-    /// fold through B1a's `effective_round_duration_sec`, same single-family
-    /// equivalence (eff == the account's grid when every stamp is 0 and no
-    /// market contradicts the grid).
-    fn position_eff_round_sec(&self, account_id: &str, p: &OpenPosition) -> i64 {
-        let market_decl = self
-            .engine
-            .as_ref()
-            .and_then(|e| e.market_for_token(&p.token_id))
-            .map(|m| m.round_duration_sec);
-        p.effective_round_duration_sec(market_decl, self.account_round_duration(account_id))
-    }
-
-    /// The open-position snapshot strategies see through `bk.holdings()`,
-    /// rebuilt once per evaluation cycle (the #202 equity push's position
-    /// sibling). Flattened to wire strings here — the engine slices it per
-    /// strategy, so a package never reads another package's book. The round
-    /// slot is re-derived from the entry time on the position's OWN family
-    /// grid (B1b: the tri-state eff — own stamp > market declaration >
-    /// global grid, floored at 1 — so a legacy unstamped row whose market
-    /// declares a different family still projects onto the family the
-    /// market actually trades; a single-family deployment folds eff == cfg,
-    /// the historic formula byte-for-byte); a position cannot outlive its
-    /// round, so the exact boundary the entry sat on is all the gap-fill
-    /// loop needs.
-    fn held_position_view(&self) -> Vec<crate::strategies::HeldPosition> {
-        self.positions
-            .open_positions()
-            .iter()
-            .map(|p| {
-                let duration = self
-                    .position_eff_round_sec(&p.account_id.to_string(), p)
-                    .max(1);
-                crate::strategies::HeldPosition {
-                    strategy: p.strategy.clone(),
-                    account_id: p.account_id.to_string(),
-                    condition_id: p.condition_id.clone(),
-                    token_id: p.token_id.clone(),
-                    direction: p.direction.as_str().to_string(),
-                    shares: p.shares.to_string(),
-                    entry_price: p.entry_price.to_string(),
-                    round_slot: p.entered_at_ms / 1000 / duration,
-                }
-            })
-            .collect()
-    }
-
-    /// Issue #390: whether THIS core runs the replay maintenance scheduling —
-    /// the deadline-driven gates the fast path pioneered, applied to the
-    /// nofast replay. `backtest_fast` implies it (the fast path is the same
-    /// scheduling plus the all-holder skip); the nofast replay opts in
-    /// through `replay_scheduling`; a live kernel never does.
-    fn replay_sched(&self) -> bool {
-        self.config.backtest_fast || self.config.replay_scheduling
-    }
-
-    /// Issue #390 (replay deadline jump): the earliest virtual instant any
-    /// time-driven kernel gate can next produce output, when the replay
-    /// scheduler is in force. `None` on a live kernel or an unconfigured
-    /// clock — the caller must then keep stepping every tick. The driver
-    /// lands its grid on this instant (clamped forward to the grid), runs
-    /// the tick, and RE-READS the wake: every step re-arms at least one
-    /// deadline here, so the loop cannot stall and never needs to guess
-    /// when a gate's deadline moves.
-    ///
-    /// What must NOT appear here, by design:
-    ///   * engine inputs (books/tops/rounds/verdicts) — they are events, and
-    ///     the driver stops on the first grid tick after every event batch
-    ///     regardless of this clock;
-    ///   * strategy-signal exit consumption — intents enqueued by an
-    ///     evaluation are consumed by the NEXT tick's exit pass by
-    ///     construction (the driver forces the next grid tick after any
-    ///     evaluation that produced one), never a scheduled wake;
-    ///   * place/policy cooldowns and backoffs — submission-path checks on
-    ///     the place call itself, never a timer sweep.
-    pub fn next_replay_wake_ms(&self, now_ms: i64) -> Option<i64> {
-        if !self.replay_sched() {
-            return None;
-        }
-        // `now_ms` arrives as (next grid point - 1): a ">=" gate due exactly
-        // at the next grid point must land THERE, so the probe filters on
-        // t > now_ms (t >= next grid point), not t > next.
-        let mut best = i64::MAX;
-        let consider = |t: i64, best: &mut i64| {
-            // `i64::MAX` (and the "never armed" 0, superseded by the first
-            // tick's own re-arm) is no wake — the gate's owner armed nothing.
-            if t > now_ms && t < *best && t != i64::MAX {
-                *best = t;
-            }
-        };
-        consider(self.fast_path.fast_next_timing_ms, &mut best);
-        // The eval fallback fires at the first grid tick at or after
-        // last_eval + window — the exact tick the every-tick walk used.
-        consider(
-            self.fast_path
-                .fast_last_eval_ms
-                .saturating_add(FAST_EVAL_FALLBACK_MS),
-            &mut best,
-        );
-        consider(self.fast_path.fast_next_exit_deadline_ms, &mut best);
-        consider(self.fast_path.fast_next_escalation_ms, &mut best);
-        consider(self.fast_path.fast_next_expiry_ms, &mut best);
-        consider(self.settlement.next_query_deadline_ms(), &mut best);
-        consider(self.settlement.next_redemption_ms(), &mut best);
-        for cd in self.place_cooldowns.values() {
-            consider(cd.next_ok_ms, &mut best);
-        }
-        for until in self.policy_cooldowns.values() {
-            consider(*until, &mut best);
-        }
-        for leg in &self.inflight_takers {
-            consider(leg.execute_at_ms, &mut best);
-            consider(leg.report_at_ms, &mut best);
-        }
-        consider(self.breaker.next_resume_ms(), &mut best);
-        consider(
-            self.audit
-                .last_at_ms
-                .checked_add(self.config.audit_interval_sec.max(0) * 1000)
-                .unwrap_or(i64::MAX),
-            &mut best,
-        );
-        consider(
-            (crate::position::utc_day_index(now_ms) + 1) * crate::position::DAY_MS,
-            &mut best,
-        );
-        if best == i64::MAX { None } else { Some(best) }
-    }
-
-    /// Issue #390 (replay deadline jump): the `evaluations` feed counter
-    /// advances once per scheduled cycle (tick) even when the cycle's Lua
-    /// evaluation is skipped — the sparse-cadence contract pins the SCHEDULED
-    /// count, not the wall cost. A driver that lands on a subset of the grid
-    /// must credit the cycles it did not run, or the report's feed block
-    /// (and the tests that pin it) see a count that disagrees with the
-    /// cycle schedule the replay simulated.
-    pub fn replay_credit_cycles(&mut self, cycles: u64) {
-        // `engine_evaluate` counts only when an engine is installed; the
-        // credit must mirror that exactly or engine-less sweeps would see a
-        // counter the base never produced.
-        if self.engine.is_some() {
-            self.stats.evaluations = self.stats.evaluations.saturating_add(cycles);
-        }
-    }
-
-    /// Issue #390 (replay deadline jump): true when the driver may land on a
-    /// subset of the maintenance grid. Two disqualifiers: replay scheduling
-    /// itself is off (the every-tick walk IS the contract), or Shadow
-    /// Evolution is enabled — its per-tick evaluation cadence is part of its
-    /// observed behaviour, so a jumping driver must not skip cycles under it.
-    pub fn replay_jump_allowed(&self) -> bool {
-        self.replay_sched() && !self.shadow_evolution.is_enabled()
-    }
-
-    /// Issue #390 (replay deadline jump): true when THIS tick left state
-    /// that the immediately following grid tick consumes — strategy exit
-    /// intents awaiting their consuming exit pass, or a dirty flag
-    /// (orders/positions) a scheduled pass would have observed there. The
-    /// jumping driver forces that landing; skipping it could move a stamp
-    /// or a verdict the every-tick walk produced.
-    pub fn has_forced_next_tick(&self) -> bool {
-        !self.strategy_exits.is_empty()
-            || self.fast_path.fast_orders_dirty
-            || self.fast_path.fast_positions_dirty
-    }
-
-    /// Issue #390 (replay nofast): true when the standing-candidate cache
-    /// holds a suggestion the driver must not skip over — a skipped grid tick
-    /// would not re-run it into the kernel-side gates the way the base walk
-    /// did every tick (see `engine_replay_cycle`).
-    pub fn has_standing_candidates(&self) -> bool {
-        self.engine
-            .as_ref()
-            .is_some_and(|e| e.has_standing_candidates())
-    }
-}
-
 /// ④ 统一映射：一个 listing 的面板形状（`unified.candidates` / confirm
 /// 请求体共用）。`PlatformListing` 本身可 serde，但表单字段名直接固化在
 /// 这里，避免把 Rust 内部字段漂移暴露成协议。
@@ -856,384 +645,87 @@ pub(super) fn confirm_error_text(
     }
 }
 
-impl Core {
-    /// Restore the OME from the durable order log (crash recovery). Call once at
-    /// startup, BEFORE trading begins. Live orders are re-adopted (with their
-    /// venue ids) so the startup sweep can reconcile them; terminal orders are
-    /// dropped and the log compacted to just the restored set.
-    ///
-    /// Also restores the applied-fill idempotency table (issue #178) — without it,
-    /// the venue's own re-delivery of an already-booked trade id books the fill a
-    /// second time after every restart — and re-establishes the BUY reservations
-    /// those restored orders still commit (issue #181), which a fresh Ledger would
-    /// otherwise start without.
-    pub fn restore_orders(&mut self) -> usize {
-        self.restore_close_credentials();
-        let applied = self.restore_applied();
-        if applied.0 > 0 {
-            self.emit(Event::RiskAlert {
-                code: CoreErrorCode::Internal,
-                message: format!(
-                    "restored {} applied-fill key(s) from {} after restart (duplicate venue \
-                     trades stay idempotent)",
-                    applied.0, applied.1
-                ),
-            });
-        }
-        let Some(db) = self.order_db.as_ref() else {
-            return 0;
-        };
-        let loaded = db.load();
-        if loaded.is_empty() {
-            return 0;
-        }
-        let live: Vec<crate::model::TrackedOrder> =
-            loaded.into_iter().filter(|o| o.status.is_live()).collect();
-        let n = live.len();
-        self.ome.restore(live.clone());
-        // The restored orders keep their ORIGINAL ids and stay in the OME
-        // registry, while a fresh process's id counter starts at 1. Without
-        // this, the first new placements walk straight into the restored ids
-        // and the dedup guard refuses the collision — production saw
-        // `order already registered: dry_6` right after a restart that
-        // recovered one live order. Same rule the position recovery already
-        // applies (advance `next_id` past the restored ids).
-        let mut max_restored: Option<u64> = None;
-        for o in &live {
-            if let Some((_, n)) = o.order_id.rsplit_once('_')
-                && let Ok(v) = n.parse::<u64>()
-            {
-                max_restored = Some(max_restored.unwrap_or(0).max(v));
-            }
-        }
-        if let Some(max_id) = max_restored
-            && max_id + 1 > self.next_id
-        {
-            self.next_id = max_id + 1;
-        }
-        db.compact(&live);
-        if n > 0 {
-            // A re-adopted order still commits its unfilled notional. The local
-            // reservation table is empty on a fresh process, so without this the
-            // reserve gate would believe the whole balance is free and the next
-            // entries would over-commit against cash the venue has already
-            // spoken for (issue #181).
-            let mut restored_notional = Decimal::ZERO;
-            for o in &live {
-                if o.side != Side::Buy {
-                    continue;
-                }
-                let remaining = (o.size - o.filled_size).max(Decimal::ZERO);
-                let notional = o.price * remaining;
-                // E28: the reservation re-commits cash in the ORDER'S OWN book —
-                // a restored order must never spend from another account.
-                if let Ok(l) = self.accounts.get_mut(&o.account_id) {
-                    l.sync_buy_reservation(&o.order_id, notional);
-                }
-                restored_notional += notional;
-            }
-            self.emit(Event::RiskAlert {
-                code: CoreErrorCode::Internal,
-                message: format!(
-                    "recovered {n} live order(s) from the order log after restart \
-                     ({restored_notional} of BUY notional re-reserved)"
-                ),
-            });
-        }
-        n
-    }
+// ── 跨所套利弹窗 v2: the arb leg configuration surface ──────────────────
 
-    /// #463: replay the close-credential journal — pushes whose key carries no
-    /// later `consumed` tombstone re-enter the FIFO in file order, so a FAILED
-    /// arriving after the restart still finds its credential. Called from
-    /// [`Core::restore_orders`], NOT the constructor: recovery here follows the
-    /// same explicit pattern as the order and position books, and a constructor
-    /// that reads the journal would make every in-process `Core::new` (whose
-    /// default config points at the process cwd's `data/orders/`) silently
-    /// adopt credentials from unrelated tests sharing that directory.
-    fn restore_close_credentials(&mut self) {
-        let Some(path) = self.close_credential_log.clone() else {
-            return;
-        };
-        let mut q: std::collections::VecDeque<(String, CloseCredential)> =
-            std::collections::VecDeque::new();
-        for line in crate::jsonl::load::<CloseCredentialLine>(
-            &path,
-            "close-credential journal: skipped unparseable lines",
-        ) {
-            match line {
-                CloseCredentialLine::Push { trade_id, cred } => {
-                    q.push_back((trade_id, *cred));
-                }
-                CloseCredentialLine::Consumed { trade_id } => {
-                    if let Some(i) = q.iter().position(|(tid, _)| *tid == trade_id) {
-                        q.remove(i);
-                    }
-                }
-            }
-        }
-        if !q.is_empty() {
-            tracing::warn!(
-                path = %path.display(),
-                restored = q.len(),
-                "close-credential journal replayed — FAILED rollbacks survive the restart"
-            );
-            self.close_credentials = q;
-        }
-    }
+// ── RFC 568 阶段一：PairBook 的内核接线面 ───────────────────────────────
 
-    /// Fold the persisted applied-fill journal into the OME. Returns
-    /// `(keys restored, path)`.
-    fn restore_applied(&mut self) -> (usize, String) {
-        let Some(log) = self.applied_log.as_ref() else {
-            return (0, String::new());
-        };
-        let records = log.load();
-        if records.is_empty() {
-            return (0, log.path().display().to_string());
-        }
-        self.ome.restore_applied(records);
-        let n = self.ome.applied_len();
-        // The file was every mutation ever made; it is now the live table.
-        self.ome.take_applied_journal();
-        log.compact(&self.ome.applied_snapshot());
-        (n, log.path().display().to_string())
-    }
+// ── 账户↔venue 解耦：per-account strategy ENABLEMENT 语义层 ─────────────
+//
+// 语义裁决（本轮）：不存在「为账户分配策略」的呈现逻辑 —— 策略全局可见；
+// operator `.env` 的 ACCOUNT_<ID>_STRATEGIES 记录的是每账户×策略的启用状态（面板启用
+// 按钮的持久化）。scope (strategy, account) 运行 ⇔ 策略已安装 AND 账户
+// 已启用 AND 策略 ∈ 该账户启用集。被停用的 scope 若有持仓 → exits-only：
+// 不再开新仓，TP/SL/挂单巡逻/退出意图照常管理到平完。以下三个原语是
+// server.rs 的 handler 接线面（strategy.enable / strategy.disable /
+// strategy.list 的语义半）；wire 形状由 ipc 层负责。
 
-    /// Append whatever the OME journalled since the last drain. Called after every
-    /// applied fill (the only thing that changes the table), so the file is
-    /// crash-consistent with the in-memory table at all times.
-    fn persist_applied_journal(&mut self) {
-        let records = self.ome.take_applied_journal();
-        if records.is_empty() {
-            return;
-        }
-        if let Some(log) = self.applied_log.as_ref() {
-            log.append(&records);
-        }
-    }
+// ── 策略 tunables 读/写（issue #481 G3）─────────────────────────────────
 
-    /// Persist one order's current snapshot (best effort).
-    fn persist_order(&self, id: &str) {
-        if let (Some(db), Some(o)) = (self.order_db.as_ref(), self.ome.get(id)) {
-            db.append(o);
-        }
-    }
+// ── 环境差异排查探针（任务二 1-3）───────────────────────────────────────
 
-    /// Restore the OPEN position book from durable storage (crash recovery). Call
-    /// once at startup, BEFORE trading begins. Without this a restart forgets
-    /// every open position: it is no longer valued or exit-managed, so the trade
-    /// drifts to expiry unmanaged. Mirrors `restore_orders`.
-    pub fn restore_positions(&mut self) -> usize {
-        let Some(db) = self.position_db.as_ref() else {
-            return 0;
-        };
-        // The watermark outlives the position set: a flat book must still
-        // remember which external fills were already accounted for.
-        self.recon_watermark_ms = db.load_watermark();
-        let loaded = db.load();
-        // issue #942: the counter also clears the closed-trade history's own
-        // max tail — the open log goes flat while the history keeps every
-        // id ever issued, so the history is the surviving full memory.
-        let history_max = self.trade_db.as_ref().map(|t| t.max_hft_tail());
-        if loaded.is_empty() && history_max.unwrap_or(0) == 0 {
-            return 0;
-        }
-        let n = loaded.len();
-        self.positions.restore_open(loaded, history_max);
-        if n > 0 {
-            self.emit(Event::RiskAlert {
-                code: CoreErrorCode::Internal,
-                message: format!(
-                    "recovered {n} open position(s) from the position log after restart"
-                ),
-            });
-        }
-        // A settlement whose close never landed is a position that looks open but
-        // is already paid: finish it before anything trades (issue #175).
-        self.recover_settlements();
-        n
-    }
+// ── E-VA: strategy-level virtual accounts ───────────────────────────────
+//
+// The virtual quota book itself never appears in the placement pipeline —
+// these helpers are the ONLY seams. Each one short-circuits on
+// `governed`, which is false for every scope `config.virtual_limits` does
+// not name, so an unconfigured kernel takes the exact historical path.
 
-    /// #987: the unverified exposure report — positions closed via the fallback
-    /// path whose exit price was a bookkeeping value (last known mid, else entry
-    /// price) that no venue verdict ever confirmed. Separate from realized PnL;
-    /// never merged into it.
-    pub fn unverified_exposure_report(&self) -> crate::position::UnverifiedExposureReport {
-        self.positions.unverified_exposure_report()
-    }
+// ── Live venue entry points ─────────────────────────────────────────────
+// In DRY the core synthesises fills itself. In LIVE the CLOB adapter drives
+// these same OME/ledger paths from venue acknowledgements and the user-WS
+// stream, so dry and live share one authoritative state machine.
 
-    /// Test-only: rebind an account's venue. Market host/set tests keep
-    /// `default` unbound so they are not affected by issue #1127's production
-    /// binding (default -> polymarket); that business behaviour is exercised
-    /// by account/mod.rs tests instead.
-    #[cfg(test)]
-    pub fn set_account_venue_for_test(&mut self, id: &AccountId, venue: &str) {
-        let _ = self.accounts.set_venue(id, venue, 0);
-    }
+// ── In-kernel accounting audit (issue #189) ─────────────────────────────
+// The kernel's own three-way money check, on a timer: the ledger's books
+// against themselves, against the trade records, and against the venue's
+// reported free cash. A failure alerts, persists a record and blocks NEW
+// entries — deliberately not the kill switch, which (see #174) blocks closes
+// too and would trap the position the drift is about.
 
-    /// #987, issue 991: reconcile backfill — mark fallback-closed positions on
-    /// `condition_id` `source == "reconciled"` when venue cash truth arrives,
-    /// keeping the fallback exit price (issue 991: a price that was estimated
-    /// is never re-labeled `venue`). Returns the number of rows marked.
-    pub fn backfill_fallback_to_venue(&mut self, condition_id: &str) -> usize {
-        self.positions.backfill_fallback_to_venue(condition_id)
-    }
+// ── Pending-close exit reasons (issue #190) ─────────────────────────────
+//
+// The table remembers which reason an in-flight closing SELL was submitted
+// with, so the fill that completes the close records the right attribution.
+// An entry therefore lives exactly as long as the close it belongs to, and
+// these four helpers are the only way in or out — `exit_reasons` is never
+// touched directly. Before #190 the table was only ever inserted into: an
+// exit that never filled (cancelled, replaced by a settlement, a venue pull)
+// left its reason behind for the NEXT position on that token to inherit.
 
-    /// Persist the current OPEN position set (best effort). Positions are few and
-    /// short-lived, so the whole set is rewritten on every change rather than
-    /// appended (a close needs no tombstone).
-    fn persist_positions(&self) {
-        if let Some(db) = self.position_db.as_ref() {
-            db.save(self.positions.open_positions());
-        }
-    }
+// ── #457: ghost orders die on the clock, not only on the sweep ───────────
+//
+// The reconciliation sweep only closes a ghost when a snapshot proves the
+// venue forgot it. But the dominant ghost on this market needs no proof at
+// all: an order resting on a round that has EXPIRED can never fill — its
+// market is settlement-dead — and if the venue never acks the cancel, the
+// order haunted `orders.list` forever. The kernel now closes those itself:
+//   * an order whose round ended (round_slot N covers [N·dur, (N+1)·dur))
+//     is ForceClosed at the tick that observes the expiry — the kernel
+//     closing an order nobody else closed. In DRY the mark IS the cancel
+//     (nothing external can hold it); in LIVE the venue-side cancel still
+//     rides through `queue_venue_cancel` as evidence-gathering.
+//   * `force_close_order` is the manual verb: same semantics, operator
+//     intent, but REFUSES live orders that could still fill — a manual
+//     force-close is for ghosts, not for dodging a cancel.
+//
 
-    // ── 跨所套利弹窗 v2: the arb leg configuration surface ──────────────────
-
-    // ── RFC 568 阶段一：PairBook 的内核接线面 ───────────────────────────────
-
-    // ── 账户↔venue 解耦：per-account strategy ENABLEMENT 语义层 ─────────────
-    //
-    // 语义裁决（本轮）：不存在「为账户分配策略」的呈现逻辑 —— 策略全局可见；
-    // operator `.env` 的 ACCOUNT_<ID>_STRATEGIES 记录的是每账户×策略的启用状态（面板启用
-    // 按钮的持久化）。scope (strategy, account) 运行 ⇔ 策略已安装 AND 账户
-    // 已启用 AND 策略 ∈ 该账户启用集。被停用的 scope 若有持仓 → exits-only：
-    // 不再开新仓，TP/SL/挂单巡逻/退出意图照常管理到平完。以下三个原语是
-    // server.rs 的 handler 接线面（strategy.enable / strategy.disable /
-    // strategy.list 的语义半）；wire 形状由 ipc 层负责。
-
-    // ── 策略 tunables 读/写（issue #481 G3）─────────────────────────────────
-
-    /// Enable an extension (runs `on_load`). The extension receives ONLY a
-    /// narrowed context — no credentials, venue client, socket or internal state.
-    pub async fn enable_extension(&mut self, name: &str) -> Result<(), String> {
-        let ctx = CoreExtensionContext {
-            tx: self.tx.clone(),
-            strategies: self.strategy_names(),
-        };
-        self.extensions.enable(name, &ctx).await
-    }
-
-    /// Disable an extension (runs `on_unload`).
-    pub async fn disable_extension(&mut self, name: &str) -> Result<(), String> {
-        self.extensions.disable(name).await
-    }
-
-    // ── 环境差异排查探针（任务二 1-3）───────────────────────────────────────
-
-    /// Subscribe the round's tokens on the NAMED plugin's orderbook feed (P4).
-    /// Only that plugin's control sees the set — replacement semantics stay
-    /// per-venue. Unknown name or empty token list: no-op.
-    pub async fn subscribe_feed_tokens(&self, plugin: &str, tokens: Vec<String>) {
-        if let Some(feed) = self.feeds.get(plugin)
-            && !tokens.is_empty()
-        {
-            feed.set_tokens(tokens);
-        }
-    }
-
-    // ── E-VA: strategy-level virtual accounts ───────────────────────────────
-    //
-    // The virtual quota book itself never appears in the placement pipeline —
-    // these helpers are the ONLY seams. Each one short-circuits on
-    // `governed`, which is false for every scope `config.virtual_limits` does
-    // not name, so an unconfigured kernel takes the exact historical path.
-
-    // ── Live venue entry points ─────────────────────────────────────────────
-    // In DRY the core synthesises fills itself. In LIVE the CLOB adapter drives
-    // these same OME/ledger paths from venue acknowledgements and the user-WS
-    // stream, so dry and live share one authoritative state machine.
-
-    // ── In-kernel accounting audit (issue #189) ─────────────────────────────
-    // The kernel's own three-way money check, on a timer: the ledger's books
-    // against themselves, against the trade records, and against the venue's
-    // reported free cash. A failure alerts, persists a record and blocks NEW
-    // entries — deliberately not the kill switch, which (see #174) blocks closes
-    // too and would trap the position the drift is about.
-
-    /// The taker fee a LIVE charge site may use, at `price` (#234, item 4).
-    ///
-    /// The schedule is process-wide and set-once, and only a replay may install
-    /// one other than the shipped default — `--fee-model` is refused without
-    /// `--backtest`, and the backtester is the only caller of `set_fee_schedule`.
-    /// That isolation used to live ENTIRELY in the CLI: the two live charge sites
-    /// read whatever was installed and could not tell a replay from a live
-    /// session. This makes the invariant explicit where the money is: a core that
-    /// has not declared itself a replay charges the shipped schedule or the
-    /// process stops.
-    ///
-    /// It fails CLOSED on purpose. A counterfactual fee on a real fill is a wrong
-    /// number in the ledger, in every PnL derived from it and in the loss
-    /// breakers that read them — silent and unrepairable after the fact — while a
-    /// refused charge is loud and stops before it can book. If a live run ever
-    /// legitimately needs another schedule, that is a design change to the charge
-    /// path, not a flag flip.
-    fn live_taker_fee_pct(&self, price: Decimal) -> Decimal {
-        let schedule = crate::exit_policy::fee_schedule();
-        assert!(
-            self.may_charge(schedule),
-            "non-replay core would charge the '{}' taker-fee schedule: --fee-model is \
-             replay-only (set CoreConfig::fee_schedule_replay only in a backtest) (#234)",
-            schedule.name
-        );
-        schedule.fee_pct(price)
-    }
-
-    /// Whether a charge under `schedule` is legal for THIS core (#234, item 4).
-    /// Split out from [`Core::live_taker_fee_pct`] so the predicate can be tested
-    /// without installing a schedule: the process-wide schedule is set-once, so a
-    /// test cannot put a second one in place.
-    fn may_charge(&self, schedule: crate::exit_policy::FeeSchedule) -> bool {
-        self.config.fee_schedule_replay || schedule == crate::exit_policy::official_schedule()
-    }
-
-    // ── Pending-close exit reasons (issue #190) ─────────────────────────────
-    //
-    // The table remembers which reason an in-flight closing SELL was submitted
-    // with, so the fill that completes the close records the right attribution.
-    // An entry therefore lives exactly as long as the close it belongs to, and
-    // these four helpers are the only way in or out — `exit_reasons` is never
-    // touched directly. Before #190 the table was only ever inserted into: an
-    // exit that never filled (cancelled, replaced by a settlement, a venue pull)
-    // left its reason behind for the NEXT position on that token to inherit.
-
-    // ── #457: ghost orders die on the clock, not only on the sweep ───────────
-    //
-    // The reconciliation sweep only closes a ghost when a snapshot proves the
-    // venue forgot it. But the dominant ghost on this market needs no proof at
-    // all: an order resting on a round that has EXPIRED can never fill — its
-    // market is settlement-dead — and if the venue never acks the cancel, the
-    // order haunted `orders.list` forever. The kernel now closes those itself:
-    //   * an order whose round ended (round_slot N covers [N·dur, (N+1)·dur))
-    //     is ForceClosed at the tick that observes the expiry — the kernel
-    //     closing an order nobody else closed. In DRY the mark IS the cancel
-    //     (nothing external can hold it); in LIVE the venue-side cancel still
-    //     rides through `queue_venue_cancel` as evidence-gathering.
-    //   * `force_close_order` is the manual verb: same semantics, operator
-    //     intent, but REFUSES live orders that could still fill — a manual
-    //     force-close is for ghosts, not for dodging a cancel.
-    //
-
-    // ── Settlement & redemption (issue #175) ────────────────────────────────
-    //
-    // A position that survives to its market's resolution used to sit in the
-    // book forever: never closed, never paid, with its cash permanently short.
-    // This section closes it at the resolution's payout price and books that
-    // payout as a RECEIVABLE — never as cash. The distinction is the whole
-    // design: the wallet does not hold the money until the on-chain redemption
-    // confirms, and crediting `balance` early would make the ledger claim cash
-    // the venue does not have, which is exactly what the live leg of the
-    // accounting audit reads as divergence (and halts entries over). The
-    // receivable is part of `CashIdentity::total`, so the anchored identity
-    // stays true at every instant: settlement moves the payout into `total`
-    // against the realized PnL of the close, redemption moves it from the
-    // receivable into `balance` without changing `total`.
-    //
-    // Booking is idempotent on two levels, because a settlement is real money:
-    // an in-memory applied set (this process) and an append-only journal whose
-    // replayed lines rebuild that set (every later process).
-}
+// ── Settlement & redemption (issue #175) ────────────────────────────────
+//
+// A position that survives to its market's resolution used to sit in the
+// book forever: never closed, never paid, with its cash permanently short.
+// This section closes it at the resolution's payout price and books that
+// payout as a RECEIVABLE — never as cash. The distinction is the whole
+// design: the wallet does not hold the money until the on-chain redemption
+// confirms, and crediting `balance` early would make the ledger claim cash
+// the venue does not have, which is exactly what the live leg of the
+// accounting audit reads as divergence (and halts entries over). The
+// receivable is part of `CashIdentity::total`, so the anchored identity
+// stays true at every instant: settlement moves the payout into `total`
+// against the realized PnL of the close, redemption moves it from the
+// receivable into `balance` without changing `total`.
+//
+// Booking is idempotent on two levels, because a settlement is real money:
+// an in-memory applied set (this process) and an append-only journal whose
 
 fn parse_direction(s: &str) -> SignalDirection {
     match s.to_ascii_lowercase().as_str() {
@@ -1281,141 +773,6 @@ pub(super) fn build_lua_scope(
         exponent: sched.exponent,
     });
     Some(Box::new(adapter))
-}
-
-/// Price a taker EXIT to actually fill: the limit nudged a few ticks below
-/// the executable bid, floored at the venue minimum. Polymarket prices run in
-/// 0.01 ticks, so a tick is 0.01.
-pub(super) fn marketable_exit_price(executable_bid: Decimal, slip_ticks: i64) -> Decimal {
-    if executable_bid <= Decimal::ZERO {
-        return executable_bid;
-    }
-    let slipped = executable_bid - Decimal::new(slip_ticks.max(0), 2);
-    slipped.max(Decimal::new(1, 2))
-}
-
-impl Core {
-    /// #496: price a RESTING (maker) exit one tick above the best bid, clamped
-    /// to stay strictly below the best ask — the only shape a post-only SELL
-    /// can be accepted at. A sell AT the bid crosses the book (`Book::crosses`
-    /// on the sell side is `best_bid >= price`), so the venue refuses the POST
-    /// every time; a sell at/above the ask crosses the other side. Without a
-    /// live book there is nothing to rest against: the judged price stands and
-    /// the venue's own refusal (or dry's book aging) reports it.
-    fn maker_exit_price(&self, token: &str, judged: Decimal) -> Decimal {
-        let tick = Decimal::new(1, 2); // 0.01 — the binary-market price grid
-        let Some(book) = self.books.get(token) else {
-            return judged;
-        };
-        let Some(bid) = book.best_bid() else {
-            return judged;
-        };
-        let mut price = bid + tick;
-        if let Some(ask) = book.best_ask()
-            && ask > Decimal::ZERO
-            && price >= ask
-        {
-            // A one-tick spread leaves no inside price: the closest legal
-            // rest would be above the bid but there is no grid point strictly
-            // between bid and ask. The band is too tight to rest honestly —
-            // the judged price stands and the venue's answer reports it.
-            if ask > bid + tick {
-                price = ask - tick;
-            } else {
-                return judged;
-            }
-        }
-        price.min(Decimal::new(99, 2))
-    }
-}
-
-/// #1057: 每个配置账户的耐久姿态（ReadOnly / Suspended / Frozen /
-/// `trading_enabled = false`）映射为一枚 AccountGate，供面板与 stats
-/// 读出一套闸门模型，并作为入场执法的唯一依据。
-///
-/// 配置态 → gate 的推导不再是「仅启动」，而是在每次
-/// `set_status` / `set_trading` / `unfreeze` 写回之后都重算，保证任何
-/// 时刻 `gate.blocked ⟺ 配置姿态非 Active`（0.4.2 门禁验收硬规则）。
-/// 执法只读 gate（`account_gate_permits`），不再并联
-/// `AccountLedgers::posture_permits` 这类第二道门。配置态闸门由
-/// `unfreeze` 写回配置态时清除；配置态由 `.env` 改写，重启再生。
-/// 每次启动完全重推导：不持久化、不随会话漂移。
-///
-/// 返回被创建/更新/移除的账户 id 列表，供调用者审计。
-pub(crate) fn reconcile_config_gates(core: &mut Core, now_ms: i64) {
-    let ids: Vec<String> = core
-        .accounts
-        .account_list()
-        .iter()
-        .map(|a| a.id.as_str().to_owned())
-        .collect();
-    for id in ids {
-        reconcile_config_gate_for(core, &AccountId::from(id.as_str()), now_ms);
-    }
-}
-
-/// 单账户版本的配置态 → gate 推导。用于 `set_status` /
-/// `set_trading` / `unfreeze` 写回之后的即时重算，避免「配置拦但
-/// gate 不在」的瞬时不一致。
-///
-/// 规则：
-/// - 配置姿态拒新单（非 Active，或 trading_enabled=false）：设置或
-///   升级对应的 Config* 闸门（优先级高者覆盖低者，Manual 等运行时
-///   闸门不被降级）。
-/// - 配置姿态允新单（Active 且 trading_enabled=true）：移除由配置
-///   派生的闸门（ConfigReadOnly / ConfigSuspended / TradingDisabled /
-///   ConfigFrozen），保留 Manual / DailyLoss / VenueRejection / KillSwitch
-///   等运行时闸门不动。
-pub(crate) fn reconcile_config_gate_for(core: &mut Core, id: &AccountId, now_ms: i64) {
-    let Some(account) = core.accounts.account(id) else {
-        return;
-    };
-    let id_str = id.to_string();
-    let blocks_entries = !account.status.allows_entries() || !account.trading_enabled;
-
-    if blocks_entries {
-        let (kind, reason) = if !account.status.allows_entries() {
-            match account.status {
-                crate::account::AccountStatus::ReadOnly => (
-                    GateReason::ConfigReadOnly,
-                    "account read_only in config - new entries and closes refused at Gate 2"
-                        .to_string(),
-                ),
-                crate::account::AccountStatus::Suspended { ref reason } => (
-                    GateReason::ConfigSuspended,
-                    format!("account suspended in config - {reason}"),
-                ),
-                crate::account::AccountStatus::Frozen => (
-                    GateReason::Manual,
-                    "account frozen in config - new entries refused, exits keep flowing"
-                        .to_string(),
-                ),
-                crate::account::AccountStatus::Active => unreachable!("Active allows entries"),
-            }
-        } else {
-            (
-                GateReason::TradingDisabled,
-                "trading switch off in config - new entries refused, exits keep flowing"
-                    .to_string(),
-            )
-        };
-        // 只升不覆：优先级更高的运行时闸门（Manual / KillSwitch 等）不会
-        // 被配置态闸门降级；同优先级的“先到者胜”保持稳定。
-        let _ = core.set_account_gate(&id_str, reason, kind, None, "config", now_ms, None);
-    } else {
-        // 配置态允新单：移除由配置派生的闸门，保留运行时闸门不动。
-        if let Some(g) = core.account_gate(&id_str) {
-            let should_remove = matches!(
-                g.reason_kind,
-                GateReason::ConfigReadOnly
-                    | GateReason::ConfigSuspended
-                    | GateReason::TradingDisabled
-            );
-            if should_remove {
-                core.account_gates.remove(&id_str);
-            }
-        }
-    }
 }
 
 #[cfg(test)]

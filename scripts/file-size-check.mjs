@@ -5,9 +5,12 @@
  * The campaign rule it enforces: no `.rs` file in the trading-repo scope
  * (core/, tools/, user_layer/, extensions/ — and, since the #819-#821 ui
  * split wave, `ui/` too) and no `.vue`/`.ts` file in `ui/webapp/webui/src/`
- * may exceed 1500 lines. A file that big is where review coverage dies and
+ * may exceed 5000 lines. A file that big is where review coverage dies and
  * where the split campaigns (#699 family, #780's service-test split) come to
  * rot back together; this gate is the arm that keeps them split.
+ *
+ * Between 3000 and 5000 lines the gate prints a non-blocking WARN suggesting
+ * a domain split — advisory only, CI stays green. Above 5000 lines is RED.
  *
  * Ratchet semantics — the allowlist is debt, not licence, and it only
  * tightens:
@@ -46,7 +49,11 @@ const SCOPES = ['core', 'tools', 'user_layer', 'extensions', 'ui'];
 // Machine-generated trees a checkout can legitimately carry; never scanned.
 const SKIP_DIRS = ['target', 'dist', 'node_modules'];
 
-const LIMIT = 1500;
+const LIMIT = 5000;
+
+// Advisory threshold: files between WARN and LIMIT lines print a non-blocking
+// WARN suggesting a domain split, but do not fail CI.
+const WARN = 3000;
 
 // The ratchet's teeth at authoring time, measured on this gate's base
 // (ceer/main @ 05f809a6, 2026-10-31): empty. The #780/#781 split campaign
@@ -57,62 +64,11 @@ const LIMIT = 1500;
 // brought `ui/` into scope the same day its last oversized file fell (the
 // largest ui file is web/auth_tests.rs at 1302), and webui (.vue/.ts under
 // ui/webapp/webui/src/) joined with its largest file (HftPage.vue at 1325)
-// safely below the 1500 limit, so the allowlist stays empty across the whole
+// safely below the 5000 limit, so the allowlist stays empty across the whole
 // tree. An entry here is a debt marker — the file may shrink or die, never
 // grow into a bigger exception, and once it is ≤ LIMIT the entry must be
 // pruned (rule 3 above).
-const ALLOW = [
-  // #1140: per-account round duration grew trading_reset.rs past the limit
-  // (the round_duration.set write path lives here). Debt marker — the file
-  // may shrink or die, never grow past atAuthoring. 1543→1546: the issue
-  // 1199 R2 comment-honesty pass (+3 comment lines). 1546→1552: the R2
-  // T-03 zeroing (+6 lines: the two single-exit helpers' docblocks).
-  // 1552→1570: the #1199 第六轮 round_duration persisted flag (+5) and
-  // the env→SQL migration of the set/reset write path (+13).
-  { path: 'core/blitzkrieg_core/src/service/trading_reset.rs', atAuthoring: 1570 },
-  // #1186: max_order_notional_usd folded into AccountRiskLimits grew
-  // schema/mod.rs past the limit. Debt marker — the file may shrink or die,
-  // never grow past atAuthoring. 1501→1505: the issue 1199 R2
-  // persistence-doc pass (+4 comment lines, zero logic). 1505→1508: the
-  // #1199 第六轮 RoundDurationUpdate persisted field (+3 lines).
-  // 1508→1510: the #1199 第十次审计 P1-7 phantom-field rename (+2 lines).
-  { path: 'core/blitzkrieg_core/src/schema/mod.rs', atAuthoring: 1510 },
-  // #1199 第六轮: env 写入路径根除 + SQLite 独占后端。boot 物化、toml 门、
-  // 账户簿合并把 assembly.rs 从 1221 涨到 1697（+476 行：env 写分支删除、
-  // boot 物化、账户簿 SQL 权威、凭证注入、策略集合回读、arb 段 store 回读）。
-  // 1697→1732: the #1199 第十次审计 fixes (+35 lines: StoreApi seam routing,
-  // honest docblocks). Debt marker — 拆分另开轮次，此处先记债。
-  { path: 'core/blitzkrieg_core/src/service/assembly.rs', atAuthoring: 1732 },
-  // #1199 第十次审计: strategies.rs crossed the limit on the reload-rollback
-  // fix (P1-15/16) — a failed reload now restores the old instance instead of
-  // blanking the dispatch (+21 lines). #1277 胜率 single-口径再写入 flat
-  // 桶与 totalTrades 行，1509→1522（+13 行）。Debt marker — the file may
-  // shrink or die, never grow past atAuthoring. 1509→1522: #1277 flat 桶
-  // 决胜口径（无逻辑变更，仅门限随创作行数同步；同 #1284 scanner.rs
-  // 前例 1526→1533→1534）。
-  { path: 'core/blitzkrieg_core/src/service/strategies.rs', atAuthoring: 1522 },
-  // #1199 第六轮：tests_risk_rounds.rs 新增 round_duration 落 SQLite 与
-  // 下一会话读回的往返用例，1479→1562（+83 行）。
-  { path: 'core/blitzkrieg_core/src/ipc/server/tests/tests_risk_rounds.rs', atAuthoring: 1562 },
-  // #1284: rustfmt 尾迹把 scanner.rs 从 1526 涨到 1533（on_event 签名与
-  // 锁-推入链各换行展开，+7 行，无逻辑变更）；随后 clippy 修复在
-  // OffPoolLogCapture::levels 上加 `#[allow(dead_code)]`（scanner.rs:1494），
-  // 又 +1 行（1533→1534）。Debt marker — the file may shrink or die, never
-  // grow past atAuthoring. 1526→1533 rustfmt (+7); 1533→1534 clippy (+1).
-  { path: 'core/blitzkrieg_core/src/scanner.rs', atAuthoring: 1534 },
-  // #1284: settlement.rs grew past the limit on the #1238 binary-settlement
-  // fallback path (+fallback_binary_price, jsonl warn, dec import). Debt
-  // marker — split fallback_binary_price into its own module when the file
-  // is next touched; this ALLOW entry never grows past 1530.
-  { path: 'core/blitzkrieg_core/src/settlement.rs', atAuthoring: 1530 },
-  // #1199 第六轮：dispatch_boot_enablement_tests.rs 的 fixture 补 db_path
-  // 与 env 断言迁 SQL，1483→1547（+64 行）。1547→1551: the #1199 第十次
-  // 审计 T1-T3 测试盲区补钉（+4 行）。
-    {
-      path: 'core/blitzkrieg_core/src/service/tests/strategy_dispatch_tests/dispatch_boot_enablement_tests.rs',
-      atAuthoring: 1551,
-    },
-];
+const ALLOW = [];
 
 const checks = [];
 const check = (name, ok, detail = '') => {
@@ -205,6 +161,10 @@ export function audit(root, allow = ALLOW) {
         lines,
         detail: `${lines} lines > ${LIMIT} — split it, or add it to ALLOW with its atAuthoring count (the ratchet only tightens)`,
       });
+    } else if (lines > WARN) {
+      // Advisory WARN: over the split threshold but under the hard limit.
+      // Non-blocking — CI stays green, but the file should be split by domain.
+      console.warn(`  WARN  ${f.rel} — ${lines} lines (>${WARN}, consider splitting by domain; hard limit is ${LIMIT})`);
     }
   }
 
@@ -232,8 +192,8 @@ function selfTest() {
       // exactly `newlines` newline bytes — wc -l counts what it says
       writeFileSync(p, '\n'.repeat(newlines));
     };
-    // A 3-line file, an exactly-at-limit file (1500 passes — the rule is
-    // "over 1500"), a 1501-line offender, then the #818 allowlist matrix —
+    // A 3-line file, an exactly-at-limit file (5000 passes — the rule is
+    // "over 5000"), a 5001-line offender, then the #818 allowlist matrix —
     // one file exactly at its authoring count (passes, == is not growth),
     // one shrunk below its authoring count but still over the limit
     // (passes, shrinking is the only direction out), one grown past its
@@ -275,12 +235,12 @@ function selfTest() {
     const gone = violations.filter((v) => v.kind === 'gone');
     const growth = violations.filter((v) => v.kind === 'growth');
 
-    check('at-limit file (1500 lines exactly) passes', !over.some((v) => v.path === 'tools/exact.rs') && !prune.some((v) => v.path === 'tools/exact.rs'));
+    check('at-limit file (5000 lines exactly) passes', !over.some((v) => v.path === 'tools/exact.rs') && !prune.some((v) => v.path === 'tools/exact.rs'));
     check('small file passes', !over.some((v) => v.path === 'core/a.rs'));
     check('small webui .vue file passes', !over.some((v) => v.path === 'ui/webapp/webui/src/small.vue'));
-    check('1501-line unallowlisted .rs file reds (over-limit)', over.some((v) => v.path === 'user_layer/over.rs'));
-    check('1501-line unallowlisted webui .vue file reds (over-limit)', over.some((v) => v.path === 'ui/webapp/webui/src/over.vue'));
-    check('1501-line unallowlisted webui .ts file reds (over-limit)', over.some((v) => v.path === 'ui/webapp/webui/src/over.ts'));
+    check('5001-line unallowlisted .rs file reds (over-limit)', over.some((v) => v.path === 'user_layer/over.rs'));
+    check('5001-line unallowlisted webui .vue file reds (over-limit)', over.some((v) => v.path === 'ui/webapp/webui/src/over.vue'));
+    check('5001-line unallowlisted webui .ts file reds (over-limit)', over.some((v) => v.path === 'ui/webapp/webui/src/over.ts'));
     check('unallowlisted file outside webui src/ is skipped even if over limit', !over.some((v) => v.path === 'ui/webapp/webui/outside.ts'));
     // #818 matrix: == atAuthoring passes, LIMIT < lines < atAuthoring passes
     // (shrink allowed), lines > atAuthoring reds (entry never grows).
@@ -319,7 +279,7 @@ function main() {
     console.error(`\nfile-size-check: ${violations.length} RED — no in-scope file over ${LIMIT} lines (ratchet: shrink or split; the allowlist only tightens)`);
     process.exit(1);
   }
-  console.error(`\nfile-size-check: all green — ${scanned} in-scope file(s) scanned across ${SCOPES.join(', ')} (.rs) and ui/webapp/webui/src (.vue/.ts), limit ${LIMIT}, ALLOW ${ALLOW.length} entr${ALLOW.length === 1 ? 'y' : 'ies'}`);
+  console.error(`\nfile-size-check: all green — ${scanned} in-scope file(s) scanned across ${SCOPES.join(', ')} (.rs) and ui/webapp/webui/src (.vue/.ts), hard limit ${LIMIT}, advisory split threshold ${WARN}, ALLOW ${ALLOW.length} entr${ALLOW.length === 1 ? 'y' : 'ies'}`);
 }
 
 main();

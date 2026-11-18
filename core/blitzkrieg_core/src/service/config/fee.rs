@@ -3,8 +3,8 @@
 //! and the round-duration readout — moved verbatim from `config.rs` (pure
 //! code motion, no logic edits) per the file-size ratchet (#780).
 
-use super::Core;
 use crate::model::*;
+use crate::service::Core;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 

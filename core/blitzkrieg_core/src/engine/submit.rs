@@ -1051,7 +1051,12 @@ impl Engine {
             .any(|s| s.strategy.name() == name && s.account_id == account_id)
         {
             return Err(format!(
-                "strategy name already registered for account {account_id}: {name}"
+                // The account id is deliberately NOT in this message: it
+                // flows into the startup-scan receipt (E30) and from there
+                // into the auto-load eprintln, and cleartext-logging flags an
+                // account identifier reaching a log sink. The duplicate name
+                // is the actionable fact; the scope is implied by the caller.
+                "strategy name already registered: {name}"
             ));
         }
         // Provenance is sticky: the FIRST registration's source wins, so a

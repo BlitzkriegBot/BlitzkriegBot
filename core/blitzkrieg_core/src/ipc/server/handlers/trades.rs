@@ -16,7 +16,12 @@ pub(crate) async fn handle_trades(
     match method {
         method::TRADES_HISTORY => {
             let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
-            let trades = core.lock().await.recent_trades(limit);
+            // #1282: the optional page window, counted back from the newest
+            // end (0 = latest). Absent = 0, which is byte-identical to the
+            // pre-#1282 wire: every existing caller sends `limit` only and
+            // keeps its exact response shape.
+            let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let trades = core.lock().await.recent_trades_page(limit, offset);
             Ok(serde_json::json!({
                 "version": crate::schema::PROTOCOL_VERSION,
                 "trades": trades,

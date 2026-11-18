@@ -554,17 +554,40 @@ impl TradeDb {
 /// Read the last `limit` records from a trades JSONL file (newest last).
 /// Used by the IPC history endpoint so the panel can render closed trades.
 pub fn read_recent(path: &Path, limit: usize) -> Vec<serde_json::Value> {
+    read_page(path, 0, limit)
+}
+
+/// One page of the trades JSONL, counted back from the NEWEST end (#1282).
+///
+/// `offset` skips the most recent rows (offset=0 = latest, offset=200 = the
+/// window before the latest 200), `limit` caps the window's length. Rows are
+/// returned in file order (oldest → newest), exactly like `read_recent` —
+/// only the window differs, so a caller can page the history without the
+/// gateway ever having to drain the whole log.
+///
+/// `limit == 0` means "no cap": with offset=0 that is the whole log (same as
+/// `read_recent(0)`), with offset>0 it is everything older than the skipped
+/// window, down to the oldest row. The alternative reading (reject limit=0
+/// with offset>0) would leave "fetch the remainder" needing a sentinel, and
+/// the historical `read_recent(0)` = all-rows contract already fixed 0 as
+/// "uncapped" — the page form inherits it rather than inventing a third one.
+/// `offset` past the oldest row is an empty page, not an error: a paginator
+/// detects the end by an empty/short page either way.
+pub fn read_page(path: &Path, offset: usize, limit: usize) -> Vec<serde_json::Value> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    let mut all: Vec<serde_json::Value> = text
+    let all: Vec<serde_json::Value> = text
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .collect();
-    if limit > 0 && all.len() > limit {
-        all.drain(0..all.len() - limit);
-    }
-    all
+    let end = all.len().saturating_sub(offset);
+    let start = if limit == 0 {
+        0
+    } else {
+        end.saturating_sub(limit)
+    };
+    all[start..end].to_vec()
 }
 
 #[cfg(test)]
@@ -899,6 +922,68 @@ mod tests {
         let mut q = std::fs::metadata(&dir).unwrap().permissions();
         q.set_mode(0o700);
         std::fs::set_permissions(&dir, q).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1282 快照分页：`read_page` 的窗口从**最新端**往回数 —— offset=0 取
+    /// 最新 limit 行，offset=200 取再往前 200 行。这是网关 `/api/trades`
+    /// 翻页 verb 的取窗契约：翻页器不动文件顺序（最旧→最新），只动窗口。
+    #[test]
+    fn read_page_windows_count_back_from_the_newest_end() {
+        let dir = std::env::temp_dir().join(format!("bktrade-page-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("trades.jsonl");
+        let mut db = TradeDb::new(&path);
+        for i in 1..=10i64 {
+            let mut rec = TradeRecord::from_closed(&closed());
+            rec.id = format!("p-{i}");
+            db.record(&rec, i * 100);
+        }
+        let ids = |rows: &[serde_json::Value]| -> Vec<String> {
+            rows.iter()
+                .map(|r| r["id"].as_str().unwrap_or("").to_string())
+                .collect()
+        };
+        // offset=0 → 最新 3 行，顺序仍是文件序（最旧在前）。
+        assert_eq!(ids(&read_page(&path, 0, 3)), vec!["p-8", "p-9", "p-10"]);
+        // offset=3 → 再往前 3 行。
+        assert_eq!(ids(&read_page(&path, 3, 3)), vec!["p-5", "p-6", "p-7"]);
+        // limit 窗口长于剩余行 → 一路取到最旧端为止。
+        assert_eq!(
+            ids(&read_page(&path, 3, 200)),
+            vec!["p-1", "p-2", "p-3", "p-4", "p-5", "p-6", "p-7"]
+        );
+        // read_recent 原签名与 offset=0 的 read_page 逐行相同（老调用点
+        // trading_reset 依赖这个等价）。
+        assert_eq!(read_recent(&path, 3), read_page(&path, 0, 3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1282: offset 翻过最旧一行 = 空页（不是错误）—— 翻页器靠空页判底；
+    /// limit=0 语义 = 不设上限（继承 read_recent(0)=全量的既有契约），
+    /// offset>0 时即「从被跳过的窗口一路取到最旧行」。
+    #[test]
+    fn read_page_offset_past_the_oldest_row_is_empty_and_limit_zero_uncaps() {
+        let dir = std::env::temp_dir().join(format!("bktrade-page2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("trades.jsonl");
+        let mut db = TradeDb::new(&path);
+        for i in 1..=5i64 {
+            let mut rec = TradeRecord::from_closed(&closed());
+            rec.id = format!("q-{i}");
+            db.record(&rec, i * 100);
+        }
+        // 越界：空页。
+        assert!(read_page(&path, 5, 3).is_empty());
+        assert!(read_page(&path, 99, 3).is_empty());
+        // limit=0 + offset=0 = 全量（与 read_recent(0) 同一契约）。
+        assert_eq!(read_page(&path, 0, 0).len(), 5);
+        assert_eq!(read_page(&path, 0, 0), read_recent(&path, 0));
+        // limit=0 + offset>0 = 取到底（跳过最新 offset 行后一路取到最旧）。
+        assert_eq!(read_page(&path, 2, 0).len(), 3);
+        assert_eq!(read_page(&path, 2, 0)[0]["id"], "q-1");
+        // limit=0 的窗口里不含被跳过的最新行。
+        assert_eq!(read_page(&path, 2, 0)[2]["id"], "q-3");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

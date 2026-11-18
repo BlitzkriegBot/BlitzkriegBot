@@ -2,7 +2,7 @@
  * Panel store — snapshot polling + strategy/plugin data, shared by all pages.
  */
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import {
   api, clearToken, hasToken,
   type Snapshot, type PluginsDoc, type StrategyStatsRow, type TradeRow,
@@ -227,6 +227,68 @@ export const usePanelStore = defineStore('panel', () => {
    * reads rows through here so they all report the same totals.
    */
   const tradeRows = computed<TradeRow[]>(() => dedupeTrades(snapshot.value?.tradeRows ?? []))
+
+  // ── 全量成交行（issue 1282 快照分页的两源分工）──────────────────────────────────
+  // 快路径 `tradeRows`（上一行）：15s 轮询 + 1s SSE 随快照带回的近 200 行
+  // （网关 trade_limit 首屏背压）。它服务「随快照实时刷新」的读数——告警
+  // 音（useAlertSounds）、订单终态归因（useOrders）。这些视图只关心最近
+  // 的成交/订单，200 行窗绰绰有余。
+  // 深路径 `fullHistoryRows`：append-only 成交日志的**全史**投影。任何
+  // 「要全部历史才口径正确」的视图——历史 tab 表格、权益曲线（Overview 的
+  // equityCurveRows 与两页共用的累计净 PnL 卡）、cumStats 的行折叠回落——
+  // 只能从这里读：直接读快路径会把 200 行之外的成交静默截出曲线和统计。
+  // 实现按（display 账户, venue）身份惰性分页拉取：GET /api/trades
+  // （trades.history {offset, limit} 薄代理）每次 FULL_TRADES_PAGE 行、
+  // offset 从最新端往回数，翻到短页即底；页间先按「最旧页在前」拼接
+  // （每页内部是文件序 = 时间升序），最后 dedupeTrades 保持升序，权益曲线
+  // 直接可用。身份变化（切户/切所）即作废在途请求并重拉——全史归属必须
+  // 跟随显示身份，与 refresh() 的 isCurrent 仲裁同一纪律。
+  const FULL_TRADES_PAGE = 500
+  const fullTradeRows = ref<TradeRow[] | null>(null)
+  let fullTradesSeq = 0
+
+  async function loadFullTrades(): Promise<void> {
+    const requestId = ++fullTradesSeq
+    const epoch = displayEpoch
+    const pages: TradeRow[][] = []
+    for (let offset = 0; ; offset += FULL_TRADES_PAGE) {
+      try {
+        const doc = await api.tradesPage({ offset, limit: FULL_TRADES_PAGE })
+        // 身份在途变更（切户/切所/登出）：本批作废，身份 watch 已重拉。
+        if (requestId !== fullTradesSeq || epoch !== displayEpoch || !hasToken()) return
+        const page = Array.isArray(doc.trades) ? doc.trades : []
+        pages.push(page)
+        // 短页 = 翻过最旧一行，全史取完（内核 offset 越界返回空页）。
+        if (page.length < FULL_TRADES_PAGE) break
+      } catch {
+        // 失败不抛：fullTradeRows 保持 null/旧值，消费入口回落快路径
+        // （首屏不空、口径在注释里），下一次身份变化再试。网关不可达时
+        // error/alert 由轮询的统一判定负责，这里不重复报。
+        return
+      }
+    }
+    // 页序反转成「最旧页在前」，拼接后整体时间升序（dedupe 保持插入序）。
+    pages.reverse()
+    fullTradeRows.value = dedupeTrades(pages.flat())
+  }
+
+  /**
+   * 深路径消费入口：全史未到（或上次拉取失败）时回落快路径——首屏不空，
+   * 但代价是 200 行窗外的旧成交暂缺；快照快路径仍每拍刷新，全史到位后
+   * 以它为底、快照新行（窗口内）随时合流。合流后 dedupe：重复行取最后一次
+   * 写入（快照那份更新），插入位置不变 → 整体仍时间升序，权益曲线不抖。
+   */
+  const fullHistoryRows = computed<TradeRow[]>(() =>
+    fullTradeRows.value ? dedupeTrades([...fullTradeRows.value, ...tradeRows.value]) : tradeRows.value,
+  )
+
+  // 身份变化 → 全史重拉。首次采纳（'' → default）也算：那是第一次有归属
+  // 可言。登出（token 清空）由 hasToken 门与在途仲裁兜住。
+  watch([displayAccount, activeAccountVenue], () => {
+    if (!hasToken()) return
+    fullTradeRows.value = null
+    void loadFullTrades()
+  })
 
   /**
    * PR H (账户筛选修复): the account-scoped aggregates, refreshed beside the
@@ -564,7 +626,7 @@ export const usePanelStore = defineStore('panel', () => {
 
   return {
     snapshot, plugins, error, loading, lastUpdated,
-    connected, cumulativeNetPnl, strategyRows, tradeRows, feedAt, sessionExpired,
+    connected, cumulativeNetPnl, strategyRows, tradeRows, fullHistoryRows, feedAt, sessionExpired,
     navRequest, blueprintPreload,
     activeAccount, accounts, setAccounts, setDisplayAccount, clearAccountScoped, refreshAccounts, activeAccountVenue, activeAccountRow, setAccountRounds,
     displayAccount, displayVenue,

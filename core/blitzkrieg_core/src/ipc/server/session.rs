@@ -1008,13 +1008,40 @@ pub async fn run(
 
 /// 单条 IPC 行的最大字节数：客户端发超大、不带换行的一行不得把读
 /// 缓冲区撑爆；超限即断开该连接（issue #1199 P1-20）。
-/// TODO(1199-followup): `lines()` 版在遇到换行前无上限缓冲——恶意方发
-/// 1GB 无换行流仍可撑内存；完整修法是 `take(MAX_LINE_BYTES)` 限长读，
-/// 留待后续 issue（当前 lines() 语义优先保响应不丢）。
-const MAX_LINE_BYTES: usize = 1024 * 1024;
+/// #1282 已落地手动累积读循环：无换行残留超过本上限即截断断开——
+/// 恶意方发 GB 级无换行流最多也只会缓冲 1MB。
+// pub(super)：tests/ 的超长行用例直接引用上限断言行为
+pub(super) const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+/// 出站通道容量（按条数，#1282 契约 1）。此前 unbounded 在慢/离线客户端
+/// 下无限增长（#1199 P1-19 曾试过 bounded(256)+send().await，因阻塞读
+/// 循环丢请求被回退——现在两类消息分流，见响应/通知两处注释）。
+/// 内存上界估算：1024 条 × 单条 JSON（通知 KB 级；响应受 MAX_LINE_BYTES
+/// 1MB 约束的最坏情形仅理论存在，典型快照几十 KB）——典型几 MB、
+/// 理论上界 ~1GB，但关键是「有界」：最坏情形不再随时间无限增长。
+const OUTBOUND_QUEUE_CAP: usize = 1024;
+
+/// 写端单次 write_all / 响应入队的等待上限（#1282 契约 2）。超时判定
+/// 客户端不可达，只断开该会话——每会话独立任务，绝不无界阻塞，也不
+/// 拖累其他会话。30s：正常面板/网关的写抖动远小于此，卡死客户端不该
+/// 被无限等待。
+const WRITE_STALL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 读空闲超时：600s 内一个字节都收不到即断开。要远大于合法客户端的
+/// 请求间隔（面板是常驻长连接），又不能永远等——半开连接（对端掉电/
+/// 网络静默丢弃）不会有 RST，只能靠超时回收，否则断连的会话随运行
+/// 时间无限累积。
+const READ_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// 满队列丢通知的限频告警节奏：首次丢弃即报，之后每丢 100 条报一次。
+/// 慢客户端会持续触发 Full，逐条告警会把日志刷爆（#670 的自旋教训）。
+const NOTIFY_DROP_LOG_EVERY: u64 = 100;
+
+/// `pub(super)` 仅为 tests/ 开放：背压语义（多行单 read、满队列丢通知）
+/// 只有对真实 socketpair 打满整个会话任务才观察得到，handle_line 级
+/// 的 rpc 助手够不着这些任务（#1282）。
 #[allow(clippy::too_many_arguments)] // session wiring — each param has one job
-fn spawn_session(
+pub(super) fn spawn_session(
     stream: UnixStream,
     peer: PeerAuth,
     core: Arc<AsyncMutex<Core>>,
@@ -1026,18 +1053,22 @@ fn spawn_session(
     data_plane: DataPlaneRuntime,
 ) {
     tokio::spawn(async move {
-        let (read_half, write_half) = stream.into_split();
-        // issue #1199 P1-19：出站通道回到 unbounded（基线语义）。
-        // bounded(256)+send().await 在并发响应写入时阻塞读循环，实测
-        // 3 连发 engine.book 丢第 3 个（CI risk-systemic-check 红）。
-        // 慢消费者 OOM 面改由后续 issue 以「有界队列 + Lagged 计数上报」处理。
-        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+        let (mut read_half, write_half) = stream.into_split();
+        // #1282 契约 1：出站通道有界化。unbounded 在慢/离线客户端下让
+        // 出站缓冲无限增长；bounded 后两类消息分流——响应走带
+        // WRITE_STALL 超时的 send（满则等写端，等不到断开，绝不丢
+        // 响应），通知走 try_send（满即丢，见通知任务注释）。
+        let (out_tx, mut out_rx) = mpsc::channel::<String>(OUTBOUND_QUEUE_CAP);
 
         let writer = tokio::spawn(async move {
             let mut w = write_half;
             while let Some(line) = out_rx.recv().await {
-                if w.write_all(line.as_bytes()).await.is_err() {
-                    break;
+                // #1282 契约 2：写端超时。write_all 卡满 WRITE_STALL（对端
+                // 不读、半开连接）即判客户端不可达，只断开本会话；写失败
+                // （EPIPE 等）同断。绝不无界阻塞内核或其他会话。
+                match tokio::time::timeout(WRITE_STALL, w.write_all(line.as_bytes())).await {
+                    Ok(Ok(())) => {}
+                    _ => break,
                 }
             }
         });
@@ -1054,11 +1085,20 @@ fn spawn_session(
         let mut session = SessionState::default();
 
         // Server -> client notifications.
-        {
+        // 句柄留给会话收场：连接一断（读循环退出），通知转发任务必须随
+        // 之 abort——它持有 out_tx 克隆，不终止则 writer 等 senders 归零、
+        // 会话任务等 writer，读半端永不 drop，死会话的 socket 拖到
+        // shutdown 才回收（断连即退订的字面落实，#1282）。
+        let notifier = {
             let out_tx = out_tx.clone();
             let session_subs = session.kline_subs.clone();
             tokio::spawn(async move {
                 let mut events = events;
+                // #1282 契约 1：满队列丢通知不丢响应。通知是 best-effort 的
+                // 推送面（行情/事件），慢客户端不该让它拖垮内核——满即丢
+                // 并计数，首次及每 100 条限频告警一次；队列已关（会话已断）
+                // 则任务退出。决不阻塞等待。
+                let mut dropped: u64 = 0;
                 loop {
                     match events.recv().await {
                         Ok(ev) => {
@@ -1077,52 +1117,101 @@ fn spawn_session(
                                     continue;
                                 }
                             }
-                            if let Ok(json) = serde_json::to_string(&Notification::new(ev))
-                                && out_tx.send(format!("{json}\n")).is_err()
-                            {
-                                break;
+                            if let Ok(json) = serde_json::to_string(&Notification::new(ev)) {
+                                match out_tx.try_send(format!("{json}\n")) {
+                                    Ok(()) => {}
+                                    Err(mpsc::error::TrySendError::Full(_)) => {
+                                        dropped += 1;
+                                        if dropped == 1
+                                            || dropped.is_multiple_of(NOTIFY_DROP_LOG_EVERY)
+                                        {
+                                            tracing::warn!(
+                                                dropped,
+                                                "lagged notifications dropped: outbound \
+                                                 queue full (slow IPC client)"
+                                            );
+                                        }
+                                    }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+                                }
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
-            });
-        }
+            })
+        };
 
-        // issue #1199 P1-12b：读循环恢复为基线形态（BufReader::new + lines()）。
-        // 自定义 read_bounded_line 的 leftover 丢弃缺陷（一次 read() 读出多行
-        // 时非确定性丢失后续请求——并发 3 连发 engine.book 丢第 3 个，
-        // CI risk-systemic-check 红）。基线 lines() 逐位验证 PASS（6 连发全绿）。
-        // 行长度上限改为 next_line 后的检查（P1-20 保留）。
-        let mut lines = BufReader::new(read_half).lines();
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) if !line.trim().is_empty() => {
-                    if line.len() > MAX_LINE_BYTES {
-                        break; // 超限断开（P1-20）
-                    }
-                    let response = handle_line(
-                        &core,
-                        &registry,
-                        line,
-                        &peer,
-                        &update_state,
-                        &jobs,
-                        &host,
-                        &data_plane,
-                        &mut session,
-                    )
-                    .await;
-                    if out_tx.send(format!("{response}\n")).is_err() {
-                        break;
-                    }
+        // #1282 契约 3：读路径手动累积 + 预限长 + 读超时，替换
+        // BufReader::lines()。三条硬约束：
+        // 1) P1-12b 的教训：一次 read() 带出的多行必须全部按序处理，
+        //    剩余字节必须保留（drain 到 \n 为止、余量留在 pending）——
+        //    自定义循环曾因丢 leftover 无声丢掉并发连发的第 3 个请求，
+        //    CI risk-systemic-check 红过一次，本行为由 tests_backpressure
+        //    的多行单 read 用例钉死；
+        // 2) 无换行残留超过 MAX_LINE_BYTES 即截断断开，不缓冲无限长单行
+        //    （单行超限完整到达时同样断开——不再处理超长行，P1-20 语义）；
+        // 3) READ_IDLE_TIMEOUT 内一个字节都收不到即断开：半开连接没有
+        //    RST，不回收的会话会随断连客户端无限累积。
+        // 非法 UTF-8 → 断开（lines() 的 Err → break 语义）；空/纯空白行
+        // → 断开（基线 lines() 对 Ok(Some("")) 的 break 语义）。
+        let mut pending: Vec<u8> = Vec::with_capacity(8 * 1024);
+        let mut chunk = [0u8; 8 * 1024];
+        'session: loop {
+            let n = match tokio::time::timeout(READ_IDLE_TIMEOUT, read_half.read(&mut chunk)).await
+            {
+                Ok(Ok(0)) | Err(_) => break 'session, // EOF / 读空闲超时
+                Ok(Ok(n)) => n,
+                Ok(Err(_)) => break 'session, // 读错误（对端已关）
+            };
+            pending.extend_from_slice(&chunk[..n]);
+            while let Some(pos) = pending.iter().position(|&b| b == b'\n') {
+                let mut line_bytes: Vec<u8> = pending.drain(..=pos).collect();
+                line_bytes.pop(); // \n 已定位，pop 必命中
+                if line_bytes.last() == Some(&b'\r') {
+                    line_bytes.pop(); // lines() 同样吞 \r\n
                 }
-                Ok(_) => break,
-                Err(_) => break,
+                if line_bytes.len() > MAX_LINE_BYTES {
+                    break 'session; // 超长行断开（P1-20）
+                }
+                let line = match String::from_utf8(line_bytes) {
+                    Ok(line) => line,
+                    Err(_) => break 'session,
+                };
+                if line.trim().is_empty() {
+                    break 'session;
+                }
+                let response = handle_line(
+                    &core,
+                    &registry,
+                    line,
+                    &peer,
+                    &update_state,
+                    &jobs,
+                    &host,
+                    &data_plane,
+                    &mut session,
+                )
+                .await;
+                // 响应路径（契约 1）：绝不丢响应。满队列时最多等
+                // WRITE_STALL——写端 30s 还消费不掉即客户端不可达，断开
+                // 该会话降级；通道关闭（写端已死）同断。
+                let sent =
+                    tokio::time::timeout(WRITE_STALL, out_tx.send(format!("{response}\n"))).await;
+                match sent {
+                    Ok(Ok(())) => {}
+                    _ => break 'session,
+                }
+            }
+            // 无换行残留超限：截断（清空，不再喂给解析）并断开（契约 3）。
+            if pending.len() > MAX_LINE_BYTES {
+                pending.clear();
+                break 'session;
             }
         }
         drop(out_tx);
+        notifier.abort();
         let _ = writer.await;
     });
 }

@@ -57,9 +57,13 @@ pub async fn run_web_gateway(args: Vec<String>, program: &'static str) -> std::i
     println!("{program} → socket {socket}");
     let cfg = SupervisorConfig::from_env(socket);
     let dispatcher = Arc::new(Mutex::new(Dispatcher::new(cfg, manage)));
-    // Full trade history: the history tab paginates in the browser, so pass
-    // limit=0 (trades.history drains ALL closed rows, no 200-row cap).
-    let mut server = WebServer::with_shared_gateway(client, 0, dispatcher.clone());
+    // #1282: first-screen snapshot cap. The snapshot (15s poll + 1s SSE tick)
+    // carries only the newest 200 closed rows — the old limit=0 drained the
+    // ENTIRE append-only log into every snapshot payload, which grew without
+    // bound as the log aged. The views that need the full depth (history tab,
+    // equity curve, row-fold fallbacks) page through GET /api/trades instead,
+    // so nothing here depends on the snapshot being exhaustive.
+    let mut server = WebServer::with_shared_gateway(client, 200, dispatcher.clone());
     // Panel credentials come from the environment, never from this process. The
     // WebUI exchanges them for a session token via POST /api/login. Gateway mode
     // can start and stop the trading core, so a missing pair is a startup error

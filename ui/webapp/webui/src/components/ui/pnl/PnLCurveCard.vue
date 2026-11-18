@@ -28,10 +28,12 @@ const store = usePanelStore()
  * 惰性读取，否则顶层一次性捕获后数字冻结不再刷新。 */
 const net = computed(() => store.cumulativeNetPnl)
 
-/** 已平仓笔数 + 权益曲线行：按显示账户 + 显示账户绑定的 venue 过滤，两页保持一致 */
+/** 已平仓笔数 + 权益曲线行：按显示账户 + 显示账户绑定的 venue 过滤，两页保持一致。
+ * issue 1282：行源是深路径 store.fullHistoryRows（分页全史，分工见 store 注释）——
+ * 快照顶层 tradeRows 只装最新 200 行（首屏背压），曲线读它会静默截短。 */
 const closedRows = computed(() => {
   if (!store.activeAccount) return []
-  return filterByVenue(filterByAccount(store.tradeRows, store.activeAccount).rows, store.activeAccountVenue).rows
+  return filterByVenue(filterByAccount(store.fullHistoryRows, store.activeAccount).rows, store.activeAccountVenue).rows
 })
 
 const count = computed(() => closedRows.value.length)

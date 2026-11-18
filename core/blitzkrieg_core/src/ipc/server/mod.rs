@@ -15,7 +15,7 @@ use blitzkrieg_market_api::net::now_ms;
 use serde_json::Value;
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, oneshot};
 

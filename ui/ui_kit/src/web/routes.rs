@@ -573,6 +573,31 @@ impl WebServer {
                 // 该字段，不得把「发出请求」当作「已解冻」。网关零加工。
                 self.proxy_backtest_body("account.unfreeze", &req.body)
             }
+            ("GET", "/api/trades") => {
+                // #1282: the history tab's paging verb — a thin proxy of
+                // `trades.history` with the row window in the query string.
+                // `offset` counts back from the NEWEST end (0 = latest page),
+                // `limit` caps the page; both forwarded untouched, the kernel
+                // clamps and answers the same `trades` array shape the
+                // snapshot's tradeRows already uses. This is how the panel
+                // reaches the FULL log now that the snapshot's first screen
+                // carries only the newest 200 rows (gateway trade_limit): the
+                // snapshot stays the fast path, this route is the depth path.
+                let mut params = serde_json::Map::new();
+                if let Some(n) = req
+                    .query_param("offset")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    params.insert("offset".into(), serde_json::json!(n));
+                }
+                if let Some(n) = req
+                    .query_param("limit")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    params.insert("limit".into(), serde_json::json!(n));
+                }
+                self.proxy_read("trades.history", serde_json::Value::Object(params))
+            }
             ("GET", "/api/trades-summary") => {
                 // PR H (账户筛选修复)：钱包页的闭环统计 —— `trades.summary`
                 // 的薄代理（只读）。`?accountId=` 带上时内核按行过滤重算

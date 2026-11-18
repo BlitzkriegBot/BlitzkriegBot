@@ -105,7 +105,11 @@ const walletAddr = computed(() => snap.value?.wallet?.funder ?? snap.value?.wall
 // 同型：内核账户切片 summary（/api/trades-summary?accountId=display，
 // store.accountTradeSummary）优先；切片缺失（老内核/未到一拍）回落到
 // 账户过滤后的行求和 —— 回落也必须过滤，不能用全局行。
-const tradeRows = computed(() => store.tradeRows)
+// issue 1282: 读深路径 store.fullHistoryRows（append-only 日志的分页全史，与
+// 快照快路径的合流投影 —— 分工见 store 注释）。快照顶层 tradeRows 在网关
+// 侧只装最新 200 行（首屏背压），直接读它会把 200 行之外的成交静默截出
+// 权益曲线与行折叠 —— 这是 issue 1282 之前「曲线少一截」缺口的两源修复。
+const tradeRows = computed(() => store.fullHistoryRows)
 const accountFilteredRows = computed(() => filterByAccount(tradeRows.value, store.activeAccount).rows)
 // 权益曲线跟随显示账户（像真实余额一样，2026-10-20 操作者指令）：曲线此前
 // 读快照顶层的全局 tradeRows —— 余额瓦片已切到账户自有读数，曲线还画着

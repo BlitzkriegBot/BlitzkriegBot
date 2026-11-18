@@ -409,11 +409,15 @@ const feed = computed(() => feedStaleness(store.feedAt, nowMs.value))
 // ── cumulative all-time totals (core summary preferred, rows as fallback) ────
 // E28 (§9.5): the history is scoped to the panel's account — issue 561: that
 // account is the DISPLAY account (唯一可信源; store.activeAccount reads it).
+// issue 1282: 行源换深路径 store.fullHistoryRows（分页全史，分工见 store 注释）
+// —— 快照顶层 tradeRows 只装最新 200 行（首屏背压），历史 tab / cumStats
+// 行折叠读它会静默截断全史口径。历史 tab 的翻页仍是浏览器内瀑布分页
+// （check:history 钉住），只是数据源不再依赖快照行数。
 // `accountFilter.rows` is the account's slice of the log (unattributed rows
 // from a pre-E28 core stay visible, see lib/account-filter). Every
 // history-derived view (cumulative header, equity curve, filters, stats)
 // reads the filtered list so the page cannot mix two accounts in one number.
-const accountFilter = computed(() => filterByAccount(store.tradeRows, store.activeAccount))
+const accountFilter = computed(() => filterByAccount(store.fullHistoryRows, store.activeAccount))
 // （activeVenue 与 venue 跟随的 Loading 门在本文件上方定义 —— 行情/盘口/
 // 历史/持仓共用同一 venue 视图。）
 const historyRows = computed<TradeRow[]>(() =>

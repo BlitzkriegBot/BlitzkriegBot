@@ -812,6 +812,7 @@ mod tests_accept_err_state;
 mod tests_account_books;
 mod tests_account_settings_write;
 mod tests_account_verbs;
+mod tests_backpressure;
 mod tests_backtest;
 mod tests_blueprint;
 mod tests_env_readonly;

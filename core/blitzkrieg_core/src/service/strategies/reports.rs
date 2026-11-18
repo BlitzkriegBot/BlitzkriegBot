@@ -124,19 +124,42 @@ impl Core {
     /// Recent closed trades (for the UI). Reads the persisted log when present,
     /// else falls back to the in-memory closed positions.
     pub fn recent_trades(&self, limit: usize) -> Vec<serde_json::Value> {
+        self.recent_trades_page(limit, 0)
+    }
+
+    /// One page of closed trades, counted back from the NEWEST end (#1282).
+    ///
+    /// `offset` skips the most recent rows (0 = latest), `limit` caps the
+    /// window; `limit == 0` = uncapped (whole log at offset=0, everything
+    /// older at offset>0) — the same contract `trade_db::read_page` documents.
+    /// `recent_trades` is exactly this at offset=0, so the two stay one
+    /// surface. The in-memory fallback (no trade log attached) windows
+    /// `closed_positions` the same way: newest last, window cut from the end,
+    /// so the page contract holds whichever branch serves the rows.
+    pub fn recent_trades_page(&self, limit: usize, offset: usize) -> Vec<serde_json::Value> {
         if let Some(path) = self.config.trade_log_path.as_ref() {
-            let rows = crate::trade_db::read_recent(std::path::Path::new(path), limit);
-            if !rows.is_empty() {
-                return rows;
+            let p = std::path::Path::new(path);
+            if p.exists() {
+                let rows = crate::trade_db::read_page(p, offset, limit);
+                if !rows.is_empty() || offset > 0 {
+                    return rows;
+                }
+                // offset == 0 with an empty log keeps the historical fallback:
+                // a fresh boot may hold closed positions in memory that the
+                // JSONL has not picked up yet. offset > 0 does NOT fall back —
+                // an empty page there means "the page ran past the oldest
+                // logged row", and splicing the in-memory window in would
+                // corrupt the page contract (a paginator would loop forever).
             }
         }
         let closed = self.positions.closed_positions();
-        let start = if limit > 0 && closed.len() > limit {
-            closed.len() - limit
-        } else {
+        let end = closed.len().saturating_sub(offset);
+        let start = if limit == 0 {
             0
+        } else {
+            end.saturating_sub(limit)
         };
-        closed[start..]
+        closed[start..end]
             .iter()
             .map(|c| {
                 serde_json::to_value(crate::trade_db::TradeRecord::from_closed(c))

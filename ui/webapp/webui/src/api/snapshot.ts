@@ -307,6 +307,15 @@ export interface Position {
   accountId?: string
 }
 
+/**
+ * `GET /api/trades` 的回执（issue 1282，`trades.history` 薄代理）：rows 与快照
+ * 顶层 tradeRows 同形；version 是内核协议版本，面板不读。
+ */
+export interface TradesHistoryDoc {
+  version?: string
+  trades?: TradeRow[]
+}
+
 export interface TradeRow {
   id: string
   strategy?: string
@@ -685,4 +694,16 @@ export interface EvolutionDoc {
 export const snapshotApi = {
   snapshot: () => request<Snapshot>('/snapshot'),
   plugins: () => request<PluginsDoc>('/plugins'),
+  /**
+   * issue 1282 分页成交行（GET /api/trades，`trades.history` 薄代理）：快照顶层
+   * tradeRows 在网关侧只装最新 200 行（首屏背压），全史视图（历史 tab、
+   * 权益曲线、行折叠回落）从这里按窗口取。offset 从最新端往回数（0 =
+   * 最新一页），limit 缺省 = 内核默认 50；rows 与快照同形（TradeRow），
+   * 文件序（最旧→最新）—— 拼页后保持时间升序，权益曲线直接可用。
+   */
+  tradesPage: (params?: { offset?: number; limit?: number }) =>
+    request<TradesHistoryDoc>('/trades', {}, {
+      offset: params?.offset,
+      limit: params?.limit,
+    }),
 }

@@ -83,6 +83,12 @@ impl Core {
             .get(id)
             .cloned()
             .ok_or_else(|| CoreError::new(CoreErrorCode::UnknownOrder, id))?;
+        if order.status.is_terminal() {
+            // #7: 终态不可被撤单覆写。单已成交/拒绝/失败/强平，迟到的撤单
+            // 回执 (venue `on_order_cancelled` → `cancel`) 不应把诚实的终态
+            // 改回 `Cancelled`。幂等地忽略，状态机单向。
+            return Ok(());
+        }
         let was_live = order.status.is_live();
         self.release_order_bookkeeping(&order, was_live, "cancel");
         self.ome.mark_terminal(id, OrderStatus::Cancelled, now_ms)?;

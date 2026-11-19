@@ -403,6 +403,42 @@ fn a_price_improved_fill_leaves_no_residue() {
     assert_eq!(audit.drift_usd, Decimal::ZERO);
 }
 
+/// #7: an order already in an honest terminal state must never be rewritten to
+/// `Cancelled` by a belated venue cancel confirm (`on_order_cancelled` → `cancel`).
+#[test]
+fn a_cancel_after_fill_keeps_terminal_status() {
+    let (mut c, _rx) = subscribed_core();
+    let id = live_buy(&mut c, dec!(20), dec!(0.6), "entry:fill-first", 1);
+
+    // The fill lands first: the order is honestly terminal.
+    c.ingest_fill(fill(&id, "fill-1", Side::Buy, dec!(0.6), dec!(20)), 2)
+        .unwrap();
+    assert_eq!(
+        c.ome().get(&id).unwrap().status,
+        OrderStatus::Filled,
+        "the fill must put the order into Filled"
+    );
+    assert_eq!(c.ledger().reserved(), Decimal::ZERO);
+    assert_eq!(c.ledger().balance(), SEED - dec!(12));
+
+    // A late venue cancel confirm must NOT rewrite Filled → Cancelled (#7).
+    c.cancel(&id, 3).unwrap();
+    let o = c.ome().get(&id).unwrap();
+    assert_eq!(
+        o.status,
+        OrderStatus::Filled,
+        "a terminal order must never be revived into Cancelled"
+    );
+    assert_eq!(o.filled_size, dec!(20), "the booked size is intact");
+    assert_eq!(
+        c.ledger().reserved(),
+        Decimal::ZERO,
+        "a filled order holds nothing reserved"
+    );
+    assert_eq!(c.ledger().balance(), SEED - dec!(12));
+    assert!(c.ledger().is_balanced());
+}
+
 /// ACCEPTANCE: partial fill then cancel leaves nothing behind.
 #[test]
 fn a_partial_fill_then_cancel_leaves_no_residue() {

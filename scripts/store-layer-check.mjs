@@ -98,6 +98,7 @@ const ALLOW = [
   { path: 'core/blitzkrieg_core/src/db/', why: 'SQLite store implementation — the DB layer itself' },
   { path: 'core/blitzkrieg_core/src/db_import.rs', why: 'one-shot legacy-file importer (opens its own connection)' },
   { path: 'core/blitzkrieg_core/src/risk/account_store.rs', why: 'per-account risk/exit durable store seam (db::Database behind it)' },
+  { path: 'core/blitzkrieg_core/src/position_db.rs', why: 'position book durable store seam (position persistence) — store implementation (#1199)' },
   // The composition root: main.rs wires config paths (which store, which
   // .env). Assembly is not a business-layer write.
   { path: 'core/blitzkrieg_launcher/src/main.rs', why: 'launcher assembly — wires the env/db paths' },

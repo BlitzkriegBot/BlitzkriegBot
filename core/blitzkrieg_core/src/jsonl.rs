@@ -258,6 +258,22 @@ pub(crate) fn append_failures() -> u64 {
     APPEND_FAILURES.load(Ordering::Relaxed)
 }
 
+/// True when `path` is non-empty and does not end with `\n` — the last record
+/// landed half-written. That is the one shape [`append`] has to close before
+/// writing again (#1290). A healthy file always ends with its newline, so the
+/// normal path adds no byte.
+fn tail_is_torn(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    if f.seek(SeekFrom::End(-1)).is_err() {
+        return false; // empty (or unseekable): nothing to close
+    }
+    let mut last = [0u8; 1];
+    matches!(f.read_exact(&mut last), Ok(())) && last[0] != b'\n'
+}
+
 /// Append one JSON object as a line to `path`, creating the parent directory.
 ///
 /// Best effort by construction: every failure is swallowed. That is the shared
@@ -279,6 +295,15 @@ pub(crate) fn append(path: &Path, value: &impl serde::Serialize) -> bool {
         APPEND_FAILURES.fetch_add(1, Ordering::Relaxed);
         return false;
     };
+    // A write_all that fails after some of its bytes landed leaves the file
+    // ending mid-line. With no newline in front, this record fuses onto that
+    // fragment and BOTH become one unparseable line — one failed write costs
+    // two records, and the lost one can be an order the restart can no longer
+    // replay (#1290). Read the last byte rather than remember a flag: a tear
+    // can also be left by the PREVIOUS process.
+    if tail_is_torn(path) {
+        buf.insert(0, b'\n');
+    }
     buf.push(b'\n');
     let ok = match std::fs::OpenOptions::new()
         .create(true)
@@ -559,5 +584,49 @@ mod tests {
         q.set_mode(0o700);
         std::fs::set_permissions(&ro_dir, q).unwrap();
         let _ = std::fs::remove_dir_all(&ro_dir);
+    }
+
+    /// #1290: a record torn mid-write leaves the file ending without its
+    /// newline. The next append has to close that line, or the two records fuse
+    /// into one unparseable line and the skip-unparseable reader loses BOTH.
+    #[test]
+    fn a_torn_tail_is_closed_before_the_next_record() {
+        let dir = std::env::temp_dir().join(format!(
+            "bk-jsonl-torn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("orders.jsonl");
+        // What a failed write_all leaves behind: the record's first bytes, no
+        // newline. This is the crash case too — the tear outlives the process.
+        std::fs::write(&path, br#"{"id":"a""#).expect("seed torn tail");
+
+        assert!(append(&path, &serde_json::json!({ "id": "b" })));
+
+        let text = std::fs::read_to_string(&path).expect("read back");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "the torn fragment kept its own line: {text:?}"
+        );
+        assert_eq!(lines[1], r#"{"id":"b"}"#, "the new record is intact");
+        // The loss stays bounded to the torn record: the loader still reads one.
+        assert_eq!(load::<serde_json::Value>(&path, "skipped").len(), 1);
+
+        // A healthy tail is left byte-identical — the repair never runs twice.
+        assert!(append(&path, &serde_json::json!({ "id": "c" })));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .ends_with("{\"id\":\"c\"}\n"),
+            "no repair byte on a healthy file"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

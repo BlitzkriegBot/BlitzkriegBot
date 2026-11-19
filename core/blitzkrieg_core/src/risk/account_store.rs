@@ -143,9 +143,12 @@ impl AccountRiskDb {
                 // values are ALL placeholders is skipped entirely — the
                 // boot chain (env → factory) resolves that account.
                 let imported_env = source == "imported_env";
-                let dec = |raw: &str| {
+                let dec = |raw: &str| -> Result<Bound, String> {
                     if imported_env && raw.trim() == "0" {
-                        Bound::off()
+                        // Imported-env placeholder zero = "we looked and found
+                        // nothing", not a configured bound: keep factory-default
+                        // `off` (comment above, issue #1199 PR-2 E26).
+                        Ok(Bound::off())
                     } else {
                         dec_bound(raw)
                     }
@@ -164,11 +167,11 @@ impl AccountRiskDb {
                     continue;
                 }
                 let mut limits = AccountRiskLimits {
-                    max_single_loss_usd: dec(&single),
-                    max_daily_drawdown_usd: dec(&daily),
-                    max_position_size: dec(&position),
-                    max_consecutive_losses: dec(&losses),
-                    cooldown_minutes: dec(&cooldown),
+                    max_single_loss_usd: dec(&single)?,
+                    max_daily_drawdown_usd: dec(&daily)?,
+                    max_position_size: dec(&position)?,
+                    max_consecutive_losses: dec(&losses)?,
+                    cooldown_minutes: dec(&cooldown)?,
                     max_order_notional_usd: Bound::off(),
                 };
                 // #1186's cap lives in the settings table (the v1 schema has
@@ -181,7 +184,7 @@ impl AccountRiskDb {
                     [&id, MAX_ORDER_NOTIONAL_SETTING],
                     |r| -> Result<String, _> { r.get(0) },
                 ) {
-                    Ok(raw) => limits.max_order_notional_usd = dec_bound(&raw),
+                    Ok(raw) => limits.max_order_notional_usd = dec_bound(&raw)?,
                     Err(rusqlite::Error::QueryReturnedNoRows) => {}
                     Err(e) => {
                         return Err(format!(
@@ -718,14 +721,14 @@ impl crate::service::Core {
     }
 }
 
-fn dec_bound(raw: &str) -> Bound {
-    match raw.trim().parse::<Decimal>() {
-        Ok(v) => Bound::new(v, LimitSource::Env),
-        Err(_) => {
-            tracing::warn!(raw = %raw, "account risk value unparseable — limit stays off");
-            Bound::off()
-        }
-    }
+/// Parse a risk bound from a raw string. A parse failure is **fail-closed**:
+/// return `Err` so `load_account_risks` aborts boot instead of degrading to
+/// `Bound::off()` (unlimited — the fail-open path fixed by issue #3).
+fn dec_bound(raw: &str) -> Result<Bound, String> {
+    raw.trim()
+        .parse::<Decimal>()
+        .map(|v| Bound::new(v, LimitSource::Env))
+        .map_err(|e| format!("account risk value unparseable (fail-closed): raw={raw}, error={e}"))
 }
 
 #[cfg(test)]
@@ -813,6 +816,17 @@ mod tests {
         );
         drop(db);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Issue #3: an unparseable configured risk value must be fail-closed —
+    /// `dec_bound` returns `Err`, never `Bound::off()` (unlimited / fail-open).
+    #[test]
+    fn dec_bound_unparseable_is_fail_closed() {
+        assert!(dec_bound("1000").is_ok());
+        assert!(dec_bound("0").is_ok());
+        assert!(dec_bound("1oo0").is_err()); // lookalike letter "o"
+        assert!(dec_bound("not-a-number").is_err());
+        assert!(dec_bound("  ").is_err());
     }
 
     /// A freshly opened store has zero exit rows: `load_exits` answers `Ok`

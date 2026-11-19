@@ -192,8 +192,19 @@ impl Core {
             .any(|(_, id)| id == &venue_order_id)
         {
             self.pending_venue_cancels.push((venue, venue_order_id));
-            if self.pending_venue_cancels.len() > 256 {
-                self.pending_venue_cancels.remove(0);
+            if self.pending_venue_cancels.len() > crate::service::MAX_PENDING_VENUE_CANCELS {
+                // Newest wins. The order whose cancel just went over the cap can
+                // keep resting on the venue until reconcile notices it, so name
+                // it: a silently dropped cancel is a ghost order nobody can find
+                // (#1291).
+                let (dropped_venue, dropped_id) = self.pending_venue_cancels.remove(0);
+                tracing::warn!(
+                    venue = %dropped_venue,
+                    venue_order_id = %dropped_id,
+                    cap = crate::service::MAX_PENDING_VENUE_CANCELS,
+                    "venue-cancel queue full — dropped the OLDEST pending cancel; \
+                     that order may keep resting until the reconcile sweep"
+                );
             }
         }
     }

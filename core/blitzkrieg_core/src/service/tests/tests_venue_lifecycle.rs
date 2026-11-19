@@ -1009,3 +1009,29 @@ fn a_rejected_order_row_carries_the_venue_reason() {
     );
     assert!(c.run_accounting_audit(3).ok, "the reject stays auditable");
 }
+
+/// #1291: the queue is capped so a stalled bridge cannot grow it for ever, and
+/// the entry that loses is the OLDEST — the newest cancels still get out. The
+/// drop is announced (warn) rather than silent: a cancel nobody forwards leaves
+/// an order resting on the venue with nothing pointing at it.
+#[test]
+fn the_venue_cancel_queue_keeps_the_newest_and_drops_the_oldest() {
+    let mut c = live_core(dec!(10));
+    for i in 0..=MAX_PENDING_VENUE_CANCELS {
+        c.queue_venue_cancel("polysimulator".into(), format!("0xv{i}"));
+    }
+
+    let queued = c.take_pending_venue_cancels();
+    let newest = format!("0xv{MAX_PENDING_VENUE_CANCELS}");
+    assert_eq!(queued.len(), MAX_PENDING_VENUE_CANCELS);
+    assert_eq!(
+        queued.first().map(String::as_str),
+        Some("0xv1"),
+        "the OLDEST cancel is the one dropped, not the newest"
+    );
+    assert_eq!(
+        queued.last().map(String::as_str),
+        Some(newest.as_str()),
+        "the newest cancel still rides the queue"
+    );
+}

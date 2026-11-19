@@ -60,6 +60,12 @@ pub(crate) use risk_admission::RiskStateCell;
 pub(crate) use config_gates::{reconcile_config_gate_for, reconcile_config_gates};
 pub(crate) use pricing::marketable_exit_price;
 
+/// Cap on `pending_venue_cancels`. The live bridge drains the queue once per
+/// tick, so a healthy run never gets near it; reaching it means the bridge or
+/// the venue has stopped taking cancels. Newest wins — the OLDEST entry is the
+/// one dropped, and [`Core::queue_venue_cancel`] warns when it happens (#1291).
+pub(crate) const MAX_PENDING_VENUE_CANCELS: usize = 256;
+
 pub struct Core {
     pub(crate) config: CoreConfig,
     ome: Ome,

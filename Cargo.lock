@@ -1287,8 +1287,6 @@ dependencies = [
 name = "blitzkrieg-kalshi"
 version = "0.4.2"
 dependencies = [
- "anyhow",
- "async-trait",
  "base64 0.22.1",
  "blitzkrieg-bk-contract",
  "futures-util",
@@ -1303,7 +1301,6 @@ dependencies = [
  "sha2",
  "thiserror 2.0.21",
  "tokio",
- "tokio-tungstenite",
  "tracing",
  "url",
 ]
@@ -1385,8 +1382,6 @@ name = "blitzkrieg-predictfun"
 version = "0.4.2"
 dependencies = [
  "alloy",
- "anyhow",
- "async-trait",
  "blitzkrieg-bk-contract",
  "futures-util",
  "mime",
@@ -1397,7 +1392,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
- "tokio-tungstenite",
  "tracing",
  "url",
 ]

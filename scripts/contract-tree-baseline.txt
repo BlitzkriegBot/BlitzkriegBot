@@ -77,8 +77,6 @@ blitzkrieg-data-model :: rust_decimal_macros
 blitzkrieg-data-model :: serde
 blitzkrieg-data-model :: serde_json
 blitzkrieg-data-model :: tracing
-blitzkrieg-kalshi :: anyhow
-blitzkrieg-kalshi :: async-trait
 blitzkrieg-kalshi :: base64
 blitzkrieg-kalshi :: futures-util
 blitzkrieg-kalshi :: mime
@@ -92,7 +90,6 @@ blitzkrieg-kalshi :: serde_json
 blitzkrieg-kalshi :: sha2
 blitzkrieg-kalshi :: thiserror
 blitzkrieg-kalshi :: tokio
-blitzkrieg-kalshi :: tokio-tungstenite
 blitzkrieg-kalshi :: tracing
 blitzkrieg-kalshi :: url
 blitzkrieg-launcher :: anyhow
@@ -125,8 +122,6 @@ blitzkrieg-polysimulator :: thiserror
 blitzkrieg-polysimulator :: tokio
 blitzkrieg-polysimulator :: url
 blitzkrieg-predictfun :: alloy
-blitzkrieg-predictfun :: anyhow
-blitzkrieg-predictfun :: async-trait
 blitzkrieg-predictfun :: futures-util
 blitzkrieg-predictfun :: mime
 blitzkrieg-predictfun :: rand
@@ -136,7 +131,6 @@ blitzkrieg-predictfun :: serde
 blitzkrieg-predictfun :: serde_json
 blitzkrieg-predictfun :: thiserror
 blitzkrieg-predictfun :: tokio
-blitzkrieg-predictfun :: tokio-tungstenite
 blitzkrieg-predictfun :: tracing
 blitzkrieg-predictfun :: url
 blitzkrieg-strategy-api :: rust_decimal

@@ -611,6 +611,19 @@ pub struct AccountGateView {
 
 // ── trades.history ───────────────────────────────────────────────────────────
 
+/// #1294: the trades surface degraded — the panel must be able to tell
+/// "no closed trades yet" apart from "trade data exists but could not be
+/// used". `unavailable` = the whole `trades.history` call failed (RPC error,
+/// timeout, shapeless result); `skipped_rows > 0` = the call answered but
+/// some rows failed their row-level parse and were dropped (counted, never
+/// silently mixed in as empty).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradesDegradeView {
+    pub unavailable: bool,
+    pub skipped_rows: u64,
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TradeView {
@@ -1201,6 +1214,12 @@ pub struct UiSnapshot {
     pub trade_summary: Option<serde_json::Value>,
     /// Name of the active market plugin (identity label for the panel).
     pub market_active_name: Option<String>,
+    /// #1294: `None` = healthy (the historical behaviour — an older panel
+    /// build and an older snapshot both render exactly as before). `Some` =
+    /// the trades surface degraded and the empty/short row list must not be
+    /// read as "no closed trades": `unavailable` = the whole call failed,
+    /// `skipped_rows > 0` = rows dropped for failing their row-level parse.
+    pub trades_degrade: Option<TradesDegradeView>,
     /// 显示账户配置化: the account the 行情页 mirrors (its venue binding in
     /// `display_venue`, empty = unbound). A pure presentation pointer sourced
     /// from accounts.toml's top-level `display_account` key /

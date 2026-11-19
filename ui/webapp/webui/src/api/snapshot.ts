@@ -433,6 +433,13 @@ export interface Snapshot {
   books?: AssetBook[]
   trades?: TradeSummary
   tradeRows?: TradeRow[]
+  /**
+   * issue 1294 成交面降级信号（旧内核缺字段 → undefined，按健康处理）。
+   * absent/null = 健康；unavailable = 整个 trades.history 调用失败；
+   * skippedRows > 0 = 有行解析失败被丢弃。任一情况都不能把空/短的
+   * tradeRows 读成「没有成交」。
+   */
+  tradesDegrade?: { unavailable: boolean; skippedRows: number; reason?: string | null } | null
   /** All-time totals (older cores omit → fall back to tradeRows sums). */
   tradeSummary?: CumulativeTradeSummary | null
   strategies?: unknown[]

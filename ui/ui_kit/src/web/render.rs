@@ -484,6 +484,18 @@ pub fn render_json_full(
         "stageState": s.stage_state,
         // Full closed-trade rows for the history tab (snapshot already capped
         // by the trade_limit the bin passes to IpcClient::snapshot).
+        // #1294: the degrade signal rides beside the rows — `null` = healthy
+        // (older cores/panels see nothing); otherwise the panel can tell
+        // "no closed trades" from "trade data unusable" and how many rows
+        // were dropped. Absent-key tolerance lives on the TS side.
+        "tradesDegrade": match s.trades_degrade {
+            None => serde_json::Value::Null,
+            Some(ref d) => serde_json::json!({
+                "unavailable": d.unavailable,
+                "skippedRows": d.skipped_rows,
+                "reason": d.reason,
+            }),
+        },
         "tradeRows": s.trades.iter().map(|t| serde_json::json!({
             "id": t.id, "strategy": t.strategy, "asset": t.asset,
             "direction": t.direction, "entryPrice": t.entry_price,

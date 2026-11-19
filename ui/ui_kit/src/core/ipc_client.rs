@@ -117,6 +117,21 @@ pub(crate) mod method {
     pub const EXECUTION_POLICY_HISTORY: &str = "execution_policy.history";
 }
 
+/// #1294: the three outcomes a trades fetch can have, so the snapshot can
+/// carry the difference instead of flattening every failure into an empty
+/// row list. `Healthy` is byte-for-byte the historical behaviour.
+pub enum TradesFetch {
+    Healthy(Vec<TradeView>),
+    RowsSkipped {
+        rows: Vec<TradeView>,
+        skipped: u64,
+        reason: String,
+    },
+    Unavailable {
+        reason: String,
+    },
+}
+
 pub struct IpcClient {
     socket_path: String,
     stream: Option<UnixStream>,
@@ -291,6 +306,58 @@ impl IpcClient {
             serde_json::json!({ "limit": limit }),
         )?)
         .map_err(|e| IpcError::Protocol(e.to_string()))
+    }
+
+    /// #1294: the row-resilient trades fetch behind `snapshot()`. The strict
+    /// `trades()` stays for callers that WANT all-or-nothing typing; the
+    /// snapshot must not, because one drifted row there erased the whole
+    /// history surface with no signal. `Healthy` keeps the exact old
+    /// behaviour (typed rows, no degrade field); `RowsSkipped` carries the
+    /// rows that did parse plus how many did not; `Unavailable` means the
+    /// call itself failed or the result carried no trades array.
+    pub fn trades_resilient(&mut self, limit: usize) -> TradesFetch {
+        let v = match self.call(
+            method::TRADES_HISTORY,
+            serde_json::json!({ "limit": limit }),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                return TradesFetch::Unavailable {
+                    reason: e.to_string(),
+                }
+            }
+        };
+        let rows = match v.get("trades").and_then(|t| t.as_array()) {
+            Some(rows) => rows,
+            None => {
+                return TradesFetch::Unavailable {
+                    reason: "trades.history result carries no trades array".into(),
+                }
+            }
+        };
+        let mut good = Vec::with_capacity(rows.len());
+        let mut skipped = 0u64;
+        let mut first_reason = String::new();
+        for row in rows {
+            match serde_json::from_value::<TradeView>(row.clone()) {
+                Ok(t) => good.push(t),
+                Err(e) => {
+                    skipped += 1;
+                    if first_reason.is_empty() {
+                        first_reason = e.to_string();
+                    }
+                }
+            }
+        }
+        if skipped == 0 {
+            TradesFetch::Healthy(good)
+        } else {
+            TradesFetch::RowsSkipped {
+                rows: good,
+                skipped,
+                reason: first_reason,
+            }
+        }
     }
 
     /// All-time closed-trade totals from the persisted summary (trades.summary).
@@ -664,10 +731,44 @@ impl IpcClient {
         s.stats = self.stats().ok();
         s.positions = self.positions().map(|p| p.positions).unwrap_or_default();
         s.orders = self.orders().map(|o| o.orders).unwrap_or_default();
-        s.trades = self
-            .trades(trade_limit)
-            .map(|t| t.trades)
-            .unwrap_or_default();
+        // #1294: a shape-drifted trades payload used to be swallowed here —
+        // `unwrap_or_default` turned a parse failure into an EMPTY row list on
+        // a snapshot that otherwise reports healthy (`connected: true`,
+        // `last_error: null`), and the panel read "no closed trades" off a
+        // history that exists. The fetch is row-resilient now (bad rows are
+        // skipped and COUNTED, never silently mixed), and every degradation
+        // travels on the snapshot as `trades_degrade` plus a stderr line, so
+        // "no trades yet" and "trade data unusable" are distinguishable.
+        match self.trades_resilient(trade_limit) {
+            TradesFetch::Healthy(rows) => s.trades = rows,
+            TradesFetch::RowsSkipped {
+                rows,
+                skipped,
+                reason,
+            } => {
+                s.trades = rows;
+                eprintln!(
+                    "ui_kit: trades history degraded — {skipped} row(s) failed their \
+                     row-level parse and were skipped: {reason}"
+                );
+                s.trades_degrade = Some(TradesDegradeView {
+                    unavailable: false,
+                    skipped_rows: skipped,
+                    reason: Some(reason),
+                });
+            }
+            TradesFetch::Unavailable { reason } => {
+                eprintln!(
+                    "ui_kit: trades history unavailable — the panel must not read this \
+                     as an empty ledger: {reason}"
+                );
+                s.trades_degrade = Some(TradesDegradeView {
+                    unavailable: true,
+                    skipped_rows: 0,
+                    reason: Some(reason),
+                });
+            }
+        }
         // All-time closed-trade totals (persisted summary; older cores omit).
         s.trade_summary = self.trade_summary().ok();
         s.strategies = self.strategies().map(|r| r.strategies).unwrap_or_default();

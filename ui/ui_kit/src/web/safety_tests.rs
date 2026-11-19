@@ -441,3 +441,51 @@ fn snapshot_stats_keys_are_subset_of_output_keys() {
         "arbActivePairs 须随策略行到达",
     );
 }
+
+/// #1294：成交面降级必须到达面板。健康快照的键是显式 `null`（老面板对它
+/// 无感），不健康时带上 unavailable/skippedRows/reason —— 否则空 tradeRows
+/// 就只剩「没有成交」一种读法，这正是要修的静默。
+#[test]
+fn the_trades_degrade_signal_reaches_the_snapshot_json() {
+    use crate::core::types::TradesDegradeView;
+
+    let healthy = snapshot_json(&UiSnapshot {
+        connected: true,
+        ..Default::default()
+    });
+    assert!(
+        healthy.get("tradesDegrade").is_some(),
+        "键必须在（null 也是信息：健康）"
+    );
+    assert!(healthy["tradesDegrade"].is_null(), "健康快照保持 null");
+
+    let degraded = snapshot_json(&UiSnapshot {
+        connected: true,
+        trades_degrade: Some(TradesDegradeView {
+            unavailable: false,
+            skipped_rows: 3,
+            reason: Some("missing field `entryPrice`".into()),
+        }),
+        ..Default::default()
+    });
+    assert_eq!(degraded["tradesDegrade"]["unavailable"], false);
+    assert_eq!(degraded["tradesDegrade"]["skippedRows"], 3);
+    assert!(
+        degraded["tradesDegrade"]["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("entryPrice"),
+        "原因必须原样到达，面板的横幅才有话可说"
+    );
+
+    let down = snapshot_json(&UiSnapshot {
+        connected: true,
+        trades_degrade: Some(TradesDegradeView {
+            unavailable: true,
+            skipped_rows: 0,
+            reason: Some("rpc error -32000: trade log unreadable".into()),
+        }),
+        ..Default::default()
+    });
+    assert_eq!(down["tradesDegrade"]["unavailable"], true);
+}

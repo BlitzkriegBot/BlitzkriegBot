@@ -204,3 +204,200 @@ fn a_request_behind_a_notification_backlog_is_still_answered() {
     server.join().ok();
     let _ = std::fs::remove_file(&sock);
 }
+
+// ── #1294: the trades surface must not degrade silently ──────────────────────
+
+/// A method-aware one-shot server: every request is answered with whatever
+/// `reply_for` returns for its method — the payload map only (`{"result": …}`
+/// or `{"error": …}`), so a single snapshot's many calls can carry ONE
+/// scripted trades payload while everything else answers a benign empty
+/// result. This is the injection point the #1294 tests need — the shipped
+/// `serve_then_close` replies one fixed shape to every method.
+///
+/// The listener binds SYNCHRONOUSLY in the caller's thread: a bind inside the
+/// spawned thread races the client's first connect (ECONNREFUSED).
+fn serve_scripted(
+    sock: PathBuf,
+    budget: usize,
+    reply_for: impl Fn(&str) -> serde_json::Value + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    let listener = UnixListener::bind(&sock).expect("bind test socket");
+    std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            // Idle read timeout: the budget is a CAP, not a promise — once the
+            // client stops asking, read_line must not park the thread (a
+            // parked server makes the join at the end of the test hang).
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_millis(400)))
+                .expect("set read timeout");
+            let mut writer = stream.try_clone().expect("clone");
+            let mut reader = BufReader::new(stream);
+            for _ in 0..budget {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let req: serde_json::Value = match serde_json::from_str(line.trim()) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let method = req
+                    .get("method")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let id = req.get("id").cloned().unwrap_or(serde_json::json!(1));
+                let mut reply = reply_for(&method);
+                reply["jsonrpc"] = serde_json::json!("2.0");
+                reply["id"] = id;
+                let mut out = reply.to_string();
+                out.push('\n');
+                if writer
+                    .write_all(out.as_bytes())
+                    .and_then(|_| writer.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            // Keep the session briefly so late calls land on a live socket.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    })
+}
+
+/// One kernel-shaped trade row (camelCase, JSON numbers — `TradeRecord`'s
+/// `rename_all` shape, the only shape `TradeView` accepts).
+fn trade_row(id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "strategy": "spread_arb", "asset": "BTC", "direction": "up",
+        "entryPrice": 0.40, "exitPrice": 0.60, "shares": 250.0,
+        "netPnlUsd": 50.0, "netPnlPct": 50.0, "feesUsd": 0.0,
+        "exitReason": "take_profit", "holdTimeSec": 12,
+        "entryTime": 1700000000001i64, "exitTime": 1700000012001i64,
+    })
+}
+
+/// The defect this pins (found by the #1282 offline stress test): ONE drifted
+/// row — same payload, `entryPrice` renamed — used to fail the whole
+/// `Vec<TradeView>` parse, and `unwrap_or_default` turned that into an EMPTY
+/// history on a snapshot reporting `connected: true, last_error: null`. The
+/// good rows must survive the bad one, and the skip must be visible.
+#[test]
+fn a_shape_drifted_trades_row_is_counted_and_the_good_rows_survive() {
+    let sock = unique_sock("trades-drift");
+    let server = serve_scripted(sock.clone(), 64, |method| {
+        if method == "trades.history" {
+            let mut drifted = trade_row("hft-3");
+            // The single rename that used to erase the whole surface: the
+            // required key disappears, so the row fails its parse outright.
+            drifted
+                .as_object_mut()
+                .expect("row object")
+                .remove("entryPrice");
+            return serde_json::json!({
+                "result": {
+                    "version": "1",
+                    "trades": [trade_row("hft-1"), trade_row("hft-2"), drifted],
+                },
+            });
+        }
+        serde_json::json!({ "result": { "version": "0.1.0", "mode": "dry" } })
+    });
+
+    let mut client = IpcClient::new(sock.to_string_lossy().to_string());
+    let snap = client.snapshot(0);
+
+    assert_eq!(
+        snap.trades.len(),
+        2,
+        "the two well-formed rows must survive their drifted sibling"
+    );
+    let degrade = snap
+        .trades_degrade
+        .as_ref()
+        .expect("a dropped row must travel as a degrade signal, never disappear");
+    assert!(!degrade.unavailable, "the call itself answered");
+    assert_eq!(degrade.skipped_rows, 1);
+    assert!(
+        degrade
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("entryPrice"),
+        "the reason must name the field that drifted: {:?}",
+        degrade.reason
+    );
+
+    server.join().ok();
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// A healthy payload keeps the historical behaviour byte-for-byte: the rows
+/// parse, and `trades_degrade` stays absent (an older panel build renders
+/// exactly as before).
+#[test]
+fn a_healthy_trades_payload_carries_no_degrade_signal() {
+    let sock = unique_sock("trades-healthy");
+    let server = serve_scripted(sock.clone(), 64, |method| {
+        if method == "trades.history" {
+            return serde_json::json!({
+                "result": {
+                    "version": "1",
+                    "trades": [trade_row("hft-1"), trade_row("hft-2")],
+                },
+            });
+        }
+        serde_json::json!({ "result": { "version": "0.1.0", "mode": "dry" } })
+    });
+
+    let mut client = IpcClient::new(sock.to_string_lossy().to_string());
+    let snap = client.snapshot(0);
+
+    assert_eq!(snap.trades.len(), 2);
+    assert!(
+        snap.trades_degrade.is_none(),
+        "a clean response must not raise a banner"
+    );
+
+    server.join().ok();
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// The other half: when the call itself fails (RPC error), the snapshot must
+/// say the surface is UNAVAILABLE rather than presenting an empty ledger.
+#[test]
+fn a_failed_trades_call_marks_the_surface_unavailable() {
+    let sock = unique_sock("trades-down");
+    let server = serve_scripted(sock.clone(), 64, |method| {
+        if method == "trades.history" {
+            return serde_json::json!({
+                "error": { "code": -32000, "message": "trade log unreadable" },
+            });
+        }
+        serde_json::json!({ "result": { "version": "0.1.0", "mode": "dry" } })
+    });
+
+    let mut client = IpcClient::new(sock.to_string_lossy().to_string());
+    let snap = client.snapshot(0);
+
+    assert!(snap.trades.is_empty());
+    let degrade = snap
+        .trades_degrade
+        .as_ref()
+        .expect("an unreadable trade log must not read as an empty one");
+    assert!(degrade.unavailable);
+    assert!(
+        degrade
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("trade log unreadable"),
+        "the core's message must ride through: {:?}",
+        degrade.reason
+    );
+
+    server.join().ok();
+    let _ = std::fs::remove_file(&sock);
+}

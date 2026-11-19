@@ -54,6 +54,10 @@ const settings = useSettingsStore()
 const { sound, toggleSound } = useTheme()
 const snap = computed(() => store.snapshot)
 
+// issue 1294：成交面降级信号（raw 快照字段，旧内核缺失 → undefined = 健康）。
+// 任何 history/曲线/统计视图在它非空时都不能把空行读成「没有成交」。
+const tradesDegrade = computed(() => snap.value?.tradesDegrade ?? null)
+
 // Fast tick: 2s snapshot poll (HFT pacing), faster than the shell's 15s.
 // Pacing is a persisted preference (E8-d 设置); off turns this tab watch-only.
 const { pause: stopFast } = useIntervalFn(() => {
@@ -1389,6 +1393,18 @@ const journalOpen = ref(false)
           /></span> 笔未知盈亏</span>
         </div>
       </template>
+
+      <!-- issue 1294：成交面降级 —— 空/短的 tradeRows 不能被读成「没有成交」。
+           内核有数据而面板解析不了时必须明说，否则曲线与统计静默归零。
+           旧内核快照无此字段 → undefined，等同于健康，横幅不出现。 -->
+      <AlertBanner v-if="tradesDegrade" class="mb-3" :tone="tradesDegrade.unavailable ? 'error' : 'warn'">
+        <template v-if="tradesDegrade.unavailable">
+          成交数据不可用 —— 下面的历史、曲线与统计不代表完整成交，请检查内核连接。
+        </template>
+        <template v-else>
+          有 {{ tradesDegrade.skippedRows }} 行成交数据无法解析，已跳过；下面的历史与统计不含这些行。
+        </template>
+      </AlertBanner>
 
       <!-- 三表（持仓/挂单/历史）拆到 components/hft/TradesTables.vue
            （issue 717）；表头控件（tab 徽标/账户与 venue 标注/清理按钮/

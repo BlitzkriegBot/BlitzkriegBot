@@ -253,8 +253,9 @@ fn snapshot_from_api(s: &api::ReconcileSnapshot) -> crate::reconcile::VenueSnaps
 /// The poll-admission gate's type: a sync predicate over one discovery-poll
 /// batch, verdict = keep/drop. Shared as `Arc` so the host stays `Clone`
 /// without cloning the cell.
-pub type PollAdmissionGate =
-    std::sync::Arc<dyn Fn(Vec<api::MarketDescriptor>) -> bool + Send + Sync>;
+pub type PollAdmissionGate = std::sync::Arc<
+    dyn Fn(Vec<api::MarketDescriptor>) -> BoxFuture<'static, bool> + Send + Sync,
+>;
 
 /// Implements [`MarketHost`] over the shared `Core`. Cloneable so each plugin
 /// component can hold its own handle (hand-written `Clone`: the poll-admission
@@ -479,15 +480,19 @@ impl MarketHost for CoreHost {
             // installed one. A soft-unloaded family's batch is dropped
             // BEFORE any state moves — no engine event, no subscription.
             // Default (no gate): admit-everything, the historical shape.
-            if let Some(gate) = self
+            // Take the gate out of the std::Mutex BEFORE invoking it: the gate
+            // blocks waiting for the Core lock, and holding the std Mutex
+            // across that block makes every concurrent poll task line up behind
+            // one worker-bound guard instead of each waiting on its own worker
+            // (#24).
+            let gate = self
                 .poll_admission
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .as_ref()
-                .cloned()
-            {
-                let keep = gate(markets.clone());
-                if !keep {
+                .cloned();
+            if let Some(gate) = gate {
+                if !gate(markets.clone()).await {
                     return;
                 }
             }

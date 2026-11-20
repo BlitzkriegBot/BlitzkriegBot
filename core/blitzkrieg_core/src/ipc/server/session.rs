@@ -525,20 +525,12 @@ pub async fn run(
             let gate_plane = data_plane.clone();
             h.set_poll_admission(std::sync::Arc::new(move |markets: Vec<_>| {
                 let core = gate_core.clone();
-                // The gate runs on the plugin's poll task; the admission
-                // check is async (it takes the Core lock). The forward the
-                // gate precedes blocks on that same lock anyway, so blocking
-                // here changes no deadlock surface: the runtime is
-                // multi-thread (`rt-multi-thread` in Cargo.toml), so
-                // `block_in_place` moves the poll task off the shared
-                // workers while it waits. A runtime-less caller (none
-                // today) admits by default — the historical shape.
-                match tokio::runtime::Handle::try_current() {
-                    Ok(rt) => tokio::task::block_in_place(|| {
-                        rt.block_on(gate_plane.admit_poll_batch(&core, &markets))
-                    }),
-                    Err(_) => true,
-                }
+                let plane = gate_plane.clone();
+                // The gate is async now: no std Mutex is held while it awaits
+                // the Core lock (host.rs releases it before calling this
+                // closure), and there is no `block_in_place` at all — so no
+                // worker convoy and no `current_thread` panic surface (#24).
+                Box::pin(async move { plane.admit_poll_batch(&core, &markets).await })
             }));
         }
         h

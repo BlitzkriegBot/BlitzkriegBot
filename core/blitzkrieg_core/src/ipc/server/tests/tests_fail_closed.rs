@@ -167,7 +167,10 @@ async fn session_connection_break_loses_no_response_queued_before_teardown() {
         );
         flood.push('\n');
     }
-    client.write_all(flood.as_bytes()).await.expect("flood write");
+    client
+        .write_all(flood.as_bytes())
+        .await
+        .expect("flood write");
 
     // 全部响应必须按序到达，一条不丢——之后客户端再断开也不得让已入队
     // 的响应丢失。
@@ -185,10 +188,7 @@ async fn session_connection_break_loses_no_response_queued_before_teardown() {
         (1..=N).collect::<Vec<_>>(),
         "响应必须按序送达、不丢失、不重复"
     );
-    assert!(
-        !text.contains("\"core.event\""),
-        "通知不得混入响应流"
-    );
+    assert!(!text.contains("\"core.event\""), "通知不得混入响应流");
 }
 
 /// 读失败不得返回 stale 数据。合法请求得合法响应；随后发非法行（无效
@@ -212,7 +212,10 @@ async fn session_read_failure_fabricates_no_stale_response() {
 
     // 非法行：无效 UTF-8 以换行结尾。服务端读到后必须收场，不回任何
     // 响应行给那条非法输入。
-    client.write_all(b"\xff\xfe\x00bad line\n").await.expect("write invalid line");
+    client
+        .write_all(b"\xff\xfe\x00bad line\n")
+        .await
+        .expect("write invalid line");
 
     let mut buf = [0u8; 64];
     let mut extra_lines = 0usize;
@@ -230,8 +233,7 @@ async fn session_read_failure_fabricates_no_stale_response() {
         "读失败后会话必须收场（客户端读到 EOF/连接错误）"
     );
     assert_eq!(
-        extra_lines,
-        0,
+        extra_lines, 0,
         "读失败不得返回任何响应行（fail-closed，不编造 stale 数据）"
     );
 }

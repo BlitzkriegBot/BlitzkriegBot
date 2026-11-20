@@ -719,7 +719,12 @@ async fn handle_line(
             // 发空行。空行会被会话读循环当成对端断连
             // (`line.trim().is_empty() → break 'session`)，让编码故障看起来
             // 像正常结束（issue #46 fail-closed）。
-            Err(e) => fail(id, Failure::APPLICATION, format!("response encoding failed: {e}"), None),
+            Err(e) => fail(
+                id,
+                Failure::APPLICATION,
+                format!("response encoding failed: {e}"),
+                None,
+            ),
         },
         Err((code, msg, data)) => fail(id, code, msg, data),
     }

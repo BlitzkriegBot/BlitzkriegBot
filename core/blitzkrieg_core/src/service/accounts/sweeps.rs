@@ -579,7 +579,10 @@ impl Core {
         }
         if was_live && let Some(vid) = order.venue_order_id {
             let venue = self.execution_venue_of(order.account_id.as_str(), &order.token_id);
-            self.queue_venue_cancel(venue, vid);
+            // Force-close is locally mandatory (round expired); the venue cancel
+            // is best-effort — a full queue must not abort it. The lingering
+            // venue order is recovered by reconcile/ghost detection (#18).
+            let _ = self.queue_venue_cancel(venue, vid);
         }
         tracing::warn!(
             order = %id,

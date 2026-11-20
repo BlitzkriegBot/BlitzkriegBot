@@ -90,15 +90,19 @@ impl Core {
             return Ok(());
         }
         let was_live = order.status.is_live();
+        // Issue #18: hand the venue cancel to the bridge BEFORE any local
+        // terminal transition. If the queue is at cap the cancel cannot be
+        // enqueued (backpressure) — abort here so the order is never marked
+        // `Cancelled` locally while it still rests on the venue. A transient
+        // venue failure is retried by the extension re-queueing via
+        // [`MarketHost::requeue_venue_cancel`]. `cancel_all_live_orders_for_account`
+        // propagates this error and stops.
+        if was_live && let Some(vid) = order.venue_order_id.as_ref() {
+            let venue = self.execution_venue_of(order.account_id.as_str(), &order.token_id);
+            self.queue_venue_cancel(venue, vid.to_string())?;
+        }
         self.release_order_bookkeeping(&order, was_live, "cancel")?;
         self.ome.mark_terminal(id, OrderStatus::Cancelled, now_ms)?;
-        // The venue may still hold the order resting: hand its id to the live
-        // bridge for a real cancel. Nothing to cancel when the venue never
-        // acknowledged the order (no id — the venue never heard of it).
-        if was_live && let Some(vid) = order.venue_order_id {
-            let venue = self.execution_venue_of(order.account_id.as_str(), &order.token_id);
-            self.queue_venue_cancel(venue, vid);
-        }
         self.emit_order(id);
         Ok(())
     }
@@ -235,28 +239,35 @@ impl Core {
     /// `venue` labels the entry for the per-venue executor drain (`""` =
     /// untagged — routes to the active plugin's drain, the single-plugin
     /// behaviour).
-    pub(crate) fn queue_venue_cancel(&mut self, venue: String, venue_order_id: String) {
-        if !self
+    ///
+    /// Issue #18: when the queue is at cap the cancel is NOT silently dropped.
+    /// This returns `Err` (backpressure) instead, so the caller knows the venue
+    /// cancel was not enqueued and must not treat the order as locally
+    /// cancelled. A cancelled-but-never-sent order is a ghost order nobody can
+    /// find (#1291). A failure here is also the retry boundary: the extension
+    /// re-queues a failed venue cancel via [`MarketHost::requeue_venue_cancel`]
+    /// so a transient venue failure is retried on the next tick instead of
+    /// leaving the order permanently uncancelled.
+    pub(crate) fn queue_venue_cancel(
+        &mut self,
+        venue: String,
+        venue_order_id: String,
+    ) -> CoreResult<()> {
+        if self
             .pending_venue_cancels
             .iter()
             .any(|(_, id)| id == &venue_order_id)
         {
-            self.pending_venue_cancels.push((venue, venue_order_id));
-            if self.pending_venue_cancels.len() > crate::service::MAX_PENDING_VENUE_CANCELS {
-                // Newest wins. The order whose cancel just went over the cap can
-                // keep resting on the venue until reconcile notices it, so name
-                // it: a silently dropped cancel is a ghost order nobody can find
-                // (#1291).
-                let (dropped_venue, dropped_id) = self.pending_venue_cancels.remove(0);
-                tracing::warn!(
-                    venue = %dropped_venue,
-                    venue_order_id = %dropped_id,
-                    cap = crate::service::MAX_PENDING_VENUE_CANCELS,
-                    "venue-cancel queue full — dropped the OLDEST pending cancel; \
-                     that order may keep resting until the reconcile sweep"
-                );
-            }
+            return Ok(());
         }
+        if self.pending_venue_cancels.len() >= crate::service::MAX_PENDING_VENUE_CANCELS {
+            return Err(CoreError::new(
+                CoreErrorCode::Internal,
+                "venue-cancel queue full",
+            ));
+        }
+        self.pending_venue_cancels.push((venue, venue_order_id));
+        Ok(())
     }
 
     /// Drain the venue-cancel queue: once. The bridge must forward each id as

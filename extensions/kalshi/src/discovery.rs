@@ -391,9 +391,20 @@ fn discovery_loop(
                 .collect::<Vec<_>>()
                 .join(",");
 
-            // Registers the round with the engine AND subscribes the tickers
-            // on the running data feed (both inside the host).
+            // Subscribes this batch's tokens on this venue's own feed — the
+            // host no longer subscribes inside on_round_markets, so each
+            // discovery loop owns its feed. Kalshi runs one family, so the
+            // per-venue union is exactly this batch's tokens. Tokens are
+            // collected before `markets` is moved into on_round_markets.
+            let tokens: Vec<String> = markets
+                .iter()
+                .flat_map(|m| [m.up_token_id.clone(), m.down_token_id.clone()])
+                .collect();
+            // Registers the round with the engine (opens this family's clock).
             host.on_round_markets(markets).await;
+            if !tokens.is_empty() {
+                host.subscribe_tokens("kalshi", tokens).await;
+            }
             let note = if missing.is_empty() {
                 String::new()
             } else {

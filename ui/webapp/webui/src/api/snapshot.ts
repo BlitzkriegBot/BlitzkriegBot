@@ -234,6 +234,12 @@ export interface MarketPrice {
    * 不过滤、不崩（feature-detect，永不假设字段在）。
    */
   venue?: string
+  /**
+   * 轮次档位（秒，B1a 增量字段）：该行属于哪一档轮次（5m/15m…），供同一
+   * venue 下多档位行情分卡。老内核缺字段 → undefined，前端 feature-detect、
+   * 永不假设字段在场，缺省降回 venue-only 过滤，不崩。
+   */
+  durationSec?: number
 }
 
 /** One price level of the live book (`engine.books`, E8-c 盘口深度). */

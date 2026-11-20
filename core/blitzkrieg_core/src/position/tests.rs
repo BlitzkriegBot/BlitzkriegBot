@@ -723,6 +723,103 @@ fn one_account_s_daily_loss_never_burns_a_sibling_s_budget() {
     );
 }
 
+/// Issue #5: a daily-loss budget file that existed but is unparseable
+/// (crash-truncated / half-written) is fail-closed — never a "zero loss,
+/// fresh day" that re-anchors `opening_equity_usd` to post-loss equity.
+#[test]
+fn daily_loss_corrupt_budget_file_is_fail_closed() {
+    let dir = std::env::temp_dir().join(format!("dailyloss-corrupt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("daily-loss.json");
+
+    let cfg = PositionConfig {
+        max_daily_loss_usd: dec!(10),
+        daily_pnl_path: Some(path.to_string_lossy().to_string()),
+        asset_cooldown_sec: 0,
+        loss_cooldown_sec: 0,
+        stop_loss_cooldown_sec: 0,
+        ..Default::default()
+    };
+    // Session 1: open the day, book a realized loss inside the cap, persist.
+    let mut pm = PositionManager::new(cfg.clone());
+    pm.roll_daily("default", 1_000, dec!(1_000), EquityBasis::Dry);
+    pm.set_daily_realized_for_test(&crate::model::default_account_id(), dec!(-3));
+    pm.daily_store.as_ref().unwrap().save(&pm.daily_by_account);
+
+    // Crash mid-write: the file now holds garbage.
+    std::fs::write(&path, "{\"accounts\":{\"default\":").unwrap();
+
+    // Session 2: restart on the corrupt file.
+    let mut pm2 = PositionManager::new(cfg);
+    // No day was stamped and opening equity was NOT re-anchored.
+    assert_eq!(
+        pm2.daily_by_account
+            .get(&AccountId::from("default"))
+            .map(|d| d.day_index),
+        None,
+        "a corrupt file must not stamp a fresh day"
+    );
+    assert_eq!(
+        pm2.daily_by_account
+            .get(&AccountId::from("default"))
+            .map(|d| d.opening_equity_usd),
+        None,
+        "a corrupt file must not re-anchor opening equity"
+    );
+    // Fail-closed: the breaker reads tripped and entries are refused.
+    assert!(
+        pm2.daily_loss_tripped_for("default"),
+        "unreadable daily-loss state reads as tripped"
+    );
+    assert!(
+        pm2.can_open("default", Some("BTC"), Some(SignalDirection::Up), 2000).is_err(),
+        "entries refused while the daily-loss budget is unreadable"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #5 reverse acceptance: a budget file that was never written (missing)
+/// is a normal fresh day — not mistaken for corruption.
+#[test]
+fn daily_loss_missing_file_is_a_normal_fresh_day() {
+    let dir = std::env::temp_dir().join(format!("dailyloss-missing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("daily-loss.json"); // deliberately never created
+
+    let cfg = PositionConfig {
+        max_daily_loss_usd: dec!(10),
+        daily_pnl_path: Some(path.to_string_lossy().to_string()),
+        asset_cooldown_sec: 0,
+        loss_cooldown_sec: 0,
+        stop_loss_cooldown_sec: 0,
+        ..Default::default()
+    };
+    let mut pm = PositionManager::new(cfg);
+    assert!(!pm.daily_budget_unreadable, "missing file is not corruption");
+    pm.roll_daily("default", 1_000, dec!(1_000), EquityBasis::Dry);
+    assert_eq!(
+        pm.daily_by_account
+            .get(&AccountId::from("default"))
+            .map(|d| d.day_index),
+        Some(Some(super::utc_day_index(1_000))),
+        "a missing file still opens a fresh day"
+    );
+    assert_eq!(
+        pm.daily_by_account
+            .get(&AccountId::from("default"))
+            .unwrap()
+            .opening_equity_usd,
+        dec!(1_000)
+    );
+    assert!(!pm.daily_loss_tripped_for("default"));
+    assert!(
+        pm.can_open("default", Some("BTC"), Some(SignalDirection::Up), 2000).is_ok(),
+        "a missing budget file must not freeze entries"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── #464: the daily-loss breaker reads the NET mark (realized + unrealized)
 
 /// A maker entry of `shares` at `price`, then the position's mark moved to

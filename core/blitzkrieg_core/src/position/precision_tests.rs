@@ -433,7 +433,7 @@ fn a_corrupt_daily_loss_file_does_not_read_as_a_fresh_day() {
     let mut accounts = std::collections::BTreeMap::new();
     accounts.insert(AccountId::from("default"), st.clone());
     store.save(&accounts);
-    let loaded = store.load();
+    let loaded = store.load().expect("the healthy state loads");
     assert_eq!(
         loaded
             .get(&AccountId::from("default"))
@@ -446,7 +446,7 @@ fn a_corrupt_daily_loss_file_does_not_read_as_a_fresh_day() {
     // account's bucket — single-book deployments keep their spent budget.
     let bare = serde_json::to_string(&st).unwrap();
     std::fs::write(&path, bare).unwrap();
-    let migrated = store.load();
+    let migrated = store.load().expect("bare state migrates to the default bucket");
     assert_eq!(
         migrated
             .get(&AccountId::from("default"))
@@ -458,14 +458,17 @@ fn a_corrupt_daily_loss_file_does_not_read_as_a_fresh_day() {
     // The crash window: a half-written file.
     std::fs::write(&path, "{\"dayIndex\": 20400, \"realized").unwrap();
     assert!(
-        store.load().is_empty(),
-        "a corrupt file yields no state — but the ERROR log is the contract"
+        store.load().is_err(),
+        "a corrupt file is an explicit error — the ERROR log is the contract"
     );
 
     // The atomic save never leaves a torn file behind in the first place:
     // the successful write above left valid JSON.
     store.save(&accounts);
-    assert!(!store.load().is_empty());
+    assert!(
+        store.load().is_ok_and(|loaded| !loaded.is_empty()),
+        "a healthy file loads its state"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

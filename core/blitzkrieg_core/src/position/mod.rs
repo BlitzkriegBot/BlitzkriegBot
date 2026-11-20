@@ -544,6 +544,18 @@ pub struct DailyLossFile {
     pub accounts: std::collections::BTreeMap<String, DailyLossState>,
 }
 
+/// 为什么预算文件没能加载。`Missing`（文件从未写过）是今天的真正首日：
+/// 预算为零、正常开盘。`Corrupt`（文件存在但不可解析：断电半写、截断、
+/// 人手改错）是 fail-closed 状态——当日已实现的亏损可能就躺在损坏的
+/// 文件里，调用方不得把它当成「零亏损的新一天」而重锚
+/// `opening_equity_usd`，而要走与风控姿态损坏（`GateReason::BootUnverifiable`）
+/// 同一条路径：该账户的入场被拒，直到文件被修复或显式重置。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DailyLossLoadError {
+    Missing,
+    Corrupt(String),
+}
+
 impl DailyLossStore {
     fn new(path: impl Into<String>) -> Self {
         Self {
@@ -571,18 +583,18 @@ impl DailyLossStore {
         }
     }
 
-    fn load(&self) -> std::collections::BTreeMap<AccountId, DailyLossState> {
+    fn load(&self) -> Result<std::collections::BTreeMap<AccountId, DailyLossState>, DailyLossLoadError> {
         let Some(text) = std::fs::read_to_string(&self.path).ok() else {
-            return Default::default();
+            return Err(DailyLossLoadError::Missing);
         };
         // New envelope first; a bare pre-per-account state migrates into the
         // `default` account's bucket (single-book deployments had exactly one).
         if let Ok(file) = serde_json::from_str::<DailyLossFile>(&text) {
-            return file
+            return Ok(file
                 .accounts
                 .into_iter()
                 .map(|(id, st)| (AccountId::from(id.as_str()), st))
-                .collect();
+                .collect());
         }
         match serde_json::from_str::<DailyLossState>(&text) {
             Ok(st) => {
@@ -590,16 +602,16 @@ impl DailyLossStore {
                     path = %self.path.display(),
                     "daily-loss state migrated to per-account shape (default account)"
                 );
-                [(AccountId::from("default"), st)].into_iter().collect()
+                Ok([(AccountId::from("default"), st)].into_iter().collect())
             }
             Err(e) => {
-                // #463: unreadable is NOT "fresh day". A silent zero hands the
-                // full daily-loss budget back to a session whose earlier losses
-                // are sitting right there in a half-written file — the exact
-                // laundering this store exists to prevent. Trading continues
-                // (in-memory state stays authoritative), but the operator is
-                // told loudly and the conservative boot budget stands until the
-                // file is repaired or explicitly removed.
+                // #463: unreadable is NOT "fresh day". Collapsing to an empty
+                // map hands the full daily-loss budget back to a session whose
+                // earlier losses are sitting right there in a half-written file
+                // — the exact laundering this store exists to prevent. The
+                // error is now explicit: `PositionManager` turns it into a
+                // fail-closed boot (entries refused, no opening-equity
+                // re-anchor) until the file is repaired or explicitly removed.
                 tracing::error!(
                     error = %e,
                     path = %self.path.display(),
@@ -607,7 +619,7 @@ impl DailyLossStore {
                      today's realized losses may exceed what this session can see. \
                      Repair or delete the file before trusting the loss budget."
                 );
-                Default::default()
+                Err(DailyLossLoadError::Corrupt(e.to_string()))
             }
         }
     }
@@ -968,6 +980,12 @@ pub struct PositionManager {
     /// separate field, so persistence cannot drift.
     daily_by_account: std::collections::BTreeMap<AccountId, DailyLossState>,
     daily_store: Option<DailyLossStore>,
+    /// The budget file existed but was unparseable on boot. While set, no day
+    /// is stamped, `opening_equity_usd` is never re-anchored, and every new
+    /// entry is refused: a corrupt daily-loss budget is fail-closed
+    /// (`BootUnverifiable` semantics) until the file is repaired or explicitly
+    /// reset.
+    daily_budget_unreadable: bool,
     last_stop_loss_at: i64,
     exit_cooldowns: std::collections::HashMap<String, i64>,
     asset_last_exit_at: std::collections::HashMap<String, i64>,
@@ -1053,7 +1071,26 @@ impl PositionManager {
         // A persisted budget must gate entries BEFORE the first tick, so it is
         // loaded here rather than lazily: a restart on a day whose cap is
         // already spent must not accept one entry first.
-        let daily = daily_store.as_ref().map(|s| s.load()).unwrap_or_default();
+        //
+        // `Missing` = fresh day, zero budget, entries allowed.
+        // `Corrupt` = fail-closed: empty in-memory state, entries refused,
+        // and `roll_daily` never re-anchors `opening_equity_usd` to today's
+        // equity — that would erase realized losses through a half-written file.
+        let (daily, daily_budget_unreadable) = match &daily_store {
+            Some(store) => match store.load() {
+                Ok(loaded) => (loaded, false),
+                Err(DailyLossLoadError::Missing) => (Default::default(), false),
+                Err(DailyLossLoadError::Corrupt(e)) => {
+                    tracing::error!(
+                        error = %e,
+                        path = %store.path.display(),
+                        "daily-loss budget unreadable — fail-closed: entries refused until the file is repaired or reset"
+                    );
+                    (Default::default(), true)
+                }
+            },
+            None => (Default::default(), false),
+        };
         Self {
             config,
             open: Vec::new(),
@@ -1061,6 +1098,7 @@ impl PositionManager {
             next_id: 1,
             daily_by_account: daily,
             daily_store,
+            daily_budget_unreadable,
             last_stop_loss_at: 0,
             exit_cooldowns: Default::default(),
             asset_last_exit_at: Default::default(),
@@ -1084,8 +1122,25 @@ impl PositionManager {
             self.daily_store = self.config.daily_pnl_path.clone().map(DailyLossStore::new);
             // A different budget file is a different budget: re-seed from it,
             // keeping the in-memory state when the new file has none.
-            if let Some(loaded) = self.daily_store.as_ref().map(|s| s.load()) {
-                self.daily_by_account = loaded;
+            if let Some(store) = &self.daily_store {
+                match store.load() {
+                    Ok(loaded) => {
+                        self.daily_by_account = loaded;
+                        self.daily_budget_unreadable = false;
+                    }
+                    Err(DailyLossLoadError::Missing) => {
+                        self.daily_by_account = Default::default();
+                        self.daily_budget_unreadable = false;
+                    }
+                    Err(DailyLossLoadError::Corrupt(e)) => {
+                        tracing::error!(
+                            error = %e,
+                            path = %store.path.display(),
+                            "daily-loss budget unreadable — fail-closed: entries refused until the file is repaired or reset"
+                        );
+                        self.daily_budget_unreadable = true;
+                    }
+                }
             }
         }
     }

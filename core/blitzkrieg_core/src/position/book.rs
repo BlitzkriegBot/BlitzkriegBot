@@ -383,6 +383,14 @@ impl PositionManager {
         direction: Option<SignalDirection>,
         now_ms: i64,
     ) -> Result<(), String> {
+        // Fail-closed: an unreadable daily-loss budget refuses every new entry
+        // (exits never pass through can_open, so position closes keep flowing).
+        if self.daily_budget_unreadable {
+            return Err(
+                "daily-loss budget unreadable: entries refused until the budget file is repaired or reset"
+                    .to_string(),
+            );
+        }
         let live = self
             .open
             .iter()

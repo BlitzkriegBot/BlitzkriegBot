@@ -253,9 +253,8 @@ fn snapshot_from_api(s: &api::ReconcileSnapshot) -> crate::reconcile::VenueSnaps
 /// The poll-admission gate's type: a sync predicate over one discovery-poll
 /// batch, verdict = keep/drop. Shared as `Arc` so the host stays `Clone`
 /// without cloning the cell.
-pub type PollAdmissionGate = std::sync::Arc<
-    dyn Fn(Vec<api::MarketDescriptor>) -> BoxFuture<'static, bool> + Send + Sync,
->;
+pub type PollAdmissionGate =
+    std::sync::Arc<dyn Fn(Vec<api::MarketDescriptor>) -> BoxFuture<'static, bool> + Send + Sync>;
 
 /// Implements [`MarketHost`] over the shared `Core`. Cloneable so each plugin
 /// component can hold its own handle (hand-written `Clone`: the poll-admission
@@ -474,6 +473,7 @@ impl MarketHost for CoreHost {
         })
     }
 
+    #[allow(clippy::collapsible_if)]
     fn on_round_markets(&self, markets: Vec<api::MarketDescriptor>) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             // B2 (轮次多族 软卸): the poll-output gate, when the assembly

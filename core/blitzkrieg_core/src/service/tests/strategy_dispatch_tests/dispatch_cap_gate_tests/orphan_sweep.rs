@@ -23,7 +23,7 @@ fn pair_orphan_sweep_flattens_a_naked_leg_after_the_grace_window() {
     {
         // Drain the default book to 110: pm-up (0.44 × 250 = 110) just
         // fits; kx-down (0.42 × 250 = 105) does not.
-        let _ = c.accounts_mut().active_ledger_mut().set_balance(dec!(110));
+        c.accounts_mut().active_ledger_mut().set_balance(dec!(110));
     }
     let now = 1_700_000_000_000i64;
     c.engine_on_data(
@@ -104,7 +104,7 @@ fn pair_orphan_sweep_leaves_ungoverned_strategies_alone() {
     {
         // Same starved-ledger device as the governed test: pm-up lands,
         // kx-down's place dies on the reserve.
-        let _ = c.accounts_mut().active_ledger_mut().set_balance(dec!(110));
+        c.accounts_mut().active_ledger_mut().set_balance(dec!(110));
     }
     let now = 1_700_000_000_000i64;
     c.engine_on_data(

@@ -527,7 +527,10 @@ pub mod test_support {
             Ok(None)
         }
 
-        fn save_positions(&self, positions: &[crate::position::OpenPosition]) -> Result<bool, CoreError> {
+        fn save_positions(
+            &self,
+            positions: &[crate::position::OpenPosition],
+        ) -> Result<bool, CoreError> {
             self.log(&format!("positions:{}", positions.len()));
             Ok(true)
         }

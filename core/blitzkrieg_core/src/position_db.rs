@@ -55,7 +55,11 @@ impl PositionDb {
     pub fn new(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
         let recon_path = path.with_extension("recon");
-        Self { path, recon_path, last_saved: Mutex::new(None) }
+        Self {
+            path,
+            recon_path,
+            last_saved: Mutex::new(None),
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -365,12 +369,18 @@ mod tests {
 
         db.save(&[pos("hft-1", dec!(10))]);
         let first = metadata(db.path()).unwrap().modified().unwrap();
-        let bak_first = metadata(db.path().with_extension("bak")).unwrap().modified().unwrap();
+        let bak_first = metadata(db.path().with_extension("bak"))
+            .unwrap()
+            .modified()
+            .unwrap();
 
         // Same content again: no rewrite must happen.
         db.save(&[pos("hft-1", dec!(10))]);
         let second = metadata(db.path()).unwrap().modified().unwrap();
-        let bak_second = metadata(db.path().with_extension("bak")).unwrap().modified().unwrap();
+        let bak_second = metadata(db.path().with_extension("bak"))
+            .unwrap()
+            .modified()
+            .unwrap();
         assert_eq!(
             first, second,
             "an identical re-save must not rewrite the canonical file"

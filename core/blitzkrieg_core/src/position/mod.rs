@@ -583,7 +583,9 @@ impl DailyLossStore {
         }
     }
 
-    fn load(&self) -> Result<std::collections::BTreeMap<AccountId, DailyLossState>, DailyLossLoadError> {
+    fn load(
+        &self,
+    ) -> Result<std::collections::BTreeMap<AccountId, DailyLossState>, DailyLossLoadError> {
         let Some(text) = std::fs::read_to_string(&self.path).ok() else {
             return Err(DailyLossLoadError::Missing);
         };

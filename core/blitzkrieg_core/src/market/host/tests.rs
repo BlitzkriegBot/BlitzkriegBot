@@ -199,8 +199,7 @@ async fn mirror_tokens_drain_to_the_placing_account_venue() {
         updated_at_ms: 0,
     };
     c.accounts_mut().insert(book).unwrap();
-    let _ = c
-        .accounts_mut()
+    c.accounts_mut()
         .get_mut(&crate::account::AccountId::from("sim"))
         .unwrap()
         .set_balance(dec!(10));

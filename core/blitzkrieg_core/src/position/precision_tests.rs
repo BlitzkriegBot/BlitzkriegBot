@@ -446,7 +446,9 @@ fn a_corrupt_daily_loss_file_does_not_read_as_a_fresh_day() {
     // account's bucket — single-book deployments keep their spent budget.
     let bare = serde_json::to_string(&st).unwrap();
     std::fs::write(&path, bare).unwrap();
-    let migrated = store.load().expect("bare state migrates to the default bucket");
+    let migrated = store
+        .load()
+        .expect("bare state migrates to the default bucket");
     assert_eq!(
         migrated
             .get(&AccountId::from("default"))

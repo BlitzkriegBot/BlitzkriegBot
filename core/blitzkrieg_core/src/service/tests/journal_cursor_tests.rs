@@ -68,8 +68,7 @@ fn capacity_fixture(tag: &str) -> (Core, tokio::sync::mpsc::UnboundedReceiver<Ev
     c.realign_venue_cash("polymarket", Decimal::from(1_000)); // 真值进场，静默
     let _ = drain_alerts(&mut rx);
     for _ in 0..(crate::ledger::JOURNAL_CAP - 1) {
-        let _ = c
-            .accounts
+        c.accounts
             .active_ledger_mut()
             .credit_cashflow(dec!(0.01), "rebate");
     }
@@ -90,8 +89,7 @@ fn capacity_fixture(tag: &str) -> (Core, tokio::sync::mpsc::UnboundedReceiver<Ev
 fn facts_appended_after_the_window_is_full_still_reach_booked() {
     let (mut c, mut rx) = capacity_fixture("journal-cursor-cap");
     // 满容后再记一笔已归属事实（cashflow 形态）：balance 1099.99 → 1100.99。
-    let _ = c
-        .accounts
+    c.accounts
         .active_ledger_mut()
         .credit_cashflow(dec!(1), "rebate");
     // 相符报数：booked 必须含这笔 1.00 → residual = 0 → 静默。
@@ -111,8 +109,7 @@ fn multiple_evictions_stay_explained_and_only_the_unknown_residual_alerts() {
     let (mut c, mut rx) = capacity_fixture("journal-cursor-evict");
     // 跨边界 5 笔事实（每笔都在触发淘汰）：balance 1099.99 → 1102.49。
     for _ in 0..5 {
-        let _ = c
-            .accounts
+        c.accounts
             .active_ledger_mut()
             .credit_cashflow(dec!(0.50), "rebate");
     }
@@ -124,8 +121,7 @@ fn multiple_evictions_stay_explained_and_only_the_unknown_residual_alerts() {
     );
     // 真实未知差额：账本再进 2.00（balance → 1104.49），场地报数里既含这
     // 2.00 又额外少了 7.00（报 1097.49）→ residual = −7.00 恰为未知部分。
-    let _ = c
-        .accounts
+    c.accounts
         .active_ledger_mut()
         .credit_cashflow(dec!(2), "rebate");
     c.realign_venue_cash("polymarket", Decimal::new(109749, 2));
@@ -154,8 +150,7 @@ fn an_evicted_window_alerts_the_gap_once_and_recovers_next_window() {
     // 灌 `JOURNAL_CAP + 1` 行：游标行本身被淘汰，且游标之后还有一行未消
     // 费就被逐出 —— 缺口成立。balance 1099.99 → 1200.00。
     for _ in 0..(crate::ledger::JOURNAL_CAP + 1) {
-        let _ = c
-            .accounts
+        c.accounts
             .active_ledger_mut()
             .credit_cashflow(dec!(0.01), "rebate");
     }
@@ -186,8 +181,7 @@ fn an_evicted_window_alerts_the_gap_once_and_recovers_next_window() {
     );
     assert_eq!(events[0]["venue"], "polymarket");
     // 下一窗恢复正常：1.00 事实 + 相符报数 → 全静默。
-    let _ = c
-        .accounts
+    c.accounts
         .active_ledger_mut()
         .credit_cashflow(dec!(1), "rebate");
     c.realign_venue_cash("polymarket", Decimal::new(120100, 2));

@@ -310,7 +310,7 @@ fn replay_with_config(
             .expect("the kalshi account mints (unique id)");
         // LIVE cash is a per-account fact: the B leg's book must hold its own
         // seed too (the equity gate reads the REQUEST'S OWN account).
-        let _ = b.core_mut()
+        b.core_mut()
             .accounts_mut()
             .get_mut(&blitzkrieg_market_api::AccountId::from("kalshi"))
             .expect("kalshi just inserted")

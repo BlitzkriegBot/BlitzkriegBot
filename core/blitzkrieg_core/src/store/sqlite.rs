@@ -50,11 +50,11 @@ use rust_decimal::Decimal;
 
 use crate::account::config::CrossVenueArbConfig;
 use crate::account::{AccountStatus, CredentialKeys};
-use crate::db::{account_setting_remove, account_setting_set};
+use crate::db::{account_setting_remove, account_setting_set, kernel_meta_set};
 use crate::model::{CoreError, CoreErrorCode};
 use crate::risk::account_store::AccountRiskDb;
 use crate::risk::limits::{AccountRiskLimits, Bound, LimitSource};
-use crate::store::FieldChanges;
+use crate::store::{AccountScope, FieldChanges, MoneyFact, WriteOutcome};
 
 /// The `account_settings` key carrying the per-account round-length grid
 /// (the account-level form of the env's `ACCOUNT_<ID>_ROUND_DURATION_SEC`;
@@ -863,13 +863,80 @@ impl super::StoreApi for SqliteStore {
         }
         Ok(())
     }
+
+    fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
+        let (key, payload) = match fact {
+            MoneyFact::Order(o) => {
+                let payload = serde_json::to_string(o).map_err(|e| {
+                    CoreError::new(
+                        CoreErrorCode::Internal,
+                        format!("serialize order fact: {e}"),
+                    )
+                })?;
+                (format!("money_fact.order.{}", o.order_id), payload)
+            }
+            MoneyFact::Fill(f) => {
+                let payload = serde_json::to_string(f).map_err(|e| {
+                    CoreError::new(CoreErrorCode::Internal, format!("serialize fill fact: {e}"))
+                })?;
+                (format!("money_fact.fill.{}", f.id), payload)
+            }
+            MoneyFact::Ledger(e) => {
+                let payload = serde_json::to_string(e).map_err(|e| {
+                    CoreError::new(
+                        CoreErrorCode::Internal,
+                        format!("serialize ledger fact: {e}"),
+                    )
+                })?;
+                (format!("money_fact.ledger.{}", e.ref_), payload)
+            }
+            MoneyFact::Settlement(s) => {
+                let payload = serde_json::to_string(s).map_err(|e| {
+                    CoreError::new(
+                        CoreErrorCode::Internal,
+                        format!("serialize settlement fact: {e}"),
+                    )
+                })?;
+                (format!("money_fact.settlement.{}", s.claim_id), payload)
+            }
+        };
+        self.risk
+            .db()
+            .with_connection(|conn| -> anyhow::Result<()> {
+                kernel_meta_set(conn, &key, &payload)?;
+                Ok(())
+            })
+            .map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!("append_money_fact({}): {e}", fact.kind()),
+                )
+            })?;
+        Ok(WriteOutcome::Persisted)
+    }
+
+    fn put_setting(
+        &self,
+        scope: AccountScope<'_>,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<WriteOutcome, CoreError> {
+        self.ensure_account(scope.account.as_str(), None)?;
+        self.write_settings(scope.account.as_str(), &[(key, value)])?;
+        Ok(WriteOutcome::Persisted)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::StoreApi;
     use super::*;
+    use crate::db;
+    use crate::ledger::{JournalEntry, JournalKind};
+    use crate::model::{AccountId, FillPolicy, OrderRole, OrderStatus, Side, TrackedOrder};
     use crate::risk::limits::LimitSource;
+    use crate::settlement::SettlementRecord;
+    use crate::trade_db::TradeRecord;
     use rust_decimal_macros::dec;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1254,5 +1321,214 @@ mod tests {
         std::fs::write(&blocker, b"x").unwrap();
         assert!(SqliteStore::open(blocker.join("store.sqlite")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1278: all four money-fact variants land in `kernel_meta` under their
+    /// documented keys, report `Persisted`, and read back byte-identical — the
+    /// write is proven by read-back, not by the return value alone.
+    #[test]
+    fn money_fact_persists_all_four_variants() {
+        let (store, dir) = temp_store();
+        let account = AccountId::from("paper");
+
+        let order = TrackedOrder {
+            order_id: "ord-1".into(),
+            internal_key: "ik-1".into(),
+            strategy: "spread_arb".into(),
+            asset: "BTC".into(),
+            direction: "up".into(),
+            token_id: "tok-up".into(),
+            condition_id: "cond-1".into(),
+            side: Side::Buy,
+            mode: FillPolicy::Maker,
+            role: OrderRole::Pending,
+            price: dec!(100.25),
+            size: dec!(2),
+            filled_size: dec!(0),
+            avg_fill_price: None,
+            status: OrderStatus::Live,
+            round_slot: 1,
+            submitted_at_ms: 1_000,
+            updated_at_ms: 1_000,
+            decision_at_ms: 1_000,
+            execute_at_ms: 0,
+            report_at_ms: 0,
+            venue_order_id: None,
+            place_uncertain: false,
+            escalate_at_ms: None,
+            maker_timeout_ms: 0,
+            account_id: account.clone(),
+            venue: "".into(),
+            round_duration_sec: 0,
+            rejected_reason: None,
+        };
+        let fill = TradeRecord {
+            id: "fill-1".into(),
+            strategy: "spread_arb".into(),
+            asset: "BTC".into(),
+            direction: "up".into(),
+            token_id: "tok-up".into(),
+            condition_id: "cond-1".into(),
+            account_id: account.clone(),
+            entry_price: dec!(100),
+            exit_price: dec!(102),
+            shares: dec!(2),
+            cost_usd: dec!(200),
+            gross_pnl_usd: dec!(4),
+            entry_fee_pct: dec!(0),
+            exit_fee_pct: dec!(0),
+            fees_usd: dec!(0),
+            net_pnl_usd: dec!(4),
+            net_pnl_pct: dec!(2),
+            market_price_at_entry: dec!(100),
+            market_price_at_exit: dec!(102),
+            high_pnl_pct: dec!(2),
+            low_pnl_pct: dec!(1),
+            hold_time_sec: 3600,
+            entry_time: 1_000,
+            exit_time: 4_600,
+            exit_reason: "settled".into(),
+            was_maker_entry: true,
+            was_maker_exit: true,
+            venue: "".into(),
+            source: "venue".into(),
+            original_fallback_price: None,
+            price_source: "".into(),
+        };
+        let entry = JournalEntry {
+            at_ms: 1_000,
+            kind: JournalKind::Cashflow,
+            amount: dec!(5),
+            balance_after: dec!(1005),
+            ref_: "rebate-1".into(),
+            fee_source: "".into(),
+        };
+        let settlement = SettlementRecord {
+            key: "claim-1".into(),
+            position_id: "pos-1".into(),
+            condition_id: "cond-1".into(),
+            token_id: "tok-up".into(),
+            strategy: "spread_arb".into(),
+            asset: "BTC".into(),
+            shares: dec!(2),
+            payout_per_share: dec!(1.5),
+            payout_usd: dec!(3),
+            winning: true,
+            claim_id: "claim-1".into(),
+            neg_risk: false,
+            winning_token_id: "".into(),
+            outcome_index: None,
+            outcome_count: 2,
+            source: "venue".into(),
+            account_id: "paper".into(),
+            venue: "".into(),
+            applied_at_ms: 1_000,
+        };
+
+        let cases = [
+            (
+                "money_fact.order.ord-1",
+                serde_json::to_string(&order).unwrap(),
+                MoneyFact::Order(&order),
+            ),
+            (
+                "money_fact.fill.fill-1",
+                serde_json::to_string(&fill).unwrap(),
+                MoneyFact::Fill(&fill),
+            ),
+            (
+                "money_fact.ledger.rebate-1",
+                serde_json::to_string(&entry).unwrap(),
+                MoneyFact::Ledger(&entry),
+            ),
+            (
+                "money_fact.settlement.claim-1",
+                serde_json::to_string(&settlement).unwrap(),
+                MoneyFact::Settlement(&settlement),
+            ),
+        ];
+        for (key, payload, fact) in cases {
+            assert_eq!(
+                store.append_money_fact(&fact).unwrap(),
+                WriteOutcome::Persisted,
+                "{key} must report Persisted"
+            );
+            let stored = store
+                .risk
+                .db()
+                .with_connection(|conn| db::kernel_meta_get(conn, key))
+                .unwrap();
+            assert_eq!(
+                stored.as_deref(),
+                Some(payload.as_str()),
+                "{key} read-back must match the serialized fact"
+            );
+        }
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #1278: `put_setting` upserts (`Some`) and sweeps (`None`) the
+    /// `account_settings` cell, creating the account row as FK precondition.
+    #[test]
+    fn put_setting_upserts_and_deletes() {
+        let (store, dir) = temp_store();
+        let account = AccountId::from("paper");
+        let scope = AccountScope { account: &account };
+
+        assert_eq!(
+            store
+                .put_setting(scope, "round.duration_sec", Some("300"))
+                .unwrap(),
+            WriteOutcome::Persisted,
+            "first write must report Persisted"
+        );
+        let get = |key: &str| {
+            store
+                .risk
+                .db()
+                .with_connection(|conn| db::account_setting_get(conn, "paper", key))
+                .unwrap()
+        };
+        assert_eq!(get("round.duration_sec").as_deref(), Some("300"));
+
+        assert_eq!(
+            store
+                .put_setting(scope, "round.duration_sec", Some("900"))
+                .unwrap(),
+            WriteOutcome::Persisted,
+            "rewrite must report Persisted (upsert, not duplicate)"
+        );
+        assert_eq!(get("round.duration_sec").as_deref(), Some("900"));
+
+        assert_eq!(
+            store
+                .put_setting(scope, "round.duration_sec", None)
+                .unwrap(),
+            WriteOutcome::Persisted,
+            "delete must report Persisted"
+        );
+        assert_eq!(
+            get("round.duration_sec"),
+            None,
+            "swept key reads back absent"
+        );
+
+        // The ensure-account row exists as the FK precondition.
+        let present: i64 = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM accounts WHERE id = 'paper'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(present, 1);
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -5,7 +5,9 @@
 //! now deleted with the Node source layer (`62b16c88`) — the format is the
 //! contract that outlives it.
 
+use crate::model::CoreError;
 use crate::position::ClosedPosition;
+use crate::store::{MemoryOnlyReason, MoneyFact, StoreApi, WriteOutcome};
 use blitzkrieg_market_api::{AccountId, default_account_id};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -175,22 +177,15 @@ fn f64_of(d: Decimal) -> f64 {
     f64::from_str(&d.to_string()).unwrap_or(0.0)
 }
 
-/// A trade log bound to a JSONL path.
+/// A trade log bound to a JSONL path, with an optional durable store carrier.
 pub struct TradeDb {
     jsonl_path: PathBuf,
     summary_path: PathBuf,
     summary: TradeSummary,
     /// Per-account slices of the same fold (rows carry `account_id`, E28 §9.2).
-    /// The global summary mixes every book's realized PnL; the accounting audit
-    /// needs ONE book's realized to compare against THAT book's balance — a
-    /// sibling account's trade once shifted the audited identity of a book it
-    /// never touched. Rebuilt from the JSONL at open, folded alongside the
-    /// global summary on record, rebuilt from the kept rows on retract.
     by_account: std::collections::HashMap<AccountId, TradeSummary>,
-    /// issue #942: the highest `hft-N` id tail in the history at boot. The
-    /// position book's counter seeds past it (restore path), so a flat open
-    /// book never reissues ids the closed-trade log already carries.
     max_hft_tail: u64,
+    store: Option<Box<dyn StoreApi>>,
 }
 
 impl TradeDb {
@@ -247,7 +242,13 @@ impl TradeDb {
             summary,
             by_account,
             max_hft_tail,
+            store: None,
         }
+    }
+
+    /// Install a `StoreApi` carrier so trade records land durably beyond JSONL.
+    pub fn set_store(&mut self, store: Box<dyn StoreApi>) {
+        self.store = Some(store);
     }
 
     /// issue #942: the highest `hft-N` tail found in this ledger's closed-trade
@@ -258,13 +259,10 @@ impl TradeDb {
         self.max_hft_tail
     }
 
-    /// Append a closed trade and update the summary (best effort, never panics).
-    ///
-    /// A durable write failure is logged but never interrupts trading: the
-    /// in-memory summary is authoritative for the run, and the account keeps
-    /// trading. The failure is reflected in `crate::jsonl::append_failures()`
-    /// (surfaced via `engine_stats` / `jsonlWriteFailures`).
-    pub fn record(&mut self, rec: &TradeRecord, now_ms: i64) {
+    /// Append a closed trade to JSONL **and** to the durable store. The JSONL
+    /// write is best-effort; the store write result is returned explicitly so
+    /// callers can distinguish `Persisted` from `MemoryOnly`.
+    pub fn record(&mut self, rec: &TradeRecord, now_ms: i64) -> Result<WriteOutcome, CoreError> {
         if !crate::jsonl::append(&self.jsonl_path, rec) {
             tracing::warn!(
                 path = %self.jsonl_path.display(),
@@ -276,6 +274,12 @@ impl TradeDb {
         Self::fold_into(&mut self.summary, rec);
         self.summary.last_updated = now_ms;
         self.persist_summary();
+        match &self.store {
+            Some(store) => store.append_money_fact(&MoneyFact::Fill(rec)),
+            None => Ok(WriteOutcome::MemoryOnly {
+                reason: MemoryOnlyReason::NoStoreConfigured,
+            }),
+        }
     }
 
     /// The account's own slice of the fold — the realized/trade-count leg the
@@ -666,12 +670,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("trades.jsonl");
         let mut db = TradeDb::new(&path);
-        db.record(&TradeRecord::from_closed(&closed()), 100);
+        db.record(&TradeRecord::from_closed(&closed()), 100)
+            .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 1);
         assert!(db.summary().total_trades == 1 && db.summary().wins == 1);
         // Second write appends and accumulates.
-        db.record(&TradeRecord::from_closed(&closed()), 200);
+        db.record(&TradeRecord::from_closed(&closed()), 200)
+            .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
         assert_eq!(db.summary().total_trades, 2);
         // read_recent returns them in order.
@@ -695,8 +701,9 @@ mod tests {
         poly_row.id = "poly-1".into();
         poly_row.account_id = AccountId::from("poly");
         poly_row.net_pnl_usd = rust_decimal_macros::dec!(-2);
-        db.record(&TradeRecord::from_closed(&closed()), 100);
-        db.record(&poly_row, 200);
+        db.record(&TradeRecord::from_closed(&closed()), 100)
+            .unwrap();
+        db.record(&poly_row, 200).unwrap();
 
         let default_view = db.summary_for("default");
         assert_eq!(
@@ -788,7 +795,7 @@ mod tests {
         let mut db = TradeDb::new(&live_path);
         let mut rec = TradeRecord::from_closed(&closed());
         rec.id = "live-1".into();
-        db.record(&rec, 100);
+        db.record(&rec, 100).unwrap();
         let live_rows = read_recent(&live_path, 50);
         assert_eq!(live_rows.len(), 1);
         assert_eq!(live_rows[0]["id"], "live-1");
@@ -835,13 +842,13 @@ mod tests {
         loss_row.net_pnl_usd = rust_decimal_macros::dec!(-1);
 
         for _ in 0..40 {
-            db.record(&win_row, 100);
+            db.record(&win_row, 100).unwrap();
         }
         for _ in 0..30 {
-            db.record(&flat_row, 100);
+            db.record(&flat_row, 100).unwrap();
         }
         for _ in 0..30 {
-            db.record(&loss_row, 100);
+            db.record(&loss_row, 100).unwrap();
         }
 
         let s = db.summary();
@@ -889,7 +896,8 @@ mod tests {
         let before = crate::jsonl::append_failures();
 
         // All writes fail (read-only dir), but the in-memory summary still books the trade.
-        db.record(&TradeRecord::from_closed(&closed()), 100);
+        db.record(&TradeRecord::from_closed(&closed()), 100)
+            .unwrap();
         assert_eq!(
             db.summary().total_trades,
             1,
@@ -902,7 +910,7 @@ mod tests {
 
         let mut rec2 = TradeRecord::from_closed(&closed());
         rec2.id = "hft-2".into();
-        db.record(&rec2, 200);
+        db.record(&rec2, 200).unwrap();
         assert_eq!(
             db.summary().total_trades,
             2,
@@ -911,7 +919,7 @@ mod tests {
 
         let mut rec3 = TradeRecord::from_closed(&closed());
         rec3.id = "hft-3".into();
-        db.record(&rec3, 300);
+        db.record(&rec3, 300).unwrap();
         assert_eq!(
             db.summary().total_trades,
             3,
@@ -937,7 +945,7 @@ mod tests {
         for i in 1..=10i64 {
             let mut rec = TradeRecord::from_closed(&closed());
             rec.id = format!("p-{i}");
-            db.record(&rec, i * 100);
+            db.record(&rec, i * 100).unwrap();
         }
         let ids = |rows: &[serde_json::Value]| -> Vec<String> {
             rows.iter()
@@ -971,7 +979,7 @@ mod tests {
         for i in 1..=5i64 {
             let mut rec = TradeRecord::from_closed(&closed());
             rec.id = format!("q-{i}");
-            db.record(&rec, i * 100);
+            db.record(&rec, i * 100).unwrap();
         }
         // 越界：空页。
         assert!(read_page(&path, 5, 3).is_empty());

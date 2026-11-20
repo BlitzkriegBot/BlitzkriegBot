@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 
 use crate::account::config::CrossVenueArbConfig;
 use crate::account::{AccountId, AccountStatus, CredentialKeys};
-use crate::model::{CoreError, CoreErrorCode};
+use crate::model::CoreError;
 
 /// One domain write's field→value changes, in the wire audit's camelCase
 /// spelling (`maxSingleLossUsd`, `stopLossPct`, …). The store maps them to
@@ -179,21 +179,15 @@ pub trait StoreApi: Send + Sync {
         reset_keys: &[&str],
     ) -> Result<(), CoreError>;
 
-    // ── Money facts (issue #1278 — CONTRACT STAGE, NO CALLERS) ───────────
+    // ── Money facts (issue #1278 — implemented on SqliteStore, callers wired) ─
     //
-    // 下面两个方法是 #1278 的**接口定义**，不是实现：本提交里没有任何
-    // 调用方，也没有任何 backend 覆盖它们。把 `account_store.rs` 的裸 SQL
-    // 与四个 JSONL 资金写面接到这两个方法上，必须等运营者审批本契约之后
-    // 再做（Issue #1278：「审批前不得改 `risk/account_store.rs` 实现」）。
-    //
-    // 为什么默认实现返回 `Err` 而不是 `Ok(MemoryOnly { .. })`：本仓当前
-    // 最贵的一类缺陷正是「写盘失败静默成功」——`jsonl::append` 返回
-    // `bool`，四个资金写面（订单 / 成交 / 账本 / 结算）全部丢弃它；
-    // `Core::store` 是 `Option<Box<dyn StoreApi>>`，「没有 store」是一个
-    // 合法且无声的运行态。默认实现若返回 `Ok`，一个忘记实现的 backend
-    // 就会继续静默降级；返回 `Err` 把它变成一次响亮的失败。审批后应
-    // **删掉默认实现**，强制每个 backend 表态（见
-    // `docs/rust-core/RFC-1278-storeapi-v2-contract.md` §4 待决 D-1）。
+    // `append_money_fact` and `put_setting` are implemented on `SqliteStore`
+    // (`store/sqlite.rs`) and called from `OrderDb::append`, `TradeDb::record`,
+    // `Ledger::apply_tagged` and `SettlementJournal::append`. Every `StoreApi`
+    // backend must implement them — there is no default, so a backend that
+    // cannot durably write a money fact refuses loudly instead of silently
+    // degrading (the bug class #1278 exists to kill: `jsonl::append` returned
+    // `bool` and all four money write faces dropped it).
 
     /// Append one money fact durably. `WriteOutcome` forces every caller to
     /// distinguish "landed" from "memory only" — the whole point of #1278:
@@ -204,16 +198,7 @@ pub trait StoreApi: Send + Sync {
     /// `Err` = the backend was ASKED and refused/failed. `Ok(MemoryOnly)` =
     /// the fact is authoritative in memory for this run and is NOT durable —
     /// honest degradation, never silent success.
-    #[allow(dead_code)] // #1278 契约阶段，待审批后接线
-    fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
-        Err(CoreError::new(
-            CoreErrorCode::Internal,
-            format!(
-                "append_money_fact({}): no backend implements this yet — #1278 contract stage",
-                fact.kind()
-            ),
-        ))
-    }
+    fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError>;
 
     /// Upsert (`Some(value)`) or delete (`None`) one account-scoped setting.
     /// The `StoreApi`-typed spelling of `AccountRiskDb::save_setting`
@@ -225,27 +210,16 @@ pub trait StoreApi: Send + Sync {
     /// write is exactly the bug class #1221/#1223 were: a write that lands on
     /// a guessed account. Making the account a required, typed argument means
     /// a future caller cannot forget it.
-    #[allow(dead_code)] // #1278 契约阶段，待审批后接线
     fn put_setting(
         &self,
         scope: AccountScope<'_>,
         key: &str,
         value: Option<&str>,
-    ) -> Result<WriteOutcome, CoreError> {
-        Err(CoreError::new(
-            CoreErrorCode::Internal,
-            format!(
-                "put_setting({}, {key}, {}): no backend implements this yet — #1278 contract stage",
-                scope.account.as_str(),
-                // Never the VALUE: a setting write may carry a secret-shaped
-                // string (DEV §7 / R2), and an error text is a log line.
-                if value.is_some() { "upsert" } else { "delete" }
-            ),
-        ))
-    }
+    ) -> Result<WriteOutcome, CoreError>;
 }
 
-// ── #1278 contract types (no callers yet) ────────────────────────────────
+// ── #1278 contract types (callers: OrderDb::append, TradeDb::record,
+// Ledger::apply_tagged, SettlementJournal::append) ──────────────────────────
 //
 // 这一组类型的存在理由是**消灭 silent degradation**，不是方便：现状里
 // 「写没写下去」在四个资金写面上不可区分（`jsonl::append` → `bool`，
@@ -255,7 +229,6 @@ pub trait StoreApi: Send + Sync {
 /// What one durable write actually did. Deliberately NOT a `bool`: `true`
 /// reads as "fine" at every call site, which is how the current four money
 /// write faces lost the distinction in the first place.
-#[allow(dead_code)] // #1278 契约阶段，待审批后接线
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteOutcome {
     /// The fact is on disk (or in the carrier) and survives a restart.
@@ -271,7 +244,6 @@ pub enum WriteOutcome {
 /// but never silent; `ReadOnlyMode` is the `--readonly` structural refusal;
 /// `BackendRejected` carries the carrier's own message verbatim (R12 / DEV §7:
 /// never replace a raw error with a generic string).
-#[allow(dead_code)] // #1278 契约阶段，待审批后接线
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoryOnlyReason {
     /// This core was assembled without a store (`Core::store == None`).
@@ -287,13 +259,11 @@ pub enum MemoryOnlyReason {
 /// The account a scoped write targets. A struct rather than a bare `&str` so
 /// that adding scope (venue, book, round) later does not re-break every
 /// implementor, and so a call site physically cannot omit the account.
-#[allow(dead_code)] // #1278 契约阶段，待审批后接线
 #[derive(Debug, Clone, Copy)]
 pub struct AccountScope<'a> {
     pub account: &'a AccountId,
 }
 
-#[allow(dead_code)] // #1278 契约阶段，待审批后接线
 impl<'a> AccountScope<'a> {
     pub fn new(account: &'a AccountId) -> Self {
         Self { account }
@@ -310,7 +280,6 @@ impl<'a> AccountScope<'a> {
 /// - `Fill` — `trade_db::TradeDb::record` (`src/trade_db.rs`)
 /// - `Ledger` — `Ledger::apply_tagged`'s journal append (`src/ledger.rs`)
 /// - `Settlement` — `SettlementJournal::append` (`src/settlement.rs`)
-#[allow(dead_code)] // #1278 契约阶段，待审批后接线
 #[derive(Debug, Clone, Copy)]
 pub enum MoneyFact<'a> {
     Order(&'a crate::model::TrackedOrder),
@@ -560,6 +529,25 @@ mod tests {
                 reset_keys
             ));
             Ok(())
+        }
+
+        fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
+            self.log(format!("money-fact:{}", fact.kind()));
+            Ok(WriteOutcome::Persisted)
+        }
+
+        fn put_setting(
+            &self,
+            scope: AccountScope<'_>,
+            key: &str,
+            value: Option<&str>,
+        ) -> Result<WriteOutcome, CoreError> {
+            self.log(format!(
+                "setting:{}:{key}={}",
+                scope.account,
+                value.map(|v| v.to_string()).unwrap_or_else(|| "DEL".into())
+            ));
+            Ok(WriteOutcome::Persisted)
         }
     }
 

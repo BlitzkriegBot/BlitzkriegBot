@@ -10,35 +10,50 @@
 //! order id. `compact` rewrites the file with only the live orders so it does
 //! not grow without bound across restarts.
 
-use crate::model::TrackedOrder;
+use crate::model::{CoreError, TrackedOrder};
+use crate::store::{MemoryOnlyReason, MoneyFact, StoreApi, WriteOutcome};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// An order log bound to a JSONL path.
+/// An order log bound to a JSONL path, with an optional durable store carrier.
 pub struct OrderDb {
     jsonl_path: PathBuf,
+    store: Option<Box<dyn StoreApi>>,
 }
 
 impl OrderDb {
     pub fn new(jsonl_path: impl AsRef<Path>) -> Self {
         Self {
             jsonl_path: jsonl_path.as_ref().to_path_buf(),
+            store: None,
         }
+    }
+
+    /// Install a `StoreApi` carrier so order appends land durably beyond JSONL.
+    pub fn set_store(&mut self, store: Box<dyn StoreApi>) {
+        self.store = Some(store);
     }
 
     pub fn path(&self) -> &Path {
         &self.jsonl_path
     }
 
-    /// Append the order's current state. Best effort: a write failure must never
-    /// interrupt trading (the in-memory OME stays authoritative for this run).
-    /// The failure is reflected in `crate::jsonl::append_failures()`.
-    pub fn append(&self, order: &TrackedOrder) {
+    /// Append the order's current state to JSONL **and** to the durable store.
+    /// The JSONL write is best-effort (trading must never stop for a log
+    /// failure); the store write result is returned explicitly so callers can
+    /// distinguish `Persisted` from `MemoryOnly` instead of discarding a bool.
+    pub fn append(&self, order: &TrackedOrder) -> Result<WriteOutcome, CoreError> {
         if !crate::jsonl::append(&self.jsonl_path, order) {
             tracing::warn!(
                 path = %self.jsonl_path.display(),
                 "order jsonl append failed — order kept in memory, not durable; trading continues"
             );
+        }
+        match &self.store {
+            Some(store) => store.append_money_fact(&MoneyFact::Order(order)),
+            None => Ok(WriteOutcome::MemoryOnly {
+                reason: MemoryOnlyReason::NoStoreConfigured,
+            }),
         }
     }
 
@@ -133,11 +148,11 @@ mod tests {
         let db = OrderDb::new(dir.join("orders.jsonl"));
 
         // Two snapshots of the same order + one of another.
-        db.append(&order("o1", "k1", OrderStatus::Pending));
-        db.append(&order("o2", "k2", OrderStatus::Live));
+        db.append(&order("o1", "k1", OrderStatus::Pending)).unwrap();
+        db.append(&order("o2", "k2", OrderStatus::Live)).unwrap();
         let mut o1_live = order("o1", "k1", OrderStatus::Live);
         o1_live.venue_order_id = Some("0xdef".into());
-        db.append(&o1_live);
+        db.append(&o1_live).unwrap();
 
         let loaded = db.load();
         assert_eq!(loaded.len(), 2, "one latest snapshot per order id");

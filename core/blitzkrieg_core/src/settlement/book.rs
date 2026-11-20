@@ -2,6 +2,7 @@
 //! receivables. Moved verbatim from `settlement.rs` (pure code motion).
 
 use crate::position::OpenPosition;
+use crate::store::StoreApi;
 use rust_decimal::Decimal;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -32,6 +33,7 @@ impl SettlementBook {
             fallback_redeemed: BTreeSet::new(),
             journal: path.map(|p| SettlementJournal {
                 path: p.to_path_buf(),
+                store: None,
             }),
         };
         if let Some(j) = book.journal.as_ref() {
@@ -40,6 +42,13 @@ impl SettlementBook {
             }
         }
         book
+    }
+
+    /// Install a `StoreApi` carrier so settlement money facts land durably.
+    pub fn set_store(&mut self, store: Box<dyn StoreApi>) {
+        if let Some(j) = self.journal.as_mut() {
+            j.set_store(store);
+        }
     }
 
     fn replay(&mut self, line: JournalLine) {
@@ -497,11 +506,13 @@ impl SettlementBook {
         if !self.closed.insert(key.to_string()) {
             return;
         }
-        if let Some(j) = self.journal.as_ref() {
-            j.append(&JournalLine::Closed {
+        if let Some(j) = self.journal.as_ref()
+            && let Err(e) = j.append(&JournalLine::Closed {
                 at_ms: now_ms,
                 key: key.to_string(),
-            });
+            })
+        {
+            tracing::error!(key = %key, error = %e, "settlement close store write failed");
         }
     }
 
@@ -564,8 +575,8 @@ impl SettlementBook {
                 closed_at_ms,
             },
         );
-        if let Some(j) = self.journal.as_ref() {
-            j.append(&JournalLine::ExpiryFallbackBooked {
+        if let Some(j) = self.journal.as_ref()
+            && let Err(e) = j.append(&JournalLine::ExpiryFallbackBooked {
                 at_ms: now_ms,
                 claim_id: id.clone(),
                 position_id: position_id.to_string(),
@@ -577,7 +588,9 @@ impl SettlementBook {
                 price_source: price_source.to_string(),
                 booked_net_pnl_usd,
                 closed_at_ms,
-            });
+            })
+        {
+            tracing::error!(claim_id = %id, error = %e, "fallback claim store write failed");
         }
         id
     }
@@ -600,11 +613,13 @@ impl SettlementBook {
         let claim = self.fallback_claims.remove(&id)?;
         let booked_usd = claim.booked_usd();
         self.fallback_redeemed.insert(id.clone());
-        if let Some(j) = self.journal.as_ref() {
-            j.append(&JournalLine::ExpiryFallbackRedeemed {
+        if let Some(j) = self.journal.as_ref()
+            && let Err(e) = j.append(&JournalLine::ExpiryFallbackRedeemed {
                 at_ms: now_ms,
                 claim_id: id,
-            });
+            })
+        {
+            tracing::error!(claim_id = %position_id, error = %e, "fallback redeem store write failed");
         }
         Some((
             claim.account_id,

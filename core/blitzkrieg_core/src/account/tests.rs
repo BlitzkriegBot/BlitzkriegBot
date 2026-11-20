@@ -54,7 +54,8 @@ fn get_mut_refuses_an_unknown_account_explicitly() {
 #[test]
 fn ledgers_are_isolated_per_account() {
     let mut book = two_accounts();
-    book.get_mut(&AccountId("paper".into()))
+    let _ = book
+        .get_mut(&AccountId("paper".into()))
         .expect("paper is configured")
         .set_balance(dec!(500));
     assert_eq!(
@@ -74,7 +75,8 @@ fn switch_refuses_unknown_and_moves_the_active_ledger() {
     let mut book = two_accounts();
     book.switch(&AccountId("paper".into())).expect("configured");
     assert_eq!(book.active_id().as_str(), "paper");
-    book.get_mut(&AccountId("paper".into()))
+    let _ = book
+        .get_mut(&AccountId("paper".into()))
         .unwrap()
         .set_balance(dec!(7));
     assert_eq!(book.active_ledger().balance(), dec!(7));
@@ -443,7 +445,8 @@ fn insert_refuses_a_duplicate_id_and_default_never_slips_through() {
 #[test]
 fn remove_drops_account_and_ledger_including_default() {
     let mut book = two_accounts();
-    book.get_mut(&AccountId("paper".into()))
+    let _ = book
+        .get_mut(&AccountId("paper".into()))
         .unwrap()
         .set_balance(dec!(42));
     book.remove(&AccountId("paper".into())).expect("retires");
@@ -553,7 +556,8 @@ fn removing_the_displayed_account_repairs_the_pointer_and_set_display_validates(
 #[test]
 fn config_reload_keeps_money_and_refuses_ledger_topology_changes() {
     let mut book = two_accounts();
-    book.get_mut(&default_account_id())
+    let _ = book
+        .get_mut(&default_account_id())
         .unwrap()
         .set_balance(dec!(42));
 

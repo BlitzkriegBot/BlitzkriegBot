@@ -126,13 +126,15 @@ impl SettlementBook {
             .entry(claim.condition_id.clone())
             .or_insert(0) += 1;
         self.redeemed.insert(id.to_string());
-        if let Some(j) = self.journal.as_ref() {
-            j.append(&JournalLine::Redeemed {
+        if let Some(j) = self.journal.as_ref()
+            && let Err(e) = j.append(&JournalLine::Redeemed {
                 at_ms: now_ms,
                 claim_id: id.to_string(),
                 tx_hash,
                 block_number,
-            });
+            })
+        {
+            tracing::error!(claim_id = %id, error = %e, "redeemed store write failed");
         }
         Some((claim.account_id, claim.payout_usd))
     }

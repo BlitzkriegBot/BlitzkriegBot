@@ -35,7 +35,8 @@ fn arb_totals_ride_every_account_slice_of_the_arb_row_only() {
             updated_at_ms: 0,
         })
         .expect("arb-b does not exist yet");
-    c.accounts_mut()
+    let _ = c
+        .accounts_mut()
         .get_mut(&crate::account::AccountId::from("arb-b"))
         .expect("arb-b just inserted")
         .set_balance(dec!(1000));

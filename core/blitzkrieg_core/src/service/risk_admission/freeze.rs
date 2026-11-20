@@ -517,14 +517,18 @@ impl Core {
             // Durable persistence: every status change flows through here (submit /
             // confirm / reject / bind / cancel), so the order log always reflects
             // the latest state and a restart can rebuild it (orphan guard).
-            self.persist_order(id);
+            if let Err(e) = self.persist_order(id) {
+                tracing::error!(order = %id, error = %e, "order persist failed — order kept in memory, not durable");
+            }
             self.emit(Event::OrderUpdate { order: o.clone() });
         }
     }
 
     pub(crate) fn emit_fill(&self, d: FillDelta) {
         if let Some(o) = self.ome.get(&d.order_id) {
-            self.persist_order(&d.order_id);
+            if let Err(e) = self.persist_order(&d.order_id) {
+                tracing::error!(order = %d.order_id, error = %e, "order persist failed — order kept in memory, not durable");
+            }
             self.emit(Event::Fill {
                 delta: d.into(),
                 order: o.clone(),

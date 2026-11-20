@@ -466,7 +466,7 @@ impl Core {
         for action in &report.actions {
             match action {
                 crate::reconcile::ReconcileAction::MarkedFilled { core_order_id } => {
-                    self.persist_order(core_order_id);
+                    self.persist_order(core_order_id)?;
                 }
                 crate::reconcile::ReconcileAction::MarkedCancelled { core_order_id }
                 | crate::reconcile::ReconcileAction::MarkedForceClosed { core_order_id } => {
@@ -474,7 +474,7 @@ impl Core {
                         let was_live = live_before.contains(order.order_id.as_str());
                         self.release_order_bookkeeping(&order, was_live, "reconcile");
                     }
-                    self.persist_order(core_order_id);
+                    self.persist_order(core_order_id)?;
                 }
                 crate::reconcile::ReconcileAction::FilledGap { .. } => {}
             }
@@ -607,7 +607,14 @@ impl Core {
             // shares. An unknown account is logged and skipped (no implicit
             // book, no silent mint).
             if let Ok(l) = self.accounts.get_mut(&position_account) {
-                l.settle_sell_fill(notional, fee_usd);
+                if let Err(e) = l.settle_sell_fill(notional, fee_usd) {
+                    tracing::error!(
+                        token = %t.token_id,
+                        account = %position_account.as_str(),
+                        error = %e,
+                        "external sell settlement store write failed"
+                    );
+                }
             } else {
                 tracing::error!(
                     token = %t.token_id,

@@ -22,7 +22,13 @@ impl Core {
         // step fails (matches the Node behaviour of saving on close).
         if let Some(db) = self.trade_db.as_mut() {
             let rec = crate::trade_db::TradeRecord::from_closed(closed);
-            db.record(&rec, now_ms);
+            if let Err(e) = db.record(&rec, now_ms) {
+                tracing::error!(
+                    token = %closed.token_id,
+                    error = %e,
+                    "trade record persist failed — trade kept in memory, not durable"
+                );
+            }
         }
         // Per-strategy accounting (P-1.1): session realized PnL + fee totals,
         // keyed (strategy, account) so the panel's per-account slice sums ONLY

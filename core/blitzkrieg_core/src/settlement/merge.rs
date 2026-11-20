@@ -82,8 +82,8 @@ impl SettlementBook {
                 block_number: None,
             },
         );
-        if let Some(j) = self.journal.as_ref() {
-            j.append(&JournalLine::MergeBurned {
+        if let Some(j) = self.journal.as_ref()
+            && let Err(e) = j.append(&JournalLine::MergeBurned {
                 at_ms: now_ms,
                 claim_id: id.clone(),
                 condition_id: condition_id.to_string(),
@@ -91,7 +91,9 @@ impl SettlementBook {
                 venue: venue.to_string(),
                 neg_risk,
                 pairs_usd,
-            });
+            })
+        {
+            tracing::error!(claim_id = %id, error = %e, "merge burned store write failed");
         }
         id
     }
@@ -200,13 +202,15 @@ impl SettlementBook {
     ) -> Option<(String, Decimal)> {
         let m = self.merges.remove(id)?;
         self.merged.insert(id.to_string());
-        if let Some(j) = self.journal.as_ref() {
-            j.append(&JournalLine::MergeConfirmed {
+        if let Some(j) = self.journal.as_ref()
+            && let Err(e) = j.append(&JournalLine::MergeConfirmed {
                 at_ms: now_ms,
                 claim_id: id.to_string(),
                 tx_hash,
                 block_number,
-            });
+            })
+        {
+            tracing::error!(claim_id = %id, error = %e, "merge confirmed store write failed");
         }
         Some((m.account_id, m.pairs_usd))
     }

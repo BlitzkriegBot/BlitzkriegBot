@@ -162,7 +162,7 @@ fn a_live_to_dry_does_not_inherit_live_positions_or_ids() {
 
     // Live's era: one held position (hft-31) and a history reaching hft-40.
     crate::position_db::PositionDb::new(&live_book).save(&[held("hft-31")]);
-    crate::trade_db::TradeDb::new(&live_trades).record(&closed_trade("hft-40"), 1);
+    let _ = crate::trade_db::TradeDb::new(&live_trades).record(&closed_trade("hft-40"), 1);
 
     // The switch (process 1 stopped): the SAME directory, dry mode, no
     // explicit path flags — `main` hands the core exactly the paths
@@ -219,7 +219,8 @@ fn b_dry_to_live_does_not_inherit_dry_positions_or_ids() {
     // Live's first mint starts live's OWN sequence (hft-1), not dry's hft-8.
     assert_eq!(live.positions.next_id_for_test(), 1);
     // One live cycle books its history into the LIVE ledger only.
-    live.trade_db
+    let _ = live
+        .trade_db
         .as_mut()
         .expect("live ledger")
         .record(&closed_trade("hft-40"), 1);
@@ -246,7 +247,7 @@ fn live_id_counter_seeds_from_the_live_history_only() {
 
     // The dry era: a closed trade with id hft-30 in the DRY ledger.
     let (_, dry_trades) = family(&dir, false);
-    crate::trade_db::TradeDb::new(&dry_trades).record(&closed_trade("hft-30"), 1);
+    let _ = crate::trade_db::TradeDb::new(&dry_trades).record(&closed_trade("hft-30"), 1);
 
     // The switch: live boots. Its ledger path is the LIVE spelling, so the
     // boot scan finds NO hft ids in live's own history.

@@ -36,6 +36,8 @@
 //! book the same position twice, and must not lose the claim whose cash is
 //! still on-chain. `SettlementBook::recover` closes that window explicitly.
 
+use crate::model::CoreError;
+use crate::store::{MemoryOnlyReason, MoneyFact, StoreApi, WriteOutcome};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -198,15 +200,38 @@ enum JournalLine {
 /// The journal file: append-only JSONL beside the other core logs.
 struct SettlementJournal {
     path: PathBuf,
+    store: Option<Box<dyn StoreApi>>,
 }
 
 impl SettlementJournal {
-    fn append(&self, line: &JournalLine) {
+    fn set_store(&mut self, store: Box<dyn StoreApi>) {
+        self.store = Some(store);
+    }
+
+    /// Append one journal line to JSONL **and** to the durable store.
+    fn append(&self, line: &JournalLine) -> Result<WriteOutcome, CoreError> {
         if !crate::jsonl::append(&self.path, line) {
             tracing::warn!(
                 path = %self.path.display(),
                 "settlement journal append failed — settlement kept in memory, not durable; trading continues"
             );
+        }
+        match &self.store {
+            Some(store) => {
+                // JournalLine is a MoneyFact::Settlement carrier: extract the
+                // SettlementRecord for the store write.
+                match line {
+                    JournalLine::Settlement { record, .. } => {
+                        store.append_money_fact(&MoneyFact::Settlement(record))
+                    }
+                    _ => Ok(WriteOutcome::MemoryOnly {
+                        reason: MemoryOnlyReason::NoStoreConfigured,
+                    }),
+                }
+            }
+            None => Ok(WriteOutcome::MemoryOnly {
+                reason: MemoryOnlyReason::NoStoreConfigured,
+            }),
         }
     }
 

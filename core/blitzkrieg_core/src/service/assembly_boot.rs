@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::account::AccountLedgers;
+use crate::store::{MemoryOnlyReason, WriteOutcome};
 use std::collections::HashMap;
 
 impl Core {
@@ -462,11 +463,11 @@ impl Core {
         if let Some(v) = config.max_positions_per_asset {
             positions.max_positions_per_asset = v;
         }
-        let trade_db = config
+        let mut trade_db = config
             .trade_log_path
             .as_ref()
             .map(crate::trade_db::TradeDb::new);
-        let order_db = config
+        let mut order_db = config
             .order_log_path
             .as_ref()
             .map(crate::order_db::OrderDb::new);
@@ -502,7 +503,26 @@ impl Core {
         // let a FAILED unwind one of its closes across a restart.
         let close_credential_log =
             side_log_path(&None, "close-credentials.jsonl").map(std::path::PathBuf::from);
-        let settlement = SettlementBook::new(settlement_log.as_deref().map(std::path::Path::new));
+        let mut settlement =
+            SettlementBook::new(settlement_log.as_deref().map(std::path::Path::new));
+        // Issue #43: wire the durable store into every money write face — order
+        // log, trade log, settlement journal, and every account's ledger — so
+        // each money fact lands in SQLite (kernel_meta keyed money_fact.*)
+        // beyond the JSONL journal. `sqlite: None` (db_path unset: backtester,
+        // in-process tests) leaves every face memory-only, unchanged.
+        if let Some(sqlite) = &sqlite {
+            let boxed = |s: &crate::store::SqliteStore| {
+                Box::new(s.clone()) as Box<dyn crate::store::StoreApi>
+            };
+            if let Some(db) = trade_db.as_mut() {
+                db.set_store(boxed(sqlite));
+            }
+            if let Some(db) = order_db.as_mut() {
+                db.set_store(boxed(sqlite));
+            }
+            settlement.set_store(boxed(sqlite));
+            accounts.set_store_on_all_ledgers(sqlite);
+        }
         let shadow_cfg = {
             let mut c = ShadowEvolutionConfig {
                 enabled: config.shadow_evolution_enabled,
@@ -1091,5 +1111,23 @@ impl Core {
             .filter(|d| accounts.iter().any(|a| &a.id == d))
             .unwrap_or_else(|| active.clone());
         AccountLedgers::new_with_display(accounts, active, display)
+    }
+
+    /// Convenience: append one money fact through this core's store, when one
+    /// is wired (issue #43). `store == None` → `Ok(MemoryOnly { NoStoreConfigured })`
+    /// — honest degradation, never silent success. The four money write faces
+    /// (OrderDb::append, TradeDb::record, Ledger::apply_tagged,
+    /// SettlementJournal::append) write the store directly; this is the single
+    /// Core-level entry point everything else funnels through.
+    pub fn append_money_fact(
+        &self,
+        fact: &crate::store::MoneyFact<'_>,
+    ) -> Result<crate::store::WriteOutcome, crate::model::CoreError> {
+        match &self.store {
+            Some(store) => store.append_money_fact(fact),
+            None => Ok(WriteOutcome::MemoryOnly {
+                reason: MemoryOnlyReason::NoStoreConfigured,
+            }),
+        }
     }
 }

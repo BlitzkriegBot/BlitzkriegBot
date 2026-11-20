@@ -76,7 +76,9 @@ impl Core {
     /// NOT a venue report: venue cash truth flows through
     /// [`Self::realign_venue_cash`], which is where the audit's venue leg is fed.
     pub fn set_balance(&mut self, b: Decimal) {
-        self.accounts.active_ledger_mut().set_balance(b);
+        if let Err(e) = self.accounts.active_ledger_mut().set_balance(b) {
+            tracing::error!(error = %e, "set_balance store write failed");
+        }
     }
 
     /// Fold one venue's reported cash into the account bound to that venue
@@ -161,7 +163,9 @@ impl Core {
             // issue 749: this is VENUE truth, not a local funding number —
             // record it so a live account shows the balance even when it
             // never declared credential env names.
-            ledger.apply_venue_report(b);
+            if let Err(e) = ledger.apply_venue_report(b) {
+                tracing::error!(account = %target.as_str(), venue = %venue, error = %e, "venue report store write failed");
+            }
         }
         tracing::debug!(account = %target.as_str(), venue = %venue, balance = %b, "venue cash routed");
     }

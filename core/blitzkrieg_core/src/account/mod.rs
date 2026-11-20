@@ -404,7 +404,9 @@ impl AccountLedgers {
     /// boot-replay logic keys on that spelling.
     pub fn seed_all(&mut self, seed: rust_decimal::Decimal) {
         for ledger in self.ledgers.values_mut() {
-            ledger.seed(seed);
+            if let Err(e) = ledger.seed(seed) {
+                tracing::error!(error = %e, "seed_all store write failed");
+            }
         }
     }
 
@@ -416,7 +418,21 @@ impl AccountLedgers {
     /// reset the environment".
     pub fn reset_all_to_seed(&mut self, seed: rust_decimal::Decimal) {
         for ledger in self.ledgers.values_mut() {
-            ledger.reset_to_seed(seed);
+            if let Err(e) = ledger.reset_to_seed(seed) {
+                tracing::error!(error = %e, "reset_all_to_seed store write failed");
+            }
+        }
+    }
+
+    /// Issue #43: wire one durable store carrier into EVERY account's ledger,
+    /// so each money fact lands in SQLite (kernel_meta) beyond the JSONL
+    /// journal. The store is cloned per ledger — `Box<dyn StoreApi>` isn't
+    /// `Clone`, `SqliteStore` is. Called from `Core::with_account_book` at
+    /// boot; a store-less core (backtester, in-process tests) never calls this
+    /// and every ledger stays memory-only.
+    pub(crate) fn set_store_on_all_ledgers(&mut self, store: &crate::store::SqliteStore) {
+        for ledger in self.ledgers.values_mut() {
+            ledger.set_store(Box::new(store.clone()));
         }
     }
 
@@ -431,7 +447,7 @@ impl AccountLedgers {
         seed: rust_decimal::Decimal,
     ) -> CoreResult<bool> {
         let ledger = self.get_mut(id)?;
-        Ok(ledger.reset_account_to_seed(seed))
+        ledger.reset_account_to_seed(seed)
     }
 
     /// The process-level default account (§9.5). Session-level switches live

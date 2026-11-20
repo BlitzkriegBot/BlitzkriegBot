@@ -53,6 +53,11 @@ export function filterByAccount<T extends AccountedRow>(
 /** One venue-tagged row: the only field the venue filter reads (#427 rows). */
 interface VenuedRow {
   venue?: string
+  /**
+   * 轮次档位（秒）：该行属于哪一档轮次。老内核/未打 tag 行缺省 →
+   *  undefined，前端不据此丢行，降回 venue-only（feature-detect）。
+   */
+  durationSec?: number
 }
 
 export interface VenueFilterResult<T> {
@@ -76,6 +81,39 @@ export function filterByVenue<T extends VenuedRow>(
   if (!venue) return { rows: [...rows], attributed: false }
   const anyTagged = rows.some((r) => !!r.venue)
   if (!anyTagged) return { rows: [...rows], attributed: false }
+  return {
+    rows: rows.filter((r) => !r.venue || r.venue === venue),
+    attributed: true,
+  }
+}
+
+/**
+ * venue 层双过滤（行情多档位：同一 venue 的 5m/15m 轮次可并行，行带
+ * `durationSec` 标记所属档位）。仅当 `durationSec` 有值且输入行中
+ * 有人携带 `durationSec` 时，才按 `venue + durationSec` 双过滤；
+ * `durationSec` 缺省（null/undefined）或全行未打 tag 时降回 venue-only，
+ * 与 `filterByVenue` 语义一致——老内核/未打 tag 行不被静默丢弃。
+ * 单行自缺 `durationSec` 时同样退回 venue-only（保留不可归档位的行）。
+ */
+export function filterByVenueDur<T extends VenuedRow>(
+  rows: readonly T[],
+  venue: string,
+  durationSec?: number | null,
+): VenueFilterResult<T> {
+  if (!venue) return { rows: [...rows], attributed: false }
+  const anyTagged = rows.some((r) => !!r.venue)
+  if (!anyTagged) return { rows: [...rows], attributed: false }
+  const someCarryDur = rows.some((r) => typeof r.durationSec === 'number')
+  if (typeof durationSec === 'number' && durationSec > 0 && someCarryDur) {
+    return {
+      rows: rows.filter(
+        (r) =>
+          (!r.venue || r.venue === venue) &&
+          (typeof r.durationSec !== 'number' || r.durationSec === durationSec),
+      ),
+      attributed: true,
+    }
+  }
   return {
     rows: rows.filter((r) => !r.venue || r.venue === venue),
     attributed: true,

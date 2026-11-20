@@ -25,7 +25,7 @@ import {
   num, money, signedMoney, winRateOf, winRateValue, pct, signedPct, cents, mmss, duration,
 } from '@/lib/format'
 import { useAccountBalance } from '@/lib/account-balance'
-import { filterByAccount, filterByVenue } from '@/lib/account-filter'
+import { filterByAccount, filterByVenue, filterByVenueDur } from '@/lib/account-filter'
 import { newestFirst, positionExpired, isKnownPnl } from '@/lib/trades'
 import { feedStaleness } from '@/lib/feed'
 import { useRoundDuration } from '@/lib/round-duration'
@@ -397,7 +397,7 @@ const venueLoading = computed(() => {
 /** 行情卡的可见行：Loading 门开着 = 清空（绝不残留旧所盘口）。 */
 const visiblePrices = computed<MarketPrice[]>(() => {
   if (venueLoading.value) return []
-  return filterByVenue(prices.value, activeVenue.value).rows
+  return filterByVenueDur(prices.value, activeVenue.value, identityDurSec.value).rows
 })
 
 /** 盘口深度卡的可见行：同一 Loading 门。 */

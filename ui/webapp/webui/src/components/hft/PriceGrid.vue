@@ -64,7 +64,7 @@ function spreadCents(m: MarketPrice): number {
   <div v-else-if="visiblePrices.length" class="mt-3.5 grid gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
     <div
       v-for="m in visiblePrices"
-      :key="`${m.venue ?? ''}:${m.asset}`"
+      :key="`${m.venue ?? ''}:${m.asset}:${m.durationSec ?? ''}`"
       class="glass card-pad transition-transform duration-200 hover:-translate-y-0.5"
     >
       <div class="flex items-center justify-between">

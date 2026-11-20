@@ -760,7 +760,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
 
     macro_rules! resolve {
         ($label:literal, $cli:expr, $env:literal, $default:expr) => {{
-            let s: Sourced<_> = pick($cli, env.num($env), $default);
+            let s: Sourced<_> = pick(None, $cli, env.num($env), $default);
             if s.is_explicit() {
                 report.push(format!("{}={} ({})", $label, s.value, s.source.as_str()));
             }
@@ -770,7 +770,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
     // Same, for values that are not Display (the asset list).
     macro_rules! resolve_shown {
         ($label:literal, $cli:expr, $env:expr, $default:expr) => {{
-            let s = pick($cli, $env, $default);
+            let s = pick(None, $cli, $env, $default);
             if s.is_explicit() {
                 report.push(format!("{}={:?} ({})", $label, s.value, s.source.as_str()));
             }
@@ -782,7 +782,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
     // "no layer spoke" — resolving those two is the whole job of this layer.
     macro_rules! resolve_opt {
         ($label:literal, $cli:expr, $env:expr) => {{
-            let s = pick($cli.map(Some), $env.map(Some), None);
+            let s = pick(None, $cli.map(Some), $env.map(Some), None);
             if s.is_explicit() {
                 let shown = s
                     .value
@@ -870,6 +870,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
     // refused outright rather than clamped — silently ignoring a request to
     // loosen a safety lock is the kind of thing an operator must be told about.
     let se_max_gradient = match pick(
+        None::<Decimal>,
         None::<Decimal>,
         env.num::<Decimal>("BK_SE_MAX_GRADIENT"),
         blitzkrieg_core::config::MAX_GRADIENT_CEILING,
@@ -964,6 +965,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
     // 200 USD silently disabled the breaker on a 4.8 USDC live book (P0-2).
     let daily_loss_defaults = PositionConfig::default();
     let daily_loss_usd = pick(
+        None,
         max_daily_loss,
         env.num::<Decimal>("BK_MAX_DAILY_LOSS"),
         // Issue #967 (Phase-5): `[risk].max_daily_drawdown_usd` is retired with
@@ -973,6 +975,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
         daily_loss_defaults.max_daily_loss_usd,
     );
     let daily_loss_pct = pick(
+        None,
         max_daily_loss_pct,
         env.num::<Decimal>("BK_MAX_DAILY_LOSS_PCT"),
         daily_loss_defaults.max_daily_loss_equity_pct,
@@ -1011,8 +1014,14 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
     // bound that is only in the source is not a bound anyone can verify against
     // the account it runs on. `size_pct` also changes ORDER SIZES, so the boot
     // log has to say whether the absolute path or the equity path is in force.
-    let size_pct = pick(size_pct, env.num::<Decimal>("BK_SIZE_PCT"), Decimal::ZERO);
+    let size_pct = pick(
+        None,
+        size_pct,
+        env.num::<Decimal>("BK_SIZE_PCT"),
+        Decimal::ZERO,
+    );
     let notional_pct = pick(
+        None,
         max_order_notional_pct,
         env.num::<Decimal>("BK_MAX_ORDER_NOTIONAL_PCT"),
         Decimal::ZERO,
@@ -1074,6 +1083,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
     // a slow poller or a venue that batches updates needs a wider budget, and a
     // deployment tightening it must not need a rebuild to be obeyed.
     let stale = pick(
+        None,
         max_orderbook_stale_ms,
         env.num::<i64>("BK_MAX_ORDERBOOK_STALE_MS"),
         blitzkrieg_core::engine::DEFAULT_MAX_ORDERBOOK_STALE_MS,
@@ -1133,7 +1143,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
                      cli: Option<Decimal>,
                      env: Option<Decimal>,
                      default: Decimal| {
-        let s = pick(cli, env, default);
+        let s = pick(None, cli, env, default);
         if s.is_explicit() {
             report.push(format!("{label}={} ({})", s.value, s.source.as_str()));
         }
@@ -1179,6 +1189,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
     // closure above does not fit; the chain is the same CLI > env > default.
     let exit_force_sec = {
         let s = pick(
+            None,
             exit_force_sec,
             env_int("BK_EXIT_FORCE_EXIT_SEC"),
             exit_defaults.force_exit_sec,
@@ -1199,6 +1210,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
     // back so a hot-edited switch survives a restart. No CLI flag: these are
     // cockpit-operated knobs, not launch-time ones.
     let exit_trailing_enabled = pick(
+        None,
         None::<bool>,
         env.num::<bool>("BK_EXIT_TRAILING_ENABLED"),
         exit_defaults.trailing_enabled,
@@ -1211,6 +1223,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
         ));
     }
     let exit_strategy_exit_maker_first = pick(
+        None,
         None::<bool>,
         env.num::<bool>("BK_EXIT_STRATEGY_EXIT_MAKER_FIRST"),
         exit_defaults.strategy_exit_maker_first,
@@ -1230,6 +1243,7 @@ pub(crate) fn parse_args(argv: &[String], env: &EnvVars) -> Args {
     // the breaker's budget and the freshness budget above: a boot log must answer
     // it even for a run that configured nothing.
     let se_engine = pick(
+        None,
         None::<bool>,
         env.num::<bool>("BK_SHADOW_EVOLUTION")
             .or_else(|| env.num::<bool>("SHADOW_ENABLED")),

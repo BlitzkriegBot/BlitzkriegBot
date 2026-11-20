@@ -28,32 +28,36 @@ pub enum LimitSource {
     Default,
     /// An environment variable (`.env` folded into the process environment).
     Env,
+    /// A SQLite row — the single source of truth for persisted configuration.
+    Sqlite,
     /// A CLI flag — the strongest link of the existing chain.
     Flag,
 }
 
 impl LimitSource {
-    /// The provenance word the boot log spells (`env`, `flag`, `default`) —
-    /// the same words the kernel's provenance report has always used, kept as
-    /// a method here so the wire's vocabulary never has to reach into the
-    /// config module for its spelling.
+    /// The provenance word the boot log spells (`env`, `sqlite`, `flag`,
+    /// `default`) — the same words the kernel's provenance report has always
+    /// used, kept as a method here so the wire's vocabulary never has to reach
+    /// into the config module for its spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             LimitSource::Default => "default",
             LimitSource::Env => "env",
+            LimitSource::Sqlite => "sqlite",
             LimitSource::Flag => "flag",
         }
     }
 }
 
-/// The two vocabularies are the SAME layers with two names for the strongest
+/// The two vocabularies are the same layers with two names for the strongest
 /// one (the config layer says `cli`, the wire says `flag`). The map is 1:1 by
-/// construction, so a resolved budget can name its true layer without a
-/// second spelling table drifting apart.
+/// construction, so a resolved budget can name its true layer without a second
+/// spelling table drifting apart.
 impl From<crate::config::Source> for LimitSource {
     fn from(s: crate::config::Source) -> Self {
         match s {
             crate::config::Source::Cli => LimitSource::Flag,
+            crate::config::Source::Sqlite => LimitSource::Sqlite,
             crate::config::Source::Env => LimitSource::Env,
             crate::config::Source::Default => LimitSource::Default,
         }

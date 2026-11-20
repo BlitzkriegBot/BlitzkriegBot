@@ -49,6 +49,7 @@ pub(crate) fn resolve_unverified_expiry_policy(
     // default (48 h) rides `RECEIVABLE_MAX_AGE_MS_DEFAULT`; 0 disables the warn.
     let receivable_max_age = pick(
         None::<i64>,
+        None::<i64>,
         env.num::<i64>("BK_RECEIVABLE_MAX_AGE_MS"),
         blitzkrieg_core::service::RECEIVABLE_MAX_AGE_MS_DEFAULT,
     );
@@ -123,11 +124,13 @@ pub(crate) fn resolve_ntp(
     // ZERO network tasks (the replay-safe posture). An explicit --ntp-host ""
     // and an absent host are pinned apart by the snapshot test.
     let ntp = pick(
+        None,
         ntp_host,
         env.text("BK_NTP_HOST"),
         blitzkrieg_core::probe::DEFAULT_NTP_HOST.to_string(),
     );
     let ntp_interval = pick(
+        None,
         ntp_interval_secs,
         env.num::<i64>("BK_NTP_INTERVAL_SECS"),
         blitzkrieg_core::probe::DEFAULT_NTP_INTERVAL_SECS,

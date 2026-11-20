@@ -68,9 +68,9 @@ impl Core {
                 )
             })
         });
-        let store: Option<Box<dyn crate::store::StoreApi>> = sqlite
+        let store: Option<Arc<dyn crate::store::StoreApi>> = sqlite
             .as_ref()
-            .map(|s| Box::new(s.clone()) as Box<dyn crate::store::StoreApi>);
+            .map(|s| Arc::new(s.clone()) as Arc<dyn crate::store::StoreApi>);
         // 账户簿的家（同裁决）：`accounts` 表非空 → 整簿从行重建，SQL 是
         // 权威（`.env` 的 ACCOUNT_* 只是迁移前旧部署的兼容回退——读允许，
         // 写路径已整体废除）。空表 → 沿用 env 簿（首次升级后的状态），此后
@@ -465,11 +465,11 @@ impl Core {
         let trade_db = config
             .trade_log_path
             .as_ref()
-            .map(crate::trade_db::TradeDb::new);
+            .map(|p| crate::trade_db::TradeDb::new(p).with_store(store.clone()));
         let order_db = config
             .order_log_path
             .as_ref()
-            .map(crate::order_db::OrderDb::new);
+            .map(|p| crate::order_db::OrderDb::new(p).with_store(store.clone()));
         let position_db = config
             .position_log_path
             .as_ref()
@@ -502,7 +502,8 @@ impl Core {
         // let a FAILED unwind one of its closes across a restart.
         let close_credential_log =
             side_log_path(&None, "close-credentials.jsonl").map(std::path::PathBuf::from);
-        let settlement = SettlementBook::new(settlement_log.as_deref().map(std::path::Path::new));
+        let settlement = SettlementBook::new(settlement_log.as_deref().map(std::path::Path::new))
+            .with_store(store.clone());
         let shadow_cfg = {
             let mut c = ShadowEvolutionConfig {
                 enabled: config.shadow_evolution_enabled,
@@ -792,6 +793,9 @@ impl Core {
                 }
             }
         });
+        // 会计四面 + 账本里的每个 Ledger 共享同一个存储后端（运行时
+        // account.create 补出来的账本，由 AccountLedgers::insert 同份 store）。
+        accounts.install_store(store.clone());
         let mut core = Self {
             risk: RiskGate::new(config.risk.clone()),
             account_risk_db: None,

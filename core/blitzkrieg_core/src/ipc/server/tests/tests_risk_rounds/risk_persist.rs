@@ -39,7 +39,7 @@ async fn risk_set_systemic_persists_to_the_db_and_the_boot_rearms_it() {
     c.set_balance(cfg.dry_seed_balance);
     c.open_account_risk_db(dir.join("risk.sqlite"))
         .expect("temp risk db opens");
-    c.store = Some(Box::new(
+    c.store = Some(Arc::new(
         crate::store::SqliteStore::open(dir.join("risk.sqlite")).expect("temp store opens"),
     ));
     cfg.install_engine(&mut c).expect("engine install");

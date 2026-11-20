@@ -50,7 +50,7 @@ async fn risk_set_systemic_and_exit_write_the_db_not_the_env() {
     // Wire the StoreApi seam so `risk.setSystemic`/`risk.setExit` write through
     // `StoreApi` (not the removed `AccountRiskDb` straight-write). Same SQLite
     // file as `account_risk_db` — one carrier, one durable write path.
-    c.store = Some(Box::new(
+    c.store = Some(Arc::new(
         crate::store::SqliteStore::open(dir.join("risk.sqlite")).expect("temp store opens"),
     ));
     let core = Arc::new(AsyncMutex::new(c));

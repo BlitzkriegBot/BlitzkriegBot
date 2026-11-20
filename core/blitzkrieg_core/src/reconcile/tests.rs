@@ -4,7 +4,8 @@ use super::audit::{
 use super::reconcile;
 use super::types::{ReconcileAction, VenueSnapshot, VenueTrade};
 use crate::model::*;
-use crate::ome::{Ome, SubmitParams};
+use crate::ome::SubmitParams;
+use crate::service::{Core, CoreConfig};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
@@ -25,26 +26,31 @@ fn req(key: &str, size: rust_decimal::Decimal) -> OrderRequest {
     }
 }
 
-fn live_order(ome: &mut Ome, key: &str, core_id: &str, venue_id: &str, now: i64) {
-    ome.submit(SubmitParams {
-        order_id: core_id.into(),
-        request: req(key, dec!(10)),
-        submitted_at_ms: now,
-        decision_at_ms: now,
-        execute_at_ms: now,
-        report_at_ms: now,
-        maker_timeout_ms: 0,
-        round_duration_sec: 0,
-    })
-    .unwrap();
-    ome.bind_venue(core_id, venue_id.into(), now).unwrap();
-    ome.mark_live(core_id, now).unwrap();
+fn new_core() -> Core {
+    Core::new(CoreConfig::default())
+}
+
+fn live_order(core: &mut Core, key: &str, core_id: &str, venue_id: &str, now: i64) {
+    core.ome
+        .submit(SubmitParams {
+            order_id: core_id.into(),
+            request: req(key, dec!(10)),
+            submitted_at_ms: now,
+            decision_at_ms: now,
+            execute_at_ms: now,
+            report_at_ms: now,
+            maker_timeout_ms: 0,
+            round_duration_sec: 0,
+        })
+        .unwrap();
+    core.ome.bind_venue(core_id, venue_id.into(), now).unwrap();
+    core.ome.mark_live(core_id, now).unwrap();
 }
 
 #[test]
 fn repairs_missed_fill_from_rest_trade() {
-    let mut ome = Ome::new();
-    live_order(&mut ome, "k1", "c1", "v1", 1);
+    let mut core = new_core();
+    live_order(&mut core, "k1", "c1", "v1", 1);
     // WS gap: no fill applied locally. Venue reports a full 10 filled.
     let snap = VenueSnapshot {
         open_order_ids: vec![],
@@ -61,41 +67,42 @@ fn repairs_missed_fill_from_rest_trade() {
         }],
         now_ms: 3,
     };
-    let report = reconcile(&mut ome, &snap).unwrap();
+    let report = reconcile(&mut core, &snap).unwrap();
     assert!(
         report
             .actions
             .iter()
             .any(|a| matches!(a, ReconcileAction::FilledGap { .. }))
     );
-    assert_eq!(ome.get("c1").unwrap().status, OrderStatus::Filled);
-    assert_eq!(ome.get("c1").unwrap().filled_size, dec!(10));
+    assert_eq!(core.ome.get("c1").unwrap().status, OrderStatus::Filled);
+    assert_eq!(core.ome.get("c1").unwrap().filled_size, dec!(10));
 }
 
 #[test]
 fn repairs_only_the_missing_increment_of_a_partially_known_fill() {
-    let mut ome = Ome::new();
-    live_order(&mut ome, "k1", "c1", "v1", 1);
+    let mut core = new_core();
+    live_order(&mut core, "k1", "c1", "v1", 1);
     // The user-WS stream already booked trade t1: 4 of the order's 10
     // shares are locally known. A SELL, so the wrong increment would
     // settle phantom sale proceeds into the ledger.
-    ome.apply_fill(
-        Fill {
-            order_id: "c1".into(),
-            trade_id: Some("t1".into()),
-            token_id: "tok".into(),
-            side: Side::Sell,
-            price: dec!(0.5),
-            size: dec!(4),
-            status: FillStatus::Confirmed,
-            ts_ms: 2,
-            tx_hash: None,
-            maker: Some(true),
-            account_id: crate::model::default_account_id(),
-        },
-        2,
-    )
-    .unwrap();
+    core.ome
+        .apply_fill(
+            Fill {
+                order_id: "c1".into(),
+                trade_id: Some("t1".into()),
+                token_id: "tok".into(),
+                side: Side::Sell,
+                price: dec!(0.5),
+                size: dec!(4),
+                status: FillStatus::Confirmed,
+                ts_ms: 2,
+                tx_hash: None,
+                maker: Some(true),
+                account_id: crate::model::default_account_id(),
+            },
+            2,
+        )
+        .unwrap();
     // The REST sweep reports t1 (4) plus t2 (2): the order's cumulative
     // filled size is 6 — the missing increment is 2, not 6.
     let snap = VenueSnapshot {
@@ -126,7 +133,7 @@ fn repairs_only_the_missing_increment_of_a_partially_known_fill() {
         ],
         now_ms: 5,
     };
-    let report = reconcile(&mut ome, &snap).unwrap();
+    let report = reconcile(&mut core, &snap).unwrap();
     // Exactly one gap action, carrying exactly the missing increment.
     let gaps: Vec<&ReconcileAction> = report
         .actions
@@ -137,22 +144,22 @@ fn repairs_only_the_missing_increment_of_a_partially_known_fill() {
     if let ReconcileAction::FilledGap { delta, .. } = gaps[0] {
         assert_eq!(delta.delta, dec!(2));
     }
-    assert_eq!(ome.get("c1").unwrap().filled_size, dec!(6));
+    assert_eq!(core.ome.get("c1").unwrap().filled_size, dec!(6));
     // A second identical sweep stays stable (no re-application).
-    let again = reconcile(&mut ome, &snap).unwrap();
+    let again = reconcile(&mut core, &snap).unwrap();
     assert!(
         again
             .actions
             .iter()
             .all(|a| !matches!(a, ReconcileAction::FilledGap { .. }))
     );
-    assert_eq!(ome.get("c1").unwrap().filled_size, dec!(6));
+    assert_eq!(core.ome.get("c1").unwrap().filled_size, dec!(6));
 }
 
 #[test]
 fn detects_ghost_order_without_fill() {
-    let mut ome = Ome::new();
-    live_order(&mut ome, "k1", "c1", "v1", 1);
+    let mut core = new_core();
+    live_order(&mut core, "k1", "c1", "v1", 1);
     // Venue no longer lists it open and there are no trades → ghost. Order
     // is well past the grace window, so #457 applies: the KERNEL closes it
     // as ForceClosed — "we gave up waiting", not "we withdrew".
@@ -161,9 +168,9 @@ fn detects_ghost_order_without_fill() {
         trades: vec![],
         now_ms: 20_000,
     };
-    let report = reconcile(&mut ome, &snap).unwrap();
+    let report = reconcile(&mut core, &snap).unwrap();
     assert_eq!(report.suspect_ghost_ids, vec!["c1".to_string()]);
-    assert_eq!(ome.get("c1").unwrap().status, OrderStatus::ForceClosed);
+    assert_eq!(core.ome.get("c1").unwrap().status, OrderStatus::ForceClosed);
     assert!(
         report
             .actions
@@ -174,44 +181,45 @@ fn detects_ghost_order_without_fill() {
 
 #[test]
 fn leaves_open_orders_untouched_and_is_idempotent() {
-    let mut ome = Ome::new();
-    live_order(&mut ome, "k1", "c1", "v1", 1);
+    let mut core = new_core();
+    live_order(&mut core, "k1", "c1", "v1", 1);
     let snap = VenueSnapshot {
         open_order_ids: vec!["v1".into()],
         trades: vec![],
         now_ms: 2,
     };
-    let r1 = reconcile(&mut ome, &snap).unwrap();
+    let r1 = reconcile(&mut core, &snap).unwrap();
     assert!(r1.actions.is_empty());
-    assert_eq!(ome.get("c1").unwrap().status, OrderStatus::Live);
+    assert_eq!(core.ome.get("c1").unwrap().status, OrderStatus::Live);
     // Idempotent: still nothing on a second identical sweep.
-    let r2 = reconcile(&mut ome, &snap).unwrap();
+    let r2 = reconcile(&mut core, &snap).unwrap();
     assert!(r2.actions.is_empty());
 }
 
 #[test]
 fn dry_orders_without_venue_id_are_ignored() {
-    let mut ome = Ome::new();
-    ome.submit(SubmitParams {
-        order_id: "dry1".into(),
-        request: req("k9", dec!(10)),
-        submitted_at_ms: 1,
-        decision_at_ms: 1,
-        execute_at_ms: 1,
-        report_at_ms: 1,
-        maker_timeout_ms: 0,
-        round_duration_sec: 0,
-    })
-    .unwrap();
-    ome.mark_live("dry1", 1).unwrap();
+    let mut core = new_core();
+    core.ome
+        .submit(SubmitParams {
+            order_id: "dry1".into(),
+            request: req("k9", dec!(10)),
+            submitted_at_ms: 1,
+            decision_at_ms: 1,
+            execute_at_ms: 1,
+            report_at_ms: 1,
+            maker_timeout_ms: 0,
+            round_duration_sec: 0,
+        })
+        .unwrap();
+    core.ome.mark_live("dry1", 1).unwrap();
     let snap = VenueSnapshot {
         open_order_ids: vec![],
         trades: vec![],
         now_ms: 2,
     };
-    let report = reconcile(&mut ome, &snap).unwrap();
+    let report = reconcile(&mut core, &snap).unwrap();
     assert!(report.actions.is_empty());
-    assert_eq!(ome.get("dry1").unwrap().status, OrderStatus::Live);
+    assert_eq!(core.ome.get("dry1").unwrap().status, OrderStatus::Live);
 }
 
 /// A venue trade on an order the OME never issued (a manual close made
@@ -220,8 +228,8 @@ fn dry_orders_without_venue_id_are_ignored() {
 /// ghost positions the exit rules kept managing forever.
 #[test]
 fn manual_close_trade_surfaces_as_unknown_fill() {
-    let mut ome = Ome::new();
-    live_order(&mut ome, "k1", "c1", "v1", 1);
+    let mut core = new_core();
+    live_order(&mut core, "k1", "c1", "v1", 1);
     let snap = VenueSnapshot {
         open_order_ids: vec!["v1".into()],
         trades: vec![
@@ -252,7 +260,7 @@ fn manual_close_trade_surfaces_as_unknown_fill() {
         ],
         now_ms: 30,
     };
-    let report = reconcile(&mut ome, &snap).unwrap();
+    let report = reconcile(&mut core, &snap).unwrap();
     assert_eq!(
         report.unknown_fills.len(),
         1,
@@ -261,16 +269,18 @@ fn manual_close_trade_surfaces_as_unknown_fill() {
     assert_eq!(report.unknown_fills[0].venue_order_id, "manual-1");
     assert_eq!(report.unknown_fills[0].size, dec!(10));
     // The known order got its gap fill; the OME is untouched by the manual one.
-    assert_eq!(ome.get("c1").unwrap().filled_size, dec!(2));
+    assert_eq!(core.ome.get("c1").unwrap().filled_size, dec!(2));
 }
 
 /// A sweep can deliver a trade for an order that has already ended. The
 /// report must say so (issue #178) — the fill is booked, the status keeps.
 #[test]
 fn sweep_reports_a_fill_absorbed_by_a_terminal_order() {
-    let mut ome = Ome::new();
-    live_order(&mut ome, "k1", "c1", "v1", 1);
-    ome.mark_terminal("c1", OrderStatus::Cancelled, 2).unwrap();
+    let mut core = new_core();
+    live_order(&mut core, "k1", "c1", "v1", 1);
+    core.ome
+        .mark_terminal("c1", OrderStatus::Cancelled, 2)
+        .unwrap();
     let snap = VenueSnapshot {
         open_order_ids: vec![],
         trades: vec![VenueTrade {
@@ -286,15 +296,80 @@ fn sweep_reports_a_fill_absorbed_by_a_terminal_order() {
         }],
         now_ms: 4,
     };
-    let report = reconcile(&mut ome, &snap).unwrap();
+    let report = reconcile(&mut core, &snap).unwrap();
     assert_eq!(report.late_fills.len(), 1);
     let late = &report.late_fills[0];
     assert_eq!(late.order_id, "c1");
     assert_eq!(late.absorbed_by, Some(OrderStatus::Cancelled));
     assert_eq!(late.size, dec!(3));
     assert!(!late.overfill);
-    assert_eq!(ome.get("c1").unwrap().status, OrderStatus::Cancelled);
-    assert_eq!(ome.get("c1").unwrap().filled_size, dec!(3));
+    assert_eq!(core.ome.get("c1").unwrap().status, OrderStatus::Cancelled);
+    assert_eq!(core.ome.get("c1").unwrap().filled_size, dec!(3));
+}
+
+// ── #55: ghost terminal transitions route through Core::cancel ─────────────
+
+/// Issue #55: a ghost order the venue already filled is closed through
+/// `Core::cancel` — its #7 terminal guard, reservation release and venue-cancel
+/// queue run exactly like an explicit operator cancel. The order becomes
+/// `Cancelled`, never `ForceClosed`, and a second sweep over an already
+/// terminal order is a no-op on state.
+#[test]
+fn ghost_with_fill_is_cancelled_through_core_cancel() {
+    let mut core = new_core();
+    live_order(&mut core, "k1", "c1", "v1", 1);
+    // Venue reports a partial fill and no longer lists the order open → ghost.
+    // Step 1 applies the missing increment; step 2 cancels the order.
+    let snap = VenueSnapshot {
+        open_order_ids: vec![],
+        trades: vec![VenueTrade {
+            venue_order_id: "v1".into(),
+            trade_id: "t1".into(),
+            token_id: "tok".into(),
+            side: Side::Buy,
+            size: dec!(4),
+            price: dec!(0.4),
+            ts_ms: 2,
+            tx_hash: None,
+            maker: Some(true),
+        }],
+        now_ms: 20_000,
+    };
+    let report = reconcile(&mut core, &snap).unwrap();
+    assert_eq!(core.ome.get("c1").unwrap().status, OrderStatus::Cancelled);
+    assert!(
+        report
+            .actions
+            .iter()
+            .any(|a| matches!(a, ReconcileAction::MarkedCancelled { .. }))
+    );
+    assert!(!report.suspect_ghost_ids.contains(&"c1".to_string()));
+    // Core::cancel is idempotent: re-sweeping a terminal order changes nothing.
+    let _ = reconcile(&mut core, &snap).unwrap();
+    assert_eq!(core.ome.get("c1").unwrap().status, OrderStatus::Cancelled);
+}
+
+/// Issue #54's release guard on `mark_terminal` applies through reconcile:
+/// an already-terminal ghost order is reported but never overwritten — the
+/// sweep does not call `mark_terminal` on it a second time.
+#[test]
+fn already_terminal_ghost_is_not_overwritten() {
+    let mut core = new_core();
+    live_order(&mut core, "k1", "c1", "v1", 1);
+    core.ome
+        .mark_terminal("c1", OrderStatus::Filled, 2)
+        .unwrap();
+    let snap = VenueSnapshot {
+        open_order_ids: vec![],
+        trades: vec![],
+        now_ms: 20_000,
+    };
+    let report = reconcile(&mut core, &snap).unwrap();
+    assert_eq!(core.ome.get("c1").unwrap().status, OrderStatus::Filled);
+    // Terminal orders are not live ghost candidates: nothing is reported,
+    // nothing is overwritten (#54's guard never even gets reached).
+    assert!(report.actions.is_empty());
+    assert_eq!(report.suspect_ghost_ids, Vec::<String>::new());
 }
 
 // ── #189: the audit itself ───────────────────────────────────────────────

@@ -259,10 +259,10 @@ pub async fn run(
         // naming ANY plugin that is not compiled in is refused as a whole
         // (same posture as the single-value cell — a stale entry must not
         // silently boot half a data plane), falling back to the next layer.
-        let cell = config
-            .runtime_config_path
+        let cell = core
+            .store
             .as_deref()
-            .and_then(|p| crate::runtime_config::load_market_plugin_from(std::path::Path::new(p)))
+            .and_then(|store| crate::runtime_config::load_market_plugin_from(store).ok().flatten())
             .filter(|cell| {
                 let names = crate::market::parse_plugin_list(&cell.plugin);
                 !names.is_empty() && names.iter().all(|n| registry.get(n).is_some())
@@ -270,7 +270,7 @@ pub async fn run(
         if let Some(cell) = &cell {
             eprintln!(
                 "blitzkrieg-core: market plugin '{}' (persisted UI setting, \
-                 data/runtime/config.json; an explicit --market-plugin and the \
+                 SQLite kernel_meta.runtime_config_json; an explicit --market-plugin and the \
                  accounts' venue bindings outrank it)",
                 cell.plugin
             );
@@ -278,11 +278,11 @@ pub async fn run(
             // A cell that loaded but did not arm (all-commas junk or an
             // unregistered name) keeps its historical refusal warning — the
             // operator wrote SOMETHING and must hear why it did not apply.
-            if let Some(raw) = config
-                .runtime_config_path
+            if let Some(raw) = core
+                .store
                 .as_deref()
-                .and_then(|p| {
-                    crate::runtime_config::load_market_plugin_from(std::path::Path::new(p))
+                .and_then(|store| {
+                    crate::runtime_config::load_market_plugin_from(store).ok().flatten()
                 })
                 .map(|c| c.plugin)
                 .filter(|v| !crate::market::parse_plugin_list(v).is_empty())

@@ -1,8 +1,17 @@
 //! Ghost detection (step 2 of `reconcile_scoped`).
 //! Moved verbatim from `reconcile.rs` (pure code motion).
+//!
+//! Issue #55: ghost orders must NOT be closed through `ome.mark_terminal`
+//! directly. The terminal transition is routed through `Core::cancel` for the
+//! `Cancelled` path (its #7 terminal guard + reservation release + venue cancel
+//! queue + emit) and, for the non-cancel terminal states (`Filled` /
+//! `ForceClosed`), through `release_order_bookkeeping` + `mark_terminal` — the
+//! same bookkeeping `Core::cancel` runs — so no reservation outlives its order
+//! and an already-terminal order is never silently overwritten (#54's release
+//! guard on `mark_terminal` applies here too).
 
 use crate::model::*;
-use crate::ome::Ome;
+use crate::service::Core;
 use rust_decimal::Decimal;
 
 use super::types::{ReconcileAction, ReconcileReport, VenueSnapshot};
@@ -10,14 +19,15 @@ use super::types::{ReconcileAction, ReconcileReport, VenueSnapshot};
 /// Orders we still consider live are snapshot first so the OME is not borrowed
 /// while we mutate it.
 pub(super) fn detect_ghosts(
-    ome: &mut Ome,
+    core: &mut Core,
     snap: &VenueSnapshot,
     skip: &std::collections::HashSet<OrderId>,
     report: &mut ReconcileReport,
 ) -> CoreResult<()> {
     let open: std::collections::HashSet<&str> =
         snap.open_order_ids.iter().map(String::as_str).collect();
-    let candidates: Vec<(OrderId, Option<OrderId>)> = ome
+    let candidates: Vec<(OrderId, Option<OrderId>)> = core
+        .ome
         .live_orders()
         .into_iter()
         .map(|o| (o.order_id.clone(), o.venue_order_id.clone()))
@@ -37,31 +47,61 @@ pub(super) fn detect_ghosts(
             continue; // venue still has it open — fine
         }
         // Gone from the venue. Refresh: a fill may have completed it in step 1.
-        let fresh_status = ome.get(&core_id).map(|o| (o.status, o.filled_size, o.size));
+        let fresh_status = core
+            .ome
+            .get(&core_id)
+            .map(|o| (o.status, o.filled_size, o.size));
         match fresh_status {
             Some((status, filled, size)) if status == OrderStatus::Filled || filled >= size => {
                 if status != OrderStatus::Filled {
-                    ome.mark_terminal(&core_id, OrderStatus::Filled, snap.now_ms)?;
+                    // Venue reports a full fill the OME hasn't absorbed yet.
+                    // Release bookkeeping first, then mark terminal (guarded:
+                    // an already-terminal order is not overwritten, #54).
+                    let order = core
+                        .ome
+                        .get(&core_id)
+                        .cloned()
+                        .expect("ghost order just observed live");
+                    let was_live = order.status.is_live();
+                    core.release_order_bookkeeping(&order, was_live, "reconcile");
+                    core.ome
+                        .mark_terminal(&core_id, OrderStatus::Filled, snap.now_ms)?;
                 }
                 report.actions.push(ReconcileAction::MarkedFilled {
                     core_order_id: core_id,
                 });
             }
             Some((_, filled, _)) if filled > Decimal::ZERO => {
-                ome.mark_terminal(&core_id, OrderStatus::Cancelled, snap.now_ms)?;
+                // Partial fill but the venue dropped the order: cancel through
+                // Core::cancel so its #7 terminal guard, reservation release,
+                // venue-cancel queue and emit run exactly like an explicit
+                // operator cancel (issue #55).
+                core.cancel(&core_id, snap.now_ms)?;
                 report.actions.push(ReconcileAction::MarkedCancelled {
                     core_order_id: core_id,
                 });
             }
             _ => {
-                let submitted_at_ms = ome.get(&core_id).map(|o| o.submitted_at_ms).unwrap_or(0);
+                let submitted_at_ms = core
+                    .ome
+                    .get(&core_id)
+                    .map(|o| o.submitted_at_ms)
+                    .unwrap_or(0);
                 if snap.now_ms - submitted_at_ms < 10_000 {
                     continue;
                 }
                 // A ghost: the venue has neither the order nor any fill for it.
                 // #457: this is the kernel closing an order nobody else closed
                 // — ForceClosed, not Cancelled.
-                ome.mark_terminal(&core_id, OrderStatus::ForceClosed, snap.now_ms)?;
+                let order = core
+                    .ome
+                    .get(&core_id)
+                    .cloned()
+                    .expect("ghost order just observed live");
+                let was_live = order.status.is_live();
+                core.release_order_bookkeeping(&order, was_live, "reconcile");
+                core.ome
+                    .mark_terminal(&core_id, OrderStatus::ForceClosed, snap.now_ms)?;
                 report.suspect_ghost_ids.push(core_id.clone());
                 report.actions.push(ReconcileAction::MarkedForceClosed {
                     core_order_id: core_id,

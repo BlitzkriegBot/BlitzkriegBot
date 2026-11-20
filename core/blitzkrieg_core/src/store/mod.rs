@@ -272,6 +272,17 @@ pub trait StoreApi: Debug + Send + Sync {
         ))
     }
 
+    // ── Market plugin persisted cell ─────────────────────────────────────
+
+    /// `market.plugin.set`: upsert the persisted market-plugin choice, or clear
+    /// it (`None`). Lands in `kernel_meta.runtime_config_json` (issue #47:
+    /// config.json 直写替换为 SQLite persist 路径)。
+    fn save_market_plugin(&self, plugin: Option<&str>) -> Result<(), CoreError>;
+
+    /// `market.plugin.get`: read back the persisted market-plugin choice from
+    /// `kernel_meta.runtime_config_json`. `None` = never persisted.
+    fn load_market_plugin(&self) -> Result<Option<String>, CoreError>;
+
     // ── Money facts (issue #1278 — CONTRACT STAGE, NO CALLERS) ───────────
     //
     // 下面两个方法是 #1278 的**接口定义**，不是实现：本提交里没有任何
@@ -719,6 +730,16 @@ mod tests {
                 scope.account.as_str()
             ));
             Ok(WriteOutcome::Persisted)
+        }
+
+        fn save_market_plugin(&self, _plugin: Option<&str>) -> Result<(), CoreError> {
+            self.log("market-plugin".to_string());
+            Ok(())
+        }
+
+        fn load_market_plugin(&self) -> Result<Option<String>, CoreError> {
+            self.log("market-plugin-load".to_string());
+            Ok(None)
         }
     }
 

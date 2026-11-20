@@ -267,14 +267,17 @@ async fn main() -> anyhow::Result<()> {
     // number a flag overrode.
     let systemic = {
         let mut s = systemic;
-        s.account.max_daily_drawdown_usd = if args.daily_loss_usd > Decimal::ZERO {
-            blitzkrieg_core::risk::limits::Bound::new(
-                args.daily_loss_usd,
-                args.daily_loss_source.into(),
-            )
-        } else {
-            blitzkrieg_core::risk::limits::Bound::off()
-        };
+        // Issue #48: a CLI daily-loss flag that is not armed must not clobber
+        // an env-resolved drawdown bound into factory-off (unlimited /
+        // fail-open). The flag overrides the env value when set; when absent
+        // the env-resolved bound stands.
+        if args.daily_loss_usd > Decimal::ZERO {
+            s.account.max_daily_drawdown_usd =
+                blitzkrieg_core::risk::limits::Bound::new(
+                    args.daily_loss_usd,
+                    args.daily_loss_source.into(),
+                );
+        }
         s
     };
     // Issue #967 (Phase-5) A-item: the `blitzkrieg` wrapper folds `.env` into

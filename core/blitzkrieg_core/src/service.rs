@@ -69,7 +69,10 @@ pub(crate) const MAX_PENDING_VENUE_CANCELS: usize = 256;
 
 pub struct Core {
     pub(crate) config: CoreConfig,
-    ome: Ome,
+    // issue #55: `reconcile` (crate::reconcile) routes ghost terminal
+    // transitions through `Core::cancel` / `release_order_bookkeeping` and
+    // needs `ome`; `pub(crate)` matches `config`/`accounts`/`risk`/`positions`.
+    pub(crate) ome: Ome,
     /// #351: dry taker legs in flight — two-stage time-causal fill
     /// (match at `execute_at_ms`, report at `report_at_ms`). Empty
     /// whenever `fill_model.taker_latency_ms <= 0 && taker_rtt_ms <= 0`.

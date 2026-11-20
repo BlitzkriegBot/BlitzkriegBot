@@ -14,7 +14,7 @@
 //! cancel for true ghosts; this module returns explicit actions.
 
 use crate::model::*;
-use crate::ome::Ome;
+use crate::service::Core;
 
 mod audit;
 mod fills;
@@ -28,10 +28,11 @@ pub use types::*;
 
 /// Reconcile the OME against an authoritative snapshot.
 ///
-/// `ome.apply_fill` stays the only mutator of fill state. Status repair for
-/// ghosts is done through mark_terminal so the state machine stays consistent.
-pub fn reconcile(ome: &mut Ome, snap: &VenueSnapshot) -> CoreResult<ReconcileReport> {
-    reconcile_scoped(ome, snap, &std::collections::HashSet::new())
+/// `ome.apply_fill` stays the only mutator of fill state. Ghost status repair
+/// walks `Core::cancel` / `release_order_bookkeeping` (issue #55) so the
+/// terminal guard and reservation release run exactly like an explicit cancel.
+pub fn reconcile(core: &mut Core, snap: &VenueSnapshot) -> CoreResult<ReconcileReport> {
+    reconcile_scoped(core, snap, &std::collections::HashSet::new())
 }
 
 /// [`reconcile`] scoped to ONE reporting venue.
@@ -43,12 +44,12 @@ pub fn reconcile(ome: &mut Ome, snap: &VenueSnapshot) -> CoreResult<ReconcileRep
 /// they kept resting at their own venue, unmanaged (the orphan sweep skips ids
 /// `known_venue_ids` still lists).
 pub fn reconcile_scoped(
-    ome: &mut Ome,
+    core: &mut Core,
     snap: &VenueSnapshot,
     skip: &std::collections::HashSet<OrderId>,
 ) -> CoreResult<ReconcileReport> {
     let mut report = ReconcileReport::default();
-    fills::repair_missed_fills(ome, snap, &mut report)?;
-    ghosts::detect_ghosts(ome, snap, skip, &mut report)?;
+    fills::repair_missed_fills(&mut core.ome, snap, &mut report)?;
+    ghosts::detect_ghosts(core, snap, skip, &mut report)?;
     Ok(report)
 }

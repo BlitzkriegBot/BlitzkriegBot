@@ -272,11 +272,10 @@ async fn main() -> anyhow::Result<()> {
         // fail-open). The flag overrides the env value when set; when absent
         // the env-resolved bound stands.
         if args.daily_loss_usd > Decimal::ZERO {
-            s.account.max_daily_drawdown_usd =
-                blitzkrieg_core::risk::limits::Bound::new(
-                    args.daily_loss_usd,
-                    args.daily_loss_source.into(),
-                );
+            s.account.max_daily_drawdown_usd = blitzkrieg_core::risk::limits::Bound::new(
+                args.daily_loss_usd,
+                args.daily_loss_source.into(),
+            );
         }
         s
     };

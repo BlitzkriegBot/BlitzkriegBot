@@ -20,7 +20,11 @@ use std::fmt::Debug;
 pub trait RiskApi: Debug + Send + Sync {
     /// Returns `Ok(true)` when the entry for `account` at `notional_usd`
     /// notional USD is permitted, `Ok(false)` when the gate rejects it.
-    fn check_entry_risk(&self, _account: &AccountId, _notional_usd: Decimal) -> Result<bool, CoreError> {
+    fn check_entry_risk(
+        &self,
+        _account: &AccountId,
+        _notional_usd: Decimal,
+    ) -> Result<bool, CoreError> {
         Err(CoreError::new(
             CoreErrorCode::Internal,
             "risk_api::check_entry_risk: no backend implements this yet".to_string(),

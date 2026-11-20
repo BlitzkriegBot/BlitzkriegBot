@@ -82,6 +82,7 @@ pub fn derived_venue_set(core: &crate::service::Core) -> Vec<String> {
 /// plane and every other venue starved — the exact「切账户后非 polymarket
 /// 永远加载中」defect. The spec keeps single-venue boots byte-identical
 /// (`parse_plugin_list("polymarket") == ["polymarket"]`).
+#[allow(clippy::collapsible_if)]
 pub fn boot_enablement(
     core: &crate::service::Core,
     registry: &registry::MarketPluginRegistry,
@@ -101,21 +102,21 @@ pub fn boot_enablement(
     // script — this IS the migration).
     let derived = derived_venue_set(core);
     if !derived.is_empty() {
-            let stale = cell
-                .filter(|c| {
-                    parse_plugin_list(&c.plugin)
-                        .iter()
-                        .all(|n| registry.get(n).is_some())
-                })
-                .is_some();
-            if stale {
-                if let Some(store) = core.store.as_deref() {
-                    match crate::runtime_config::persist_market_plugin_to(
-                        store,
-                        None,
-                        "system:venue-derive-migration",
-                        blitzkrieg_market_api::net::now_ms(),
-                    ) {
+        let stale = cell
+            .filter(|c| {
+                parse_plugin_list(&c.plugin)
+                    .iter()
+                    .all(|n| registry.get(n).is_some())
+            })
+            .is_some();
+        if stale {
+            if let Some(store) = core.store.as_deref() {
+                match crate::runtime_config::persist_market_plugin_to(
+                    store,
+                    None,
+                    "system:venue-derive-migration",
+                    blitzkrieg_market_api::net::now_ms(),
+                ) {
                     Ok(()) => tracing::info!(
                         target: "risk",
                         venues = ?derived,
@@ -311,7 +312,11 @@ pub fn plugin_readout(
     let cell = core
         .store
         .as_deref()
-        .and_then(|store| crate::runtime_config::load_market_plugin_from(store).ok().flatten())
+        .and_then(|store| {
+            crate::runtime_config::load_market_plugin_from(store)
+                .ok()
+                .flatten()
+        })
         .filter(|c| {
             parse_plugin_list(&c.plugin)
                 .iter()
@@ -505,13 +510,7 @@ async fn persist_cell(
                 .to_string(),
         )
     })?;
-    crate::runtime_config::persist_market_plugin_to(
-        store,
-        plugin,
-        actor,
-        now_ms,
-    )
-    .map_err(|e| {
+    crate::runtime_config::persist_market_plugin_to(store, plugin, actor, now_ms).map_err(|e| {
         CoreError::new(
             CoreErrorCode::InvalidParams,
             format!("market.plugin.set: persist failed, nothing changed: {e}"),
@@ -668,14 +667,19 @@ pub async fn apply_credentials_set(
 
 #[cfg(test)]
 mod test_helpers {
+    #[allow(unused_imports)]
     use super::*;
 
     /// Open a store at `db_path` and seed the market-plugin cell — used by
     /// tests that need the cell populated BEFORE the Core is constructed
     /// (pre-seed → then boot reads it back through the Core's own store).
-    pub(super) fn seed_cell(db_path: &std::path::Path, plugin: Option<&str>, actor: &str, now_ms: i64) {
-        let store = crate::store::SqliteStore::open(db_path)
-            .expect("test store opens");
+    pub(super) fn seed_cell(
+        db_path: &std::path::Path,
+        plugin: Option<&str>,
+        actor: &str,
+        now_ms: i64,
+    ) {
+        let store = crate::store::SqliteStore::open(db_path).expect("test store opens");
         crate::runtime_config::persist_market_plugin_to(
             &store as &dyn crate::store::StoreApi,
             plugin,
@@ -700,8 +704,8 @@ mod test_helpers {
 
 #[cfg(test)]
 mod set_tests {
-    use super::*;
     use super::test_helpers::*;
+    use super::*;
     use crate::model::CoreErrorCode;
     use crate::schema::SetMarketPluginParams;
 
@@ -809,7 +813,9 @@ mod set_tests {
         // Single-value spelling is EXACTLY the historical shape — the reply
         // carries the value verbatim (no commas, no reordering).
         assert_eq!(update.next_session_plugin, "alpha");
-        let loaded = load_cell_from_core(&core).await.expect("the cell must hold the write");
+        let loaded = load_cell_from_core(&core)
+            .await
+            .expect("the cell must hold the write");
         assert_eq!(loaded, "alpha");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -834,7 +840,9 @@ mod set_tests {
         // The cell carries the whole comma string; the READ path
         // (parse_plugin_list, what the boot actually runs) re-derives both
         // names from it in order.
-        let loaded = load_cell_from_core(&core).await.expect("the cell must hold the write");
+        let loaded = load_cell_from_core(&core)
+            .await
+            .expect("the cell must hold the write");
         assert_eq!(parse_plugin_list(&loaded), vec!["alpha", "beta"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -865,7 +873,7 @@ mod set_tests {
         let cell = cell_in(&dir);
         // Pre-seed a good cell: a refused write must leave it untouched
         // (plan-first — the validation happens before anything touches disk).
-        seed_cell(&std::path::Path::new(&cell), Some("alpha"), "seed", 0);
+        seed_cell(std::path::Path::new(&cell), Some("alpha"), "seed", 0);
         let core = core_with_cell(Some(cell.clone()));
         let reg = registry_with(&["alpha", "beta"]);
         let err = apply_plugin_set(
@@ -889,7 +897,9 @@ mod set_tests {
             err.message
         );
         // And the cell is exactly as it was — nothing was half-written.
-        let after = load_cell_from_core(&core).await.expect("the seeded cell survived");
+        let after = load_cell_from_core(&core)
+            .await
+            .expect("the seeded cell survived");
         assert_eq!(after, "alpha");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -969,8 +979,8 @@ mod derive_tests {
     //! 四层解析链（旗标 > 账户绑定 > 旧持久格 > 首个注册者）、迁移（首个
     //! 绑定翻转启用来源时清旧格 + INFO）、market.plugin.set 在派生生效
     //! 期间的 fail-closed 拒绝、readout 的 source 披露。
-    use super::*;
     use super::test_helpers::*;
+    use super::*;
     use crate::model::CoreErrorCode;
     use crate::schema::SetMarketPluginParams;
     use crate::service::{Core, CoreConfig};
@@ -1097,8 +1107,7 @@ mod derive_tests {
         );
         let loaded = {
             let store = core.store.as_deref().expect("store");
-            crate::runtime_config::load_market_plugin_from(store)
-                .expect("cell load")
+            crate::runtime_config::load_market_plugin_from(store).expect("cell load")
         };
         assert!(loaded.is_some(), "the old cell is on disk");
 
@@ -1159,8 +1168,7 @@ mod derive_tests {
 
         let loaded = {
             let store = core.store.as_deref().expect("store");
-            crate::runtime_config::load_market_plugin_from(store)
-                .expect("cell load")
+            crate::runtime_config::load_market_plugin_from(store).expect("cell load")
         };
         assert_eq!(
             loaded.as_ref().unwrap().plugin,
@@ -1175,8 +1183,7 @@ mod derive_tests {
         // 迁移没有清格：ghost 格依然在盘上（不可启动格不清）。
         let still = {
             let store = core.store.as_deref().expect("store");
-            crate::runtime_config::load_market_plugin_from(store)
-                .expect("cell load")
+            crate::runtime_config::load_market_plugin_from(store).expect("cell load")
         };
         assert_eq!(
             still.unwrap().plugin,
@@ -1258,7 +1265,8 @@ mod derive_tests {
         //（否则 Core::with_account_book 会从 SQL 把之前持久的账户簿覆盖回来）。
         let plain_dir = scratch("plain");
         let plain_cell = cell_in(&plain_dir);
-        let plain = tokio::sync::Mutex::new(core_with_bindings(&[("a", "")], Some(plain_cell.clone())));
+        let plain =
+            tokio::sync::Mutex::new(core_with_bindings(&[("a", "")], Some(plain_cell.clone())));
         let update = apply_plugin_set(
             &reg,
             &plain,

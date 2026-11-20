@@ -751,7 +751,7 @@ fn daily_loss_corrupt_budget_file_is_fail_closed() {
     std::fs::write(&path, "{\"accounts\":{\"default\":").unwrap();
 
     // Session 2: restart on the corrupt file.
-    let mut pm2 = PositionManager::new(cfg);
+    let pm2 = PositionManager::new(cfg);
     // No day was stamped and opening equity was NOT re-anchored.
     assert_eq!(
         pm2.daily_by_account
@@ -773,7 +773,8 @@ fn daily_loss_corrupt_budget_file_is_fail_closed() {
         "unreadable daily-loss state reads as tripped"
     );
     assert!(
-        pm2.can_open("default", Some("BTC"), Some(SignalDirection::Up), 2000).is_err(),
+        pm2.can_open("default", Some("BTC"), Some(SignalDirection::Up), 2000)
+            .is_err(),
         "entries refused while the daily-loss budget is unreadable"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -796,7 +797,10 @@ fn daily_loss_missing_file_is_a_normal_fresh_day() {
         ..Default::default()
     };
     let mut pm = PositionManager::new(cfg);
-    assert!(!pm.daily_budget_unreadable, "missing file is not corruption");
+    assert!(
+        !pm.daily_budget_unreadable,
+        "missing file is not corruption"
+    );
     pm.roll_daily("default", 1_000, dec!(1_000), EquityBasis::Dry);
     assert_eq!(
         pm.daily_by_account
@@ -814,7 +818,8 @@ fn daily_loss_missing_file_is_a_normal_fresh_day() {
     );
     assert!(!pm.daily_loss_tripped_for("default"));
     assert!(
-        pm.can_open("default", Some("BTC"), Some(SignalDirection::Up), 2000).is_ok(),
+        pm.can_open("default", Some("BTC"), Some(SignalDirection::Up), 2000)
+            .is_ok(),
         "a missing budget file must not freeze entries"
     );
     let _ = std::fs::remove_dir_all(&dir);

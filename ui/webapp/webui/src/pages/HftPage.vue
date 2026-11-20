@@ -160,6 +160,10 @@ const engineUp = computed(() => snap.value?.connected ?? false)
 const serverLeft = ref(0)
 const serverAt = ref(0)
 const countForVenue = ref('')
+// 同一所并行多个轮次族时，切档位（5m↔15m）不改 venue，必须另记档位键，
+// 否则倒计时在 deliberate 切换后仍沿用旧家族的插值值。
+// dur 可为 undefined（roundSwitch.doc 尚未落地前），所以带 undefined 联合。
+const countForDur = ref<number | undefined>(0)
 // 渲染值必须与插值锚点同区声明：immediate watch 的回调在 setup 同步段执行，
 // 它会触碰 leftSec —— 声明落在 watch 之后时，带着在场快照挂载（重挂载路径）
 // 会直接 ReferenceError（TDZ），整页挂载失败，只有刷新能救。这也是「行情页
@@ -177,7 +181,18 @@ const venueRound = computed(() => {
   if (!v) return null
   const rows = snap.value?.round?.venueRounds
   if (!Array.isArray(rows) || rows.length === 0) return null
-  return rows.find((r) => r.venue === v) ?? null
+  // 同一交易所可并行多个轮次族（5m/15m…）：必须按该账户当前锚定的档位选
+  // 行，否则 find 返回先进池的那个所（通常是先接入的 15m），把 15m 的钟
+  // 标到切了 5m 的账户头上（行情切换 split-brain）。roundSwitch.doc 独立
+  // 于 venueRound，这里不构成 computed 环；缺读数前退回 venue-only 选行。
+  const dur =
+    roundSwitch.doc.value?.perAccount?.[store.activeAccount ?? 'default'] ??
+    roundSwitch.doc.value?.effectiveSec
+  const exact =
+    typeof dur === 'number' && dur > 0
+      ? rows.find((r) => r.venue === v && r.durationSec === dur)
+      : null
+  return exact ?? (rows.find((r) => r.venue === v) ?? null)
 })
 
 /**
@@ -214,19 +229,33 @@ watch(snap, (s) => {
   // 冻结）。
   if (frozenClock.value) return
   const vr = venueRound.value
+  const acct = store.activeAccount ?? 'default'
+  const dur =
+    roundSwitch.doc.value?.perAccount?.[acct] ?? roundSwitch.doc.value?.effectiveSec
   if (vr) {
     // The identity venue has its own clock row: bind to it. The venue key
     // guards re-binding — a row for a DIFFERENT venue never refreshes this
-    // countdown (the issue 550 residual-value leak).
-    if (countForVenue.value !== identityVenue.value) {
+    // countdown (the issue 550 residual-value leak). The duration key guards
+    // re-binding when the same venue runs multiple families and the account
+    // switches between them (5m ↔ 15m) — without it the countdown would keep
+    // the old family's interpolated value after a deliberate switch.
+    if (countForVenue.value !== identityVenue.value || countForDur.value !== dur) {
       countForVenue.value = identityVenue.value
+      countForDur.value = dur
       serverLeft.value = 0
       serverAt.value = 0
       leftSec.value = 0
     }
-    if (vr.timeLeftSec >= 0) {
+    const interpolated = Math.max(0, Math.round(serverLeft.value - (Date.now() - serverAt.value) / 1000))
+    const justBound = serverAt.value === 0
+    if (vr.timeLeftSec >= 0 && (justBound || vr.timeLeftSec <= interpolated)) {
+      // 服务端在正常推进（或刚落在插值点上）：重新锚定，与服务端同步；
+      // 端侧 declared end 向后跳（vr.timeLeftSec 比插值更大）时不跟着跳，
+      // 否则倒计时会出现「12:20 → 12:18 → 12:20」的回弹。首次绑定（justBound）
+      // 无条件喂入该行真实值，避免清零后整段卡在 00:00。
       serverLeft.value = vr.timeLeftSec
       serverAt.value = Date.now()
+      leftSec.value = vr.timeLeftSec
     }
     return
   }
@@ -718,7 +747,13 @@ watch([venueUnbound, venueLoading, visiblePrices, engineUp], () => {
  *  读 `round_duration.get` 的生效值（config 驱动），不拿 age+left 反推。
  *  该 ref 同时是挂单过期链的回落源（identityDurSec）—— 一份读数两个消费点。 */
 const roundDurHintSec = ref<number | null>(null)
-void api.roundDuration().then((d) => { roundDurHintSec.value = d.effectiveSec }).catch(() => {})
+void api
+  .roundDuration()
+  .then((d) => {
+    const acct = store.activeAccount ?? 'default'
+    roundDurHintSec.value = d.perAccount?.[acct] ?? d.effectiveSec
+  })
+  .catch(() => {})
 const roundDurLabel = computed(() => {
   const sec = roundDurHintSec.value
   if (!sec) return '当前档位'

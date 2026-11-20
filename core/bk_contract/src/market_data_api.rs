@@ -7,11 +7,11 @@
 //! mirroring `StoreApi` — a missing backend fails loud instead of silently
 //! returning empty data.
 
-use crate::types::{CoreError, CoreErrorCode};
-use crate::types::*;
-use std::fmt::Debug;
-use rust_decimal::Decimal;
 use crate::BoxFuture;
+use crate::types::*;
+use crate::types::{CoreError, CoreErrorCode};
+use rust_decimal::Decimal;
+use std::fmt::Debug;
 
 /// Unified market-data READ API.
 ///

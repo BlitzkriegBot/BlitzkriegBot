@@ -74,13 +74,11 @@ async fn venue_cash_realign_routes_to_the_bound_account_not_active() {
             0,
         )
         .expect("venue binding lands");
-    let _ = c
-        .accounts
+    c.accounts
         .get_mut(&crate::account::AccountId::from("paper"))
         .unwrap()
         .set_balance(Decimal::from(1_000));
-    let _ = c
-        .accounts
+    c.accounts
         .get_mut(&crate::account::AccountId::from("default"))
         .unwrap()
         .set_balance(Decimal::new(1359, 2));
@@ -248,8 +246,7 @@ fn audit_venue_report_scopes_to_the_active_accounts_venue() {
         },
         book,
     );
-    let _ = c
-        .accounts
+    c.accounts
         .get_mut(&crate::account::AccountId::from("default"))
         .unwrap()
         .set_balance(Decimal::new(1359, 2));
@@ -873,9 +870,9 @@ fn account_scoped_reset_rewrites_only_the_target_journal() {
             .accounts
             .get_mut(&crate::account::AccountId::from("default"))
             .unwrap();
-        let _ = l.seed(Decimal::from(1_000));
+        l.seed(Decimal::from(1_000));
         let _ = l.settle_buy_fill("o1", Decimal::from(30), Decimal::ZERO);
-        let _ = l.settle_sell_fill(Decimal::from(21), Decimal::ONE);
+        l.settle_sell_fill(Decimal::from(21), Decimal::ONE);
     }
 
     c.reset_trading(

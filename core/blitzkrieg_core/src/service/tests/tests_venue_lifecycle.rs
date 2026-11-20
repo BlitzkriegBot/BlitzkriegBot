@@ -1026,13 +1026,20 @@ fn the_venue_cancel_queue_backpressures_instead_of_dropping() {
     }
     // The next cancel exceeds the cap: backpressure, no silent drop.
     assert!(
-        c.queue_venue_cancel("polysimulator".into(), format!("0xv{MAX_PENDING_VENUE_CANCELS}"))
-            .is_err(),
+        c.queue_venue_cancel(
+            "polysimulator".into(),
+            format!("0xv{MAX_PENDING_VENUE_CANCELS}")
+        )
+        .is_err(),
         "queue-full cancel must be rejected, not dropped"
     );
 
     let queued = c.take_pending_venue_cancels();
-    assert_eq!(queued.len(), MAX_PENDING_VENUE_CANCELS, "no cancel silently dropped");
+    assert_eq!(
+        queued.len(),
+        MAX_PENDING_VENUE_CANCELS,
+        "no cancel silently dropped"
+    );
     assert_eq!(
         queued.first().map(String::as_str),
         Some("0xv0"),
@@ -1053,11 +1060,16 @@ fn cancel_abstains_from_terminal_mark_when_cancel_queue_is_full() {
             "fill slot {i}"
         );
     }
-    let (id, _) = c.place(order(FillPolicy::Maker, dec!(0.40), dec!(5), "k1"), 0, 1).unwrap();
+    let (id, _) = c
+        .place(order(FillPolicy::Maker, dec!(0.40), dec!(5), "k1"), 0, 1)
+        .unwrap();
     c.bind_venue(&id, "0xtarget".into(), 2).unwrap();
     assert_eq!(c.ome().get(&id).unwrap().status, OrderStatus::Live);
 
-    assert!(c.cancel(&id, 3).is_err(), "full-queue cancel must be rejected");
+    assert!(
+        c.cancel(&id, 3).is_err(),
+        "full-queue cancel must be rejected"
+    );
     assert_eq!(
         c.ome().get(&id).unwrap().status,
         OrderStatus::Live,

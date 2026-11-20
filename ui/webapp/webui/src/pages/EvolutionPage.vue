@@ -595,7 +595,7 @@ function metricsRows(b: EvolutionMetricsRow, v: EvolutionMetricsRow): MetricRow[
 
           <p class="mt-2 text-[12.5px] text-muted-fg">
             评估器理由：<span class="font-semibold text-primary">{{ reasonLabel(p.reason) }}</span>
-            · 置信度 <span class="num font-semibold"><RollingNumber :value="p.confidence" decimals="2" /></span>
+            · 置信度 <span class="num font-semibold">{{ p.confidence.toFixed(2) }}</span>
             · 样本 <span class="num font-semibold">{{ num(p.sampleCount) }}</span> 笔
           </p>
 

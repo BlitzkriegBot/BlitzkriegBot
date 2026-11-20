@@ -255,7 +255,10 @@ impl Core {
         if let Some(store) = self.store.as_ref() {
             match store.save_positions(positions) {
                 Ok(true) => {
-                    tracing::debug!(count = positions.len(), "open positions persisted via StoreApi");
+                    tracing::debug!(
+                        count = positions.len(),
+                        "open positions persisted via StoreApi"
+                    );
                 }
                 Ok(false) => {
                     tracing::warn!("open positions not persisted: no StoreApi carrier configured");

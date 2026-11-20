@@ -12,9 +12,7 @@
 //! feature and sees only the `MarketPlugin` trait object.
 
 use blitzkrieg_bk_contract::market_data_api::MarketDataApi;
-use blitzkrieg_bk_contract::{
-    BoxFuture, CoreError, CoreErrorCode, TokenId, TopOfBookUpdate,
-};
+use blitzkrieg_bk_contract::{BoxFuture, CoreError, CoreErrorCode, TokenId, TopOfBookUpdate};
 use rust_decimal::Decimal;
 
 pub mod feed;

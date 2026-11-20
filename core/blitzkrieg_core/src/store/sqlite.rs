@@ -50,7 +50,7 @@ use rust_decimal::Decimal;
 
 use crate::account::config::CrossVenueArbConfig;
 use crate::account::{AccountStatus, CredentialKeys};
-use crate::db::{account_setting_remove, account_setting_set, META_RUNTIME_CONFIG_JSON};
+use crate::db::{META_RUNTIME_CONFIG_JSON, account_setting_remove, account_setting_set};
 use crate::model::{CoreError, CoreErrorCode};
 use crate::position::OpenPosition;
 use crate::risk::account_store::AccountRiskDb;
@@ -645,13 +645,8 @@ impl super::StoreApi for SqliteStore {
         let payloads: Vec<(String, String, String)> = positions
             .iter()
             .map(|p| {
-                serde_json::to_string(p).map(|payload| {
-                    (
-                        p.id.clone(),
-                        p.account_id.as_str().to_owned(),
-                        payload,
-                    )
-                })
+                serde_json::to_string(p)
+                    .map(|payload| (p.id.clone(), p.account_id.as_str().to_owned(), payload))
             })
             .collect::<Result<Vec<_>, serde_json::Error>>()
             .map_err(|e| {
@@ -1502,13 +1497,19 @@ mod tests {
         let count: i64 = store
             .risk
             .db()
-            .with_connection(|conn| conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0)))
+            .with_connection(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 2, "upsert by id never duplicates");
         let payload: String = store
             .risk
             .db()
-            .with_connection(|conn| conn.query_row("SELECT payload FROM positions WHERE id = 'a1'", [], |r| r.get(0)))
+            .with_connection(|conn| {
+                conn.query_row("SELECT payload FROM positions WHERE id = 'a1'", [], |r| {
+                    r.get(0)
+                })
+            })
             .unwrap();
         let back: OpenPosition = serde_json::from_str(&payload).unwrap();
         assert_eq!(back.current_price, dec!(150));
@@ -1519,7 +1520,9 @@ mod tests {
         let count: i64 = store
             .risk
             .db()
-            .with_connection(|conn| conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0)))
+            .with_connection(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0))
+            })
             .unwrap();
         assert_eq!(count, 2, "empty save must not delete existing rows");
 

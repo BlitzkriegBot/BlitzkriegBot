@@ -1042,7 +1042,8 @@ mod tests {
     /// damaged row must never be silently deleted from the trade history.
     #[test]
     fn retract_preserves_unparseable_line() {
-        let dir = std::env::temp_dir().join(format!("bktrade-retract-broken-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("bktrade-retract-broken-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("trades.jsonl");

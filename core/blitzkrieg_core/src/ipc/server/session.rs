@@ -262,7 +262,11 @@ pub async fn run(
         let cell = core
             .store
             .as_deref()
-            .and_then(|store| crate::runtime_config::load_market_plugin_from(store).ok().flatten())
+            .and_then(|store| {
+                crate::runtime_config::load_market_plugin_from(store)
+                    .ok()
+                    .flatten()
+            })
             .filter(|cell| {
                 let names = crate::market::parse_plugin_list(&cell.plugin);
                 !names.is_empty() && names.iter().all(|n| registry.get(n).is_some())
@@ -282,7 +286,9 @@ pub async fn run(
                 .store
                 .as_deref()
                 .and_then(|store| {
-                    crate::runtime_config::load_market_plugin_from(store).ok().flatten()
+                    crate::runtime_config::load_market_plugin_from(store)
+                        .ok()
+                        .flatten()
                 })
                 .map(|c| c.plugin)
                 .filter(|v| !crate::market::parse_plugin_list(v).is_empty())

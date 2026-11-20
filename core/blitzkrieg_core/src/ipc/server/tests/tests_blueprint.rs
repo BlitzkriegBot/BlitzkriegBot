@@ -436,8 +436,7 @@ async fn execution_policy_preview_replays_history_through_evaluate() {
         use crate::position::ClosedPosition;
         let mut c = core.lock().await;
         balance = dec!(100);
-        let _ = c
-            .accounts_mut()
+        c.accounts_mut()
             .get_mut(&AccountId::from("acct-prev"))
             .expect("configured ledger")
             .set_balance(balance);

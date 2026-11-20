@@ -434,6 +434,7 @@ impl AccountLedgers {
     /// `Clone`, `SqliteStore` is. Called from `Core::with_account_book` at
     /// boot; a store-less core (backtester, in-process tests) never calls this
     /// and every ledger stays memory-only.
+    #[allow(dead_code)]
     pub(crate) fn set_store_on_all_ledgers(&mut self, store: &crate::store::SqliteStore) {
         for ledger in self.ledgers.values_mut() {
             ledger.set_store(Some(Arc::new(store.clone())));

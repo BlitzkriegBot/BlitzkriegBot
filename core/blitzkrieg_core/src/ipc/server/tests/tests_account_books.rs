@@ -687,13 +687,13 @@ async fn account_remove_retires_the_journal_file_and_a_recreate_starts_clean() {
             .get_mut(&AccountId::from("paper"))
             .expect("paper ledger");
         l.set_journal_path(journal_path.clone());
-        let _ = l.seed(rust_decimal_macros::dec!(1000));
+        l.seed(rust_decimal_macros::dec!(1000));
         let _ = l.settle_buy_fill(
             "old_1",
             rust_decimal_macros::dec!(30),
             rust_decimal::Decimal::ZERO,
         );
-        let _ = l.settle_sell_fill(rust_decimal_macros::dec!(21), rust_decimal_macros::dec!(1));
+        l.settle_sell_fill(rust_decimal_macros::dec!(21), rust_decimal_macros::dec!(1));
     }
     assert!(journal_path.exists(), "previous-life trail is on disk");
 
@@ -1106,8 +1106,7 @@ async fn account_journal_default_follows_display_then_session_wins() {
     let (core, registry, peer) = two_account_fixture().await;
 
     // 给 paper 账本种一行可辨认的流水（journal 非空 → accountId 可辨）。
-    let _ = core
-        .lock()
+    core.lock()
         .await
         .accounts_mut()
         .get_mut(&AccountId::from("paper"))
@@ -1317,8 +1316,7 @@ async fn ledger_balance_follows_the_session_account_switch() {
     // accident off two equal seeds.
     {
         let mut c = core.lock().await;
-        let _ = c
-            .accounts_mut()
+        c.accounts_mut()
             .get_mut(&AccountId::from("paper"))
             .expect("paper ledger")
             .seed(rust_decimal_macros::dec!(777));

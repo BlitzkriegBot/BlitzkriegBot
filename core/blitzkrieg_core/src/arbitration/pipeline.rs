@@ -504,7 +504,7 @@ mod tests {
     fn setup() -> (Ledger, RiskGate, LossBreakers, ExitConfig, Vec<String>) {
         let cfg = CoreConfig::default();
         let mut ledger = Ledger::new();
-        let _ = ledger.set_balance(dec!(1000));
+        ledger.set_balance(dec!(1000));
         // A per-order cap high enough that Gate 3 (not Gate 2) is what answers
         // the oversized-entry test below.
         let mut risk_cfg = cfg.risk.clone();

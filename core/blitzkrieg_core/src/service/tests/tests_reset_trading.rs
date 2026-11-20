@@ -53,7 +53,7 @@ fn live_recent_trades_do_not_read_the_dry_ledger() {
         original_fallback_price: None,
         price_source: String::new(),
     };
-    let _ = crate::trade_db::TradeDb::new(&dry_path)
+    crate::trade_db::TradeDb::new(&dry_path)
         .record(&crate::trade_db::TradeRecord::from_closed(&dry_closed), 1);
 
     // A live core, its trade log at the LIVE default — no explicit
@@ -79,8 +79,7 @@ fn live_recent_trades_do_not_read_the_dry_ledger() {
     let mut live_closed = dry_closed.clone();
     live_closed.id = "live-1".into();
     live_closed.strategy = "spread_arb".into();
-    let _ = live
-        .trade_db
+    live.trade_db
         .as_mut()
         .expect("trade_log_path set")
         .record(&crate::trade_db::TradeRecord::from_closed(&live_closed), 2);
@@ -213,8 +212,7 @@ fn reset_trading_re_anchors_the_accounting_audit_instead_of_halting_forever() {
         original_fallback_price: None,
         price_source: String::new(),
     };
-    let _ = c
-        .trade_db
+    c.trade_db
         .as_mut()
         .expect("trade_log_path set")
         .record(&crate::trade_db::TradeRecord::from_closed(&closed), 1);
@@ -303,8 +301,7 @@ fn reset_trading_clears_the_strategy_pnl_counters() {
         price_source: String::new(),
     };
     let rec = crate::trade_db::TradeRecord::from_closed(&closed);
-    let _ = c
-        .trade_db
+    c.trade_db
         .as_mut()
         .expect("trade_log_path set")
         .record(&rec, 1);

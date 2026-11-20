@@ -94,8 +94,9 @@ impl Core {
         // terminal transition. If the queue is at cap the cancel cannot be
         // enqueued (backpressure) — abort here so the order is never marked
         // `Cancelled` locally while it still rests on the venue (a ghost order
-        // with no cancel in flight). `cancel_all_live_orders_for_account`
-        // propagates this error and stops (#107).
+        // with no cancel in flight). A transient venue failure is retried by
+        // the extension re-queueing via [`MarketHost::requeue_venue_cancel`].
+        // `cancel_all_live_orders_for_account` propagates this error and stops (#107).
         if was_live && let Some(vid) = order.venue_order_id.as_ref() {
             let venue = self.execution_venue_of(order.account_id.as_str(), &order.token_id);
             self.queue_venue_cancel(venue, vid.to_string())?;
@@ -239,11 +240,14 @@ impl Core {
     /// untagged — routes to the active plugin's drain, the single-plugin
     /// behaviour).
     ///
-    /// Issue #8: when the queue is at cap the cancel is NOT silently dropped.
+    /// Issue #8 / #18: when the queue is at cap the cancel is NOT silently dropped.
     /// This returns `Err` (backpressure) instead, so the caller knows the venue
     /// cancel was not enqueued and must not treat the order as locally
     /// cancelled. A cancelled-but-never-sent order is a ghost order nobody can
-    /// find (#1291).
+    /// find (#1291). A failure here is also the retry boundary: the extension
+    /// re-queues a failed venue cancel via [`MarketHost::requeue_venue_cancel`]
+    /// so a transient venue failure is retried on the next tick instead of
+    /// leaving the order permanently uncancelled.
     pub(crate) fn queue_venue_cancel(
         &mut self,
         venue: String,

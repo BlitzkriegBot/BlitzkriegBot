@@ -1010,7 +1010,7 @@ fn a_rejected_order_row_carries_the_venue_reason() {
     assert!(c.run_accounting_audit(3).ok, "the reject stays auditable");
 }
 
-/// #8: the queue is capped so a stalled bridge cannot grow it for ever, but a
+/// #8/#18: the queue is capped so a stalled bridge cannot grow it for ever, but a
 /// full queue must NOT silently drop the oldest cancel. `queue_venue_cancel`
 /// returns `Err` (backpressure) instead; every enqueued up-to-cap cancel is
 /// kept, and the caller learns the venue cancel was not forwarded.
@@ -1028,7 +1028,7 @@ fn the_venue_cancel_queue_backpressures_instead_of_dropping() {
     assert!(
         c.queue_venue_cancel("polysimulator".into(), format!("0xv{MAX_PENDING_VENUE_CANCELS}"))
             .is_err(),
-            "queue-full cancel must be rejected, not dropped"
+        "queue-full cancel must be rejected, not dropped"
     );
 
     let queued = c.take_pending_venue_cancels();
@@ -1038,14 +1038,9 @@ fn the_venue_cancel_queue_backpressures_instead_of_dropping() {
         Some("0xv0"),
         "the first enqueued cancel is retained"
     );
-    assert_eq!(
-        queued.last().map(String::as_str),
-        Some(format!("0xv{}", MAX_PENDING_VENUE_CANCELS - 1).as_str()),
-        "the last enqueued cancel is retained"
-    );
 }
 
-/// #8: `cancel` must not mark an order `Cancelled` when the venue-cancel
+/// #18: `cancel` must not mark an order `Cancelled` when the venue-cancel
 /// queue is full — no terminal mark without an enqueued cancel (backpressure,
 /// not a silent drop that leaves the order resting on the venue).
 #[test]

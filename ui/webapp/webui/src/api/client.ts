@@ -63,7 +63,6 @@ import { backtestApi, type OnchainPullParams, type BacktestRunParams, type Backt
 import { executionPolicyApi, type PolicyConditionField, type PolicyOpWire, type PolicyThenAction, type PolicyWhenView, type PolicyThenView, type PolicyRuleView, type ExecutionPolicySectionDoc, type ExecutionPolicyListDoc, type ExecutionPolicyPreviewRow, type ExecutionPolicyPreviewDoc, type ExecutionPolicyAuditLine, type ExecutionPolicyHistoryDoc, type ExecutionPolicySetParams } from './execution-policy.ts'
 import { blueprintApi, type BlueprintCompileDoc, type BlueprintSaveBody, type BlueprintSaveDoc, type BlueprintLoadDoc, type BlueprintLoadSourceDoc, type BlueprintSaveSourceBody, type BlueprintSaveSourceDoc } from './blueprint.ts'
 import { ApiError, ping, login, logout, getToken, setToken, clearToken, hasToken, LOGIN_AT_KEY, loginAt, request } from './core.ts'
-import { probeSession } from './probe.ts'
 
 export type {
   CommandDoc,
@@ -106,7 +105,7 @@ export type {
 export {
   MARKET_TYPE_LABELS, marketTypeLabel, pluginKindLabel, KLINE_INTERVALS,
   ApiError, ping, login, logout, getToken, setToken, clearToken, hasToken,
-  LOGIN_AT_KEY, loginAt, probeSession,
+  LOGIN_AT_KEY, loginAt,
 }
 
 /** The flat endpoint surface, reassembled from the per-domain slices. */
@@ -130,4 +129,22 @@ export const api = {
   /** Dispatch a gateway command verb (`status`/`start`/`stop`/…). */
   command: (cmd: string) =>
     request<CommandDoc>('/command', { method: 'POST', body: cmd }),
+}
+
+/**
+ * Session adjudication on top of the snapshot endpoint: the one authenticated
+ * probe the shell uses to tell a valid session from an expired one.
+ *
+ * Lives here (instead of ./probe.ts) to break the client<->probe import cycle:
+ * client.ts used to import probeSession from probe.ts, while probe.ts imported
+ * api from client.ts.
+ */
+export async function probeSession(): Promise<'valid' | 'expired' | 'unreachable'> {
+  try {
+    await api.snapshot()
+    return 'valid'
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) return 'expired'
+    return 'unreachable'
+  }
 }

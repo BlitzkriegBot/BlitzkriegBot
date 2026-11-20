@@ -843,6 +843,22 @@ impl super::StoreApi for SqliteStore {
         }
     }
 
+    /// [`StoreApi::put_setting`]: `Some(value)` upserts into `account_settings`;
+    /// `None` sweeps the key (key gone → inherit the globals). The account
+    /// arrives typed via `AccountScope` — never written onto a guessed id
+    /// (#1221/#1223 bug class). A backend failure is carried verbatim, never
+    /// silently degraded.
+    fn put_setting(
+        &self,
+        scope: AccountScope<'_>,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<WriteOutcome, CoreError> {
+        self.ensure_account(scope.account.as_str(), None)?;
+        self.write_settings(scope.account.as_str(), &[(key, value)])?;
+        Ok(WriteOutcome::Persisted)
+    }
+
     fn save_credentials(
         &self,
         vars: &BTreeMap<String, String>,
@@ -1385,6 +1401,83 @@ mod tests {
             })
             .unwrap();
         assert_eq!(left, 0);
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// put_setting: `Some(value)` upserts and reads back; `None` sweeps the
+    /// key (reads back as None = inherit the globals); and writing account A
+    /// never touches account B — the row lands under the AccountScope account,
+    /// never a guessed id (#1221/#1223 bug class).
+    #[test]
+    fn put_setting_upsert_sweep_and_account_isolation() {
+        let (store, dir) = temp_store();
+        let alice = crate::account::AccountId::from("alice");
+        let bob = crate::account::AccountId::from("bob");
+
+        assert!(
+            matches!(
+                store.put_setting(AccountScope::new(&alice), "round.duration_sec", Some("300")),
+                Ok(WriteOutcome::Persisted)
+            ),
+            "put_setting(Some) must report Persisted"
+        );
+        let got = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                crate::db::account_setting_get(conn, "alice", "round.duration_sec")
+            })
+            .unwrap();
+        assert_eq!(got.as_deref(), Some("300"));
+
+        // Repeat upsert overwrites (no duplicate row).
+        store
+            .put_setting(AccountScope::new(&alice), "round.duration_sec", Some("900"))
+            .unwrap();
+        let got = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                crate::db::account_setting_get(conn, "alice", "round.duration_sec")
+            })
+            .unwrap();
+        assert_eq!(got.as_deref(), Some("900"));
+
+        // None sweeps the key: gone = inherit the globals.
+        store
+            .put_setting(AccountScope::new(&alice), "round.duration_sec", None)
+            .unwrap();
+        let got = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                crate::db::account_setting_get(conn, "alice", "round.duration_sec")
+            })
+            .unwrap();
+        assert_eq!(got, None, "swept key must read back as None");
+
+        // Cross-account isolation: bob's write never resurrects/touches alice's row.
+        store
+            .put_setting(AccountScope::new(&bob), "round.duration_sec", Some("100"))
+            .unwrap();
+        let got_bob = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                crate::db::account_setting_get(conn, "bob", "round.duration_sec")
+            })
+            .unwrap();
+        assert_eq!(got_bob.as_deref(), Some("100"));
+        let got_alice = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                crate::db::account_setting_get(conn, "alice", "round.duration_sec")
+            })
+            .unwrap();
+        assert_eq!(got_alice, None, "alice's row stays swept after bob's write");
+
         drop(store);
         let _ = std::fs::remove_dir_all(dir);
     }

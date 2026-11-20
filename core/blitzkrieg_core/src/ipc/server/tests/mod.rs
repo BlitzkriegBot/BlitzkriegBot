@@ -818,6 +818,7 @@ mod tests_blueprint;
 mod tests_env_readonly;
 mod tests_execution_policy;
 mod tests_exit_params;
+mod tests_fail_closed;
 mod tests_feed_reuse;
 mod tests_grid_pool_boot;
 mod tests_hot_reload;

@@ -90,7 +90,7 @@ impl Core {
             return Ok(());
         }
         let was_live = order.status.is_live();
-        self.release_order_bookkeeping(&order, was_live, "cancel");
+        self.release_order_bookkeeping(&order, was_live, "cancel")?;
         self.ome.mark_terminal(id, OrderStatus::Cancelled, now_ms)?;
         // The venue may still hold the order resting: hand its id to the live
         // bridge for a real cancel. Nothing to cancel when the venue never
@@ -137,6 +137,14 @@ impl Core {
     /// the stray hold, halts new entries and never lets go. Keeping one
     /// implementation here is the whole point of the extraction.
     ///
+    /// Correctness: the notional released from the ledger must equal the
+    /// order's own outstanding commitment (`price * remaining`) — never more
+    /// (cash would be created out of thin air) and never less (a stray hold
+    /// the audit would flag and halt entries on). A mismatch returns `Err`
+    /// and aborts the terminal transition.
+    ///
+    /// Returns the cash notional released from the ledger.
+    ///
     /// `was_live` is the same guard the cancel path spelled inline: only an
     /// order that actually rested may lift the token's repeat suppression (the
     /// hold-to-settlement gap-fill gate) or dirty the replay schedule. Every
@@ -147,12 +155,34 @@ impl Core {
         order: &crate::model::TrackedOrder,
         was_live: bool,
         why: &str,
-    ) {
+    ) -> CoreResult<Decimal> {
+        let mut released = Decimal::ZERO;
         if order.side == Side::Buy {
             // E28: the reservation is released in the ORDER'S OWN book — a
             // terminal transition must never refund another account's cash.
             if let Ok(l) = self.accounts.get_mut(&order.account_id) {
-                l.release(&order.order_id);
+                released = l.release(&order.order_id);
+                // `release` hands back exactly what the ledger holds for this
+                // order; it must match the order's outstanding commitment.
+                let remaining = (order.size - order.filled_size).max(Decimal::ZERO);
+                let expected = order.price.checked_mul(remaining).ok_or_else(|| {
+                    CoreError::new(
+                        CoreErrorCode::InvalidParams,
+                        format!(
+                            "order {} reservation notional overflow (price {} x remaining {})",
+                            order.order_id, order.price, remaining
+                        ),
+                    )
+                })?;
+                if released != expected {
+                    return Err(CoreError::new(
+                        CoreErrorCode::InvalidParams,
+                        format!(
+                            "order {} release mismatch: ledger released {released}, outstanding commitment {expected}",
+                            order.order_id
+                        ),
+                    ));
+                }
             }
             // E-VA: the same precision for the strategy's VIRTUAL pot — the
             // order's whole remaining hold leaves the book.
@@ -182,8 +212,10 @@ impl Core {
         tracing::debug!(
             order = order.order_id.as_str(),
             why,
+            released = %released,
             "terminal order bookkeeping released"
         );
+        Ok(released)
     }
 
     /// Enqueue one venue cancel (deduped by id, bounded so a pathological loop

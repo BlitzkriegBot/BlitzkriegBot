@@ -159,12 +159,9 @@ async fn session_connection_break_loses_no_response_queued_before_teardown() {
     const N: u64 = 600; // < OUTBOUND_QUEUE_CAP(1024)，全部能入队
     let mut flood = String::new();
     for id in 1..=N {
-        flood.push_str(
-            &format!(
-                "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"engine.stats\",\"params\":{{}}}}"
-            )
-            .as_str(),
-        );
+        flood.push_str(&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"engine.stats\",\"params\":{{}}}}"
+        ));
         flood.push('\n');
     }
     client

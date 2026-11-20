@@ -263,7 +263,7 @@ fn arb_core_live(pot: Decimal) -> Core {
             updated_at_ms: NOW,
         })
         .expect("arb-b does not exist yet — the fixture account inserts");
-    c.accounts_mut()
+    let _ = c.accounts_mut()
         .get_mut(&AccountId::from("arb-b"))
         .expect("arb-b just inserted")
         .set_balance(pot);

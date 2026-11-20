@@ -50,7 +50,7 @@ use rust_decimal::Decimal;
 
 use crate::account::config::CrossVenueArbConfig;
 use crate::account::{AccountStatus, CredentialKeys};
-use crate::db::{account_setting_remove, account_setting_set};
+use crate::db::{account_setting_remove, account_setting_set, META_RUNTIME_CONFIG_JSON};
 use crate::model::{CoreError, CoreErrorCode};
 use crate::risk::account_store::AccountRiskDb;
 use crate::risk::limits::{AccountRiskLimits, Bound, LimitSource};
@@ -862,6 +862,60 @@ impl super::StoreApi for SqliteStore {
                 })?;
         }
         Ok(())
+    }
+
+    fn save_market_plugin(&self, plugin: Option<&str>) -> Result<(), CoreError> {
+        // issue #47: config.json 直写替换为 SQLite persist 路径。market_plugin
+        // 单元以 JSON 字符串落 `kernel_meta.runtime_config_json`，与导入时
+        // `db_import.rs` 的 `runtime_config_json` 单元格同一格式；读者通过
+        // `load_market_plugin` 反序列化取回 `marketPlugin`。
+        let doc = serde_json::json!({
+            "marketPlugin": plugin,
+            "marketPluginActor": plugin.map(|_| "system"),
+            "marketPluginAtMs": blitzkrieg_market_api::net::now_ms(),
+        });
+        let value = serde_json::to_string(&doc).map_err(|e| {
+            CoreError::new(
+                CoreErrorCode::Internal,
+                format!("market.plugin.set: serialize failed: {e}"),
+            )
+        })?;
+        self.risk
+            .save_kernel_meta(META_RUNTIME_CONFIG_JSON, &value)
+            .map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!("market.plugin.set: SQLite write failed: {e}"),
+                )
+            })?;
+        Ok(())
+    }
+
+    fn load_market_plugin(&self) -> Result<Option<String>, CoreError> {
+        let value = self
+            .risk
+            .load_kernel_meta(META_RUNTIME_CONFIG_JSON)
+            .map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!("market.plugin.get: SQLite read failed: {e}"),
+                )
+            })?;
+        let Some(text) = value else {
+            return Ok(None);
+        };
+        let doc: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+            CoreError::new(
+                CoreErrorCode::Internal,
+                format!("market.plugin.get: parse failed: {e}"),
+            )
+        })?;
+        let plugin = doc
+            .get("marketPlugin")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string());
+        Ok(plugin)
     }
 }
 

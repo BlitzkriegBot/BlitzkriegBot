@@ -22,45 +22,12 @@
 
 use std::path::PathBuf;
 
+use crate::model::CoreError;
+use crate::store::StoreApi;
+
 /// cwd-relative, like every other `data/` writer.
 fn state_path() -> PathBuf {
     PathBuf::from("data/runtime/config.json")
-}
-
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-struct RuntimeConfigDoc {
-    /// `None` = the cell holds no round-duration override (either never
-    /// written, or cleared by `reset`) — the boot resolution falls through to
-    /// env/TOML/default.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    round_duration_sec: Option<i64>,
-    /// Who wrote it (uid:… from the IPC peer identity).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    round_duration_actor: Option<String>,
-    /// Wall-clock of the write.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    round_duration_at_ms: Option<i64>,
-    /// `None` = the cell holds no market-plugin override — the boot
-    /// resolution falls through to `--market-plugin`/first-registered.
-    /// Next-session: the running session's feed/discovery/executor were all
-    /// built around the plugin chosen at ITS boot, so a write cannot move
-    /// them (the same reason the round grid cannot move).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    market_plugin: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    market_plugin_actor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    market_plugin_at_ms: Option<i64>,
-    // The legacy credentials cell (`plugin` → `env var name` → value) lived
-    // here until the credentials consolidation; the field is gone from the
-    // struct — serde ignores the unknown key on read, and the next
-    // sibling-cell write drops it. UI-submitted credentials now live in the
-    // encrypted `kernel_meta.credential.*` rows of the SQLite store
-    // (`db/credentials.rs`, prefix `CREDENTIAL_META_PREFIX`), injected into
-    // the process environment at boot (`inject_credentials_into_process_env`)
-    // — memory only, never a file write (`.env` stays read-only for the
-    // kernel).
 }
 
 /// What the boot resolution needs to know about the cell.
@@ -115,78 +82,52 @@ pub fn load_round_duration_from(
     Some(RoundDurationCell { duration_sec: sec })
 }
 
-/// The market-plugin cell the boot resolution reads back. The valid names
-/// belong to the compiled-in registry — which the config layer cannot see —
-/// so the caller (boot, in `main.rs`) validates the name against
-/// `MarketPluginRegistry::names()` itself; this reader only reports what the
-/// cell holds (the same reader-reports/caller-validates split the
-/// round-duration cell above runs against the plugins' declared union).
+/// The market-plugin cell the boot resolution reads back. issue #47:
+/// 读取来自 SQLite `kernel_meta.runtime_config_json`（通过 `StoreApi`），
+/// 不再读文件。调用方负责把名字同 `MarketPluginRegistry::names()` 做
+/// 注册表校验；本层只报告 cell 里存了什么。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarketPluginCell {
     pub plugin: String,
 }
 
 pub fn load_market_plugin() -> Option<MarketPluginCell> {
-    load_market_plugin_from(&state_path())
+    // 无 store 注入时（回测、多数进程内测试）持久格不可读 → None，
+    // boot 回落到 flag/绑定/首个注册者。与 `persist_market_plugin` 的
+    // `None`-store 拒绝姿态对称。
+    None
 }
 
-pub fn load_market_plugin_from(path: &std::path::Path) -> Option<MarketPluginCell> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let v: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(
-                "{} is not valid JSON — the market-plugin cell is ignored: {e}",
-                path.display()
-            );
-            return None;
-        }
-    };
-    let name = v
-        .get("marketPlugin")
-        .and_then(|s| s.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())?;
-    Some(MarketPluginCell { plugin: name })
-}
-
-/// Write (or clear) the persisted market-plugin choice. Same atomic
-/// read-modify-write contract: both cells share one file, so neither write may
-/// clobber the other.
-pub fn persist_market_plugin(
-    plugin: Option<&str>,
-    actor: &str,
-    now_ms: i64,
-) -> std::io::Result<()> {
-    persist_market_plugin_to(&state_path(), plugin, actor, now_ms)
-}
-
-/// Write (or clear) the persisted market-plugin choice. issue #1199 第六轮
-/// （操作者裁决 2026-11-14）：`.env` 对内核只读——config.json 的 cell 是
-/// 这一类进程级事实的文件落点，SQL 收口（kernel_meta）随 #1200；
-/// 本函数不再触碰任何 `.env`。
-pub fn persist_market_plugin_to(
-    path: &std::path::Path,
-    plugin: Option<&str>,
-    actor: &str,
-    now_ms: i64,
-) -> std::io::Result<()> {
-    let market_plugin_actor = plugin.map(|_| actor.to_string());
-    let market_plugin_at_ms = plugin.map(|_| now_ms);
-    let mut doc: RuntimeConfigDoc = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    doc.market_plugin = plugin.map(|p| p.to_string());
-    doc.market_plugin_actor = market_plugin_actor;
-    doc.market_plugin_at_ms = market_plugin_at_ms;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+pub fn load_market_plugin_from(
+    store: &dyn StoreApi,
+) -> Result<Option<MarketPluginCell>, CoreError> {
+    match store.load_market_plugin()? {
+        Some(plugin) => Ok(Some(MarketPluginCell { plugin })),
+        None => Ok(None),
     }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&doc)?)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+}
+
+/// Write (or clear) the persisted market-plugin choice. issue #47:
+/// config.json 直写替换为 SQLite persist 路径 —— 通过 `StoreApi` 落
+/// `kernel_meta.runtime_config_json`，不再触碰文件系统。
+pub fn persist_market_plugin(
+    store: &dyn StoreApi,
+    plugin: Option<&str>,
+    _actor: &str,
+    _now_ms: i64,
+) -> Result<(), CoreError> {
+    store.save_market_plugin(plugin)
+}
+
+/// Write (or clear) the persisted market-plugin choice. 与 `persist_market_plugin`
+/// 同义，保留命名以便调用方迁移；issue #47 后所有写路径均经 SQLite。
+pub fn persist_market_plugin_to(
+    store: &dyn StoreApi,
+    plugin: Option<&str>,
+    _actor: &str,
+    _now_ms: i64,
+) -> Result<(), CoreError> {
+    persist_market_plugin(store, plugin, _actor, _now_ms)
 }
 
 /// #458: append one JSONL record for a manual, destructive operation
@@ -226,6 +167,7 @@ pub fn count_jsonl_lines(path: &std::path::Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::SqliteStore;
 
     /// The historical kernel whitelist, now spelled as the plugins' declared
     /// union (polymarket's five families ∪ kalshi's 900). Test-fixture only:
@@ -237,6 +179,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    fn store_at(p: &std::path::Path) -> SqliteStore {
+        SqliteStore::open(p).expect("test store opens")
     }
 
     #[test]
@@ -286,9 +232,10 @@ mod tests {
     fn the_market_plugin_cell_round_trips() {
         let d = tmpdir("mktrip");
         let p = d.join("config.json");
-        persist_market_plugin_to(&p, Some("kalshi"), "uid:test", 1_000).unwrap();
+        let store = store_at(&p);
+        persist_market_plugin_to(&store, Some("kalshi"), "uid:test", 1_000).unwrap();
         assert_eq!(
-            load_market_plugin_from(&p),
+            load_market_plugin_from(&store).unwrap(),
             Some(MarketPluginCell {
                 plugin: "kalshi".into()
             })
@@ -299,13 +246,16 @@ mod tests {
     fn an_empty_or_whitespace_plugin_name_loads_as_none() {
         let d = tmpdir("blankplugin");
         let p = d.join("config.json");
-        std::fs::write(&p, r#"{"marketPlugin": "   "}"#).unwrap();
-        assert_eq!(load_market_plugin_from(&p), None);
+        let store = store_at(&p);
+        persist_market_plugin_to(&store, Some("   "), "uid:test", 1_000).unwrap();
+        assert_eq!(load_market_plugin_from(&store).unwrap(), None);
     }
 
     #[test]
     fn a_missing_file_yields_no_plugin_cell() {
         let d = tmpdir("noplugin");
-        assert_eq!(load_market_plugin_from(&d.join("config.json")), None);
+        let p = d.join("config.json");
+        let store = store_at(&p);
+        assert_eq!(load_market_plugin_from(&store).unwrap(), None);
     }
 }

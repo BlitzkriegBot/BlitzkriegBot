@@ -101,10 +101,6 @@ pub fn boot_enablement(
     // script — this IS the migration).
     let derived = derived_venue_set(core);
     if !derived.is_empty() {
-        if let Some(path) = core.config().runtime_config_path.as_deref() {
-            // Only a cell that would actually boot (every name registered —
-            // the same filter the readout arms with) is worth clearing; a
-            // stale/unregistered cell is already ignored by the boot.
             let stale = cell
                 .filter(|c| {
                     parse_plugin_list(&c.plugin)
@@ -113,12 +109,13 @@ pub fn boot_enablement(
                 })
                 .is_some();
             if stale {
-                match crate::runtime_config::persist_market_plugin_to(
-                    std::path::Path::new(path),
-                    None,
-                    "system:venue-derive-migration",
-                    blitzkrieg_market_api::net::now_ms(),
-                ) {
+                if let Some(store) = core.store.as_deref() {
+                    match crate::runtime_config::persist_market_plugin_to(
+                        store,
+                        None,
+                        "system:venue-derive-migration",
+                        blitzkrieg_market_api::net::now_ms(),
+                    ) {
                     Ok(()) => tracing::info!(
                         target: "risk",
                         venues = ?derived,
@@ -312,10 +309,9 @@ pub fn plugin_readout(
     // actually pick (no silently-differs). Multi-value ("polymarket,kalshi")
     // is the same rule, per name.
     let cell = core
-        .config()
-        .runtime_config_path
+        .store
         .as_deref()
-        .and_then(|p| crate::runtime_config::load_market_plugin_from(std::path::Path::new(p)))
+        .and_then(|store| crate::runtime_config::load_market_plugin_from(store).ok().flatten())
         .filter(|c| {
             parse_plugin_list(&c.plugin)
                 .iter()
@@ -499,21 +495,18 @@ async fn persist_cell(
     now_ms: i64,
 ) -> Result<(), crate::model::CoreError> {
     use crate::model::{CoreError, CoreErrorCode};
-    let path = {
-        let c = core.lock().await;
-        c.config().runtime_config_path.clone()
-    };
-    let path = path.ok_or_else(|| {
+    let c = core.lock().await;
+    let store = c.store.as_deref().ok_or_else(|| {
         CoreError::new(
             CoreErrorCode::InvalidParams,
-            "market.plugin.set: no runtime config path configured — \
+            "market.plugin.set: no store configured — \
              persistence is disabled for this core (backtests and \
              in-process tests); nothing was applied"
                 .to_string(),
         )
     })?;
     crate::runtime_config::persist_market_plugin_to(
-        std::path::Path::new(&path),
+        store,
         plugin,
         actor,
         now_ms,
@@ -674,8 +667,41 @@ pub async fn apply_credentials_set(
 }
 
 #[cfg(test)]
+mod test_helpers {
+    use super::*;
+
+    /// Open a store at `db_path` and seed the market-plugin cell — used by
+    /// tests that need the cell populated BEFORE the Core is constructed
+    /// (pre-seed → then boot reads it back through the Core's own store).
+    pub(super) fn seed_cell(db_path: &std::path::Path, plugin: Option<&str>, actor: &str, now_ms: i64) {
+        let store = crate::store::SqliteStore::open(db_path)
+            .expect("test store opens");
+        crate::runtime_config::persist_market_plugin_to(
+            &store as &dyn crate::store::StoreApi,
+            plugin,
+            actor,
+            now_ms,
+        )
+        .expect("seed the cell");
+    }
+
+    /// Read the market-plugin cell back through the Core's own store (async
+    /// because the core is wrapped in a Mutex in some tests).
+    pub(super) async fn load_cell_from_core(
+        core: &tokio::sync::Mutex<crate::service::Core>,
+    ) -> Option<String> {
+        let c = core.lock().await;
+        let store = c.store.as_deref().expect("store configured");
+        crate::runtime_config::load_market_plugin_from(store)
+            .expect("cell load")
+            .map(|c| c.plugin)
+    }
+}
+
+#[cfg(test)]
 mod set_tests {
     use super::*;
+    use super::test_helpers::*;
     use crate::model::CoreErrorCode;
     use crate::schema::SetMarketPluginParams;
 
@@ -735,9 +761,9 @@ mod set_tests {
         assert_eq!(net_check_plugin(&reg, "").name(), "none");
     }
 
-    fn core_with_cell(path: Option<String>) -> tokio::sync::Mutex<crate::service::Core> {
+    fn core_with_cell(db_path: Option<String>) -> tokio::sync::Mutex<crate::service::Core> {
         let cfg = crate::service::CoreConfig {
-            runtime_config_path: path,
+            db_path: db_path.map(std::path::PathBuf::from),
             trade_log_path: None,
             order_log_path: None,
             position_log_path: None,
@@ -774,7 +800,8 @@ mod set_tests {
     #[tokio::test]
     async fn a_single_value_round_trips_verbatim() {
         let dir = scratch("single");
-        let core = core_with_cell(Some(cell_in(&dir)));
+        let cell = cell_in(&dir);
+        let core = core_with_cell(Some(cell.clone()));
         let reg = registry_with(&["alpha"]);
         let update = apply_plugin_set(&reg, &core, &patch(Some("alpha"), false), "uid:test", 1)
             .await
@@ -782,17 +809,16 @@ mod set_tests {
         // Single-value spelling is EXACTLY the historical shape — the reply
         // carries the value verbatim (no commas, no reordering).
         assert_eq!(update.next_session_plugin, "alpha");
-        let cell =
-            crate::runtime_config::load_market_plugin_from(std::path::Path::new(&cell_in(&dir)))
-                .expect("the cell must hold the write");
-        assert_eq!(cell.plugin, "alpha");
+        let loaded = load_cell_from_core(&core).await.expect("the cell must hold the write");
+        assert_eq!(loaded, "alpha");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn a_multi_value_write_lands_and_reads_back_as_a_list() {
         let dir = scratch("multi");
-        let core = core_with_cell(Some(cell_in(&dir)));
+        let cell = cell_in(&dir);
+        let core = core_with_cell(Some(cell.clone()));
         let reg = registry_with(&["alpha", "beta"]);
         let update = apply_plugin_set(
             &reg,
@@ -808,10 +834,8 @@ mod set_tests {
         // The cell carries the whole comma string; the READ path
         // (parse_plugin_list, what the boot actually runs) re-derives both
         // names from it in order.
-        let cell =
-            crate::runtime_config::load_market_plugin_from(std::path::Path::new(&cell_in(&dir)))
-                .expect("the cell must hold the write");
-        assert_eq!(parse_plugin_list(&cell.plugin), vec!["alpha", "beta"]);
+        let loaded = load_cell_from_core(&core).await.expect("the cell must hold the write");
+        assert_eq!(parse_plugin_list(&loaded), vec!["alpha", "beta"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -841,13 +865,7 @@ mod set_tests {
         let cell = cell_in(&dir);
         // Pre-seed a good cell: a refused write must leave it untouched
         // (plan-first — the validation happens before anything touches disk).
-        crate::runtime_config::persist_market_plugin_to(
-            std::path::Path::new(&cell),
-            Some("alpha"),
-            "seed",
-            0,
-        )
-        .expect("seed the cell");
+        seed_cell(&std::path::Path::new(&cell), Some("alpha"), "seed", 0);
         let core = core_with_cell(Some(cell.clone()));
         let reg = registry_with(&["alpha", "beta"]);
         let err = apply_plugin_set(
@@ -871,9 +889,8 @@ mod set_tests {
             err.message
         );
         // And the cell is exactly as it was — nothing was half-written.
-        let after = crate::runtime_config::load_market_plugin_from(std::path::Path::new(&cell))
-            .expect("the seeded cell survived");
-        assert_eq!(after.plugin, "alpha");
+        let after = load_cell_from_core(&core).await.expect("the seeded cell survived");
+        assert_eq!(after, "alpha");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -919,7 +936,7 @@ mod set_tests {
         // session's own boot resolution, not a cell value.
         assert_eq!(update.next_session_plugin, "alpha");
         assert!(
-            crate::runtime_config::load_market_plugin_from(std::path::Path::new(&cell)).is_none(),
+            load_cell_from_core(&core).await.is_none(),
             "the cell holds nothing after a reset"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -953,6 +970,7 @@ mod derive_tests {
     //! 绑定翻转启用来源时清旧格 + INFO）、market.plugin.set 在派生生效
     //! 期间的 fail-closed 拒绝、readout 的 source 披露。
     use super::*;
+    use super::test_helpers::*;
     use crate::model::CoreErrorCode;
     use crate::schema::SetMarketPluginParams;
     use crate::service::{Core, CoreConfig};
@@ -986,7 +1004,7 @@ mod derive_tests {
     /// the derivation input, built the way `AccountLedgers::new` builds it.
     /// Venues are STUB PLUGIN names so the set the derivation returns can be
     /// resolved against a registry this test also controls.
-    fn core_with_bindings(bindings: &[(&str, &str)], runtime_config_path: Option<String>) -> Core {
+    fn core_with_bindings(bindings: &[(&str, &str)], db_path: Option<String>) -> Core {
         let now = crate::schema::ACCOUNT_VENUE_SET_NOTE.len() as i64; // any constant now
         let accounts: Vec<crate::account::Account> = bindings
             .iter()
@@ -1011,7 +1029,7 @@ mod derive_tests {
             ),
         );
         let cfg = CoreConfig {
-            runtime_config_path,
+            db_path: db_path.map(std::path::PathBuf::from),
             trade_log_path: None,
             order_log_path: None,
             position_log_path: None,
@@ -1071,20 +1089,18 @@ mod derive_tests {
         let cell = cell_in(&dir);
         // 旧持久格：上一次 UI 写的 alpha —— 现在账户绑定了 beta/gamma，派生
         // 集合非空，旧格必须退休。
-        crate::runtime_config::persist_market_plugin_to(
-            std::path::Path::new(&cell),
-            Some("alpha"),
-            "uid:old",
-            0,
-        )
-        .expect("seed the old cell");
-        let loaded = crate::runtime_config::load_market_plugin_from(std::path::Path::new(&cell));
-        assert!(loaded.is_some(), "the old cell is on disk");
+        seed_cell(std::path::Path::new(&cell), Some("alpha"), "uid:old", 0);
         let reg = registry_with(&["alpha", "beta", "gamma"]);
         let core = core_with_bindings(
             &[("a", "beta"), ("b", "gamma"), ("c", "beta")],
             Some(cell.clone()),
         );
+        let loaded = {
+            let store = core.store.as_deref().expect("store");
+            crate::runtime_config::load_market_plugin_from(store)
+                .expect("cell load")
+        };
+        assert!(loaded.is_some(), "the old cell is on disk");
 
         let (resolved, source) = boot_enablement(&core, &reg, None, loaded.as_ref());
         assert_eq!(source, PluginEnableSource::Accounts);
@@ -1099,7 +1115,12 @@ mod derive_tests {
         );
         // 迁移：旧格已清 —— 下次会话不会再从旧格解析。
         assert!(
-            crate::runtime_config::load_market_plugin_from(std::path::Path::new(&cell)).is_none(),
+            {
+                let store = core.store.as_deref().expect("store");
+                crate::runtime_config::load_market_plugin_from(store)
+                    .expect("cell load")
+                    .is_none()
+            },
             "the retired cell is gone from disk"
         );
 
@@ -1132,30 +1153,31 @@ mod derive_tests {
         let dir = scratch("ghostcell");
         let cell = cell_in(&dir);
         // 格里只写一个未注册的名 "ghost" —— 不是可启动格。
-        crate::runtime_config::persist_market_plugin_to(
-            std::path::Path::new(&cell),
-            Some("ghost"),
-            "uid:old",
-            0,
-        )
-        .expect("seed the unbootable cell");
-        let loaded = crate::runtime_config::load_market_plugin_from(std::path::Path::new(&cell));
+        seed_cell(std::path::Path::new(&cell), Some("ghost"), "uid:old", 0);
+        let reg = registry_with(&["alpha", "beta", "gamma"]);
+        let core = core_with_bindings(&[("a", "beta"), ("b", "gamma")], Some(cell.clone()));
+
+        let loaded = {
+            let store = core.store.as_deref().expect("store");
+            crate::runtime_config::load_market_plugin_from(store)
+                .expect("cell load")
+        };
         assert_eq!(
             loaded.as_ref().unwrap().plugin,
             "ghost",
             "the cell is on disk"
         );
 
-        // 两个账户绑定已注册的 beta/gamma，派生非空，迁移层要启动。
-        let reg = registry_with(&["alpha", "beta", "gamma"]);
-        let core = core_with_bindings(&[("a", "beta"), ("b", "gamma")], Some(cell.clone()));
-
         let (resolved, source) = boot_enablement(&core, &reg, None, loaded.as_ref());
         assert_eq!(source, PluginEnableSource::Accounts);
         assert_eq!(resolved.as_deref(), Some("beta,gamma"));
 
         // 迁移没有清格：ghost 格依然在盘上（不可启动格不清）。
-        let still = crate::runtime_config::load_market_plugin_from(std::path::Path::new(&cell));
+        let still = {
+            let store = core.store.as_deref().expect("store");
+            crate::runtime_config::load_market_plugin_from(store)
+                .expect("cell load")
+        };
         assert_eq!(
             still.unwrap().plugin,
             "ghost",
@@ -1227,12 +1249,16 @@ mod derive_tests {
         assert!(err.message.contains("账户绑定派生"), "{}", err.message);
         // 什么都不落盘。
         assert!(
-            crate::runtime_config::load_market_plugin_from(std::path::Path::new(&cell)).is_none(),
+            load_cell_from_core(&core).await.is_none(),
             "nothing was written under the guard"
         );
 
         // 回落旧格（无绑定）：写与 reset 照常 —— 旧行为逐字不变。
-        let plain = tokio::sync::Mutex::new(core_with_bindings(&[("a", "")], Some(cell.clone())));
+        // 给 plain 一个独立的 scratch 目录，避免和前一个 core 共享同一 SQLite 文件
+        //（否则 Core::with_account_book 会从 SQL 把之前持久的账户簿覆盖回来）。
+        let plain_dir = scratch("plain");
+        let plain_cell = cell_in(&plain_dir);
+        let plain = tokio::sync::Mutex::new(core_with_bindings(&[("a", "")], Some(plain_cell.clone())));
         let update = apply_plugin_set(
             &reg,
             &plain,
@@ -1248,6 +1274,7 @@ mod derive_tests {
             .expect("no bindings — the reset lands as before");
         assert!(update.reset);
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&plain_dir);
     }
 
     /// readout 的披露：source 随解析链走（accounts/persisted/fallback），
@@ -1266,13 +1293,7 @@ mod derive_tests {
         // 时 cell 是 None，直接落 fallback；persisted 层用带路径的核验证。
         let dir = scratch("readout");
         let path = cell_in(&dir);
-        crate::runtime_config::persist_market_plugin_to(
-            std::path::Path::new(&path),
-            Some("alpha"),
-            "uid:old",
-            0,
-        )
-        .expect("seed the cell");
+        seed_cell(std::path::Path::new(&path), Some("alpha"), "uid:old", 0);
         let core = core_with_bindings(&[], Some(path));
         let ro = plugin_readout(&reg, &core);
         assert_eq!(ro.source, "persisted");

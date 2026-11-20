@@ -347,41 +347,66 @@ impl TradeDb {
         }
     }
 
+    /// Read a JSONL trade log, separating parseable records from lines that no
+    /// longer deserialize. Broken lines are returned verbatim so a
+    /// read-modify-write cycle never silently destroys audit history
+    /// (issue #20). Empty lines are skipped.
+    fn read_trade_log(text: &str) -> (Vec<TradeRecord>, Vec<String>) {
+        let mut records = Vec::new();
+        let mut broken = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<TradeRecord>(line) {
+                Ok(rec) => records.push(rec),
+                Err(_) => broken.push(line.to_string()),
+            }
+        }
+        (records, broken)
+    }
+
+    /// Serialize kept records followed by verbatim broken lines, each on its
+    /// own line. Returns `None` if a kept record cannot be serialized.
+    fn render_log(records: &[TradeRecord], broken: &[String]) -> Option<String> {
+        let mut lines: Vec<String> = Vec::with_capacity(records.len() + broken.len());
+        for r in records {
+            lines.push(serde_json::to_string(r).ok()?);
+        }
+        lines.extend_from_slice(broken);
+        if lines.is_empty() {
+            return Some(String::new());
+        }
+        Some(lines.join("\n") + "\n")
+    }
+
     /// F4: withdraw a recorded trade whose venue execution later FAILED. The
     /// JSONL is append-only for history, so the retraction REWRITES the file
     /// without the offending line and rebuilds the summary from the remaining
     /// records — a trade that never happened must not live in the books, not
-    /// even as a compensating entry the win-rate maths would still count.
+    /// even as a compensating entry the win-rate maths would count.
     ///
     /// Matches the record by (id, exit_time, net_pnl_usd): id alone can repeat
     /// across restarts, and the retraction must not eat a different close.
     /// No-op when no matching line exists (never recorded, already retracted).
+    ///
+    /// Issue #20: lines that fail to deserialize are preserved verbatim in the
+    /// rewritten file — a retract must never silently delete audit history.
     pub fn retract(&mut self, rec: &TradeRecord, now_ms: i64) {
         let Ok(text) = std::fs::read_to_string(&self.jsonl_path) else {
             return;
         };
-        let mut remaining: Vec<TradeRecord> = text
-            .lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
+        let (mut remaining, broken) = Self::read_trade_log(&text);
         let Some(pos) = remaining.iter().position(|r| {
             r.id == rec.id && r.exit_time == rec.exit_time && r.net_pnl_usd == rec.net_pnl_usd
         }) else {
             return;
         };
         remaining.remove(pos);
-        let Ok(body) = remaining
-            .iter()
-            .map(serde_json::to_string)
-            .collect::<Result<Vec<_>, _>>()
-            .map(|lines| lines.join("\n"))
-        else {
+        let Some(out) = Self::render_log(&remaining, &broken) else {
             return;
         };
-        let mut out = body;
-        if !out.is_empty() {
-            out.push('\n');
-        }
         // #463: atomic rewrite — the retract window is exactly when a crash
         // used to be able to truncate the whole trade history.
         if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
@@ -443,10 +468,7 @@ impl TradeDb {
         let Ok(text) = std::fs::read_to_string(&self.jsonl_path) else {
             return false;
         };
-        let mut remaining: Vec<TradeRecord> = text
-            .lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
+        let (mut remaining, broken) = Self::read_trade_log(&text);
         let Some(rec) = remaining
             .iter_mut()
             .find(|r| r.id == id && r.exit_time == exit_time && r.net_pnl_usd == booked_net)
@@ -457,18 +479,9 @@ impl TradeDb {
         // legs are not venue truth's subject; only the payout was estimated).
         rec.net_pnl_usd += delta;
         rec.gross_pnl_usd += delta;
-        let Ok(body) = remaining
-            .iter()
-            .map(serde_json::to_string)
-            .collect::<Result<Vec<_>, _>>()
-            .map(|lines| lines.join("\n"))
-        else {
+        let Some(out) = Self::render_log(&remaining, &broken) else {
             return false;
         };
-        let mut out = body;
-        if !out.is_empty() {
-            out.push('\n');
-        }
         if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
             return false;
         }
@@ -498,21 +511,17 @@ impl TradeDb {
         let Ok(text) = std::fs::read_to_string(&self.jsonl_path) else {
             return 0;
         };
-        let all: Vec<TradeRecord> = text
-            .lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
-        let (kept, removed): (Vec<TradeRecord>, Vec<TradeRecord>) = all
+        let (records, broken) = Self::read_trade_log(&text);
+        let (kept, removed): (Vec<TradeRecord>, Vec<TradeRecord>) = records
             .into_iter()
             .partition(|r| r.account_id.as_str() != account);
         if removed.is_empty() {
             return 0;
         }
         // #1253: a reset that leaves no file-level trace of the trades it
-        // wipes is an unarchived erasure. The removed rows land in a sibling
-        // archive BEFORE the rewrite; an archive write failure refuses the
-        // rewrite (the rows survive on disk — the same posture as a failed
-        // rewrite — and the reset's post-check then fails loudly).
+        // wipes is an unarchived erasure. The archive is a byte-level copy of
+        // the original file (issue #20): damaged rows land in the archive
+        // verbatim, not a re-serialized subset.
         let archive_path = self.jsonl_path.with_file_name(format!(
             "{}.reset-archive-{account}-{now_ms}.jsonl",
             self.jsonl_path
@@ -520,20 +529,7 @@ impl TradeDb {
                 .and_then(|s| s.to_str())
                 .unwrap_or("trades")
         ));
-        let archive_body = removed
-            .iter()
-            .filter_map(|r| serde_json::to_string(r).ok())
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        // 原子写与主文件同一纪律（store-layer 门禁把 jsonl 直写钉成声明性
-        // 债务——本归档写与下面的 rewrite 同类，一并进基线）。
-        //
-        // StoreApi 退化评估（issue #1257 follow-up）：trade_db.rs 是 JSONL-based
-        // trade log，StoreApi (SQLite) 是另一存储层（账户/风控/退出），两者
-        // 职责不重叠；归档写属于 trade-log 层，无法也不应经 StoreApi seam
-        // 退化，保持 jsonl::rewrite_atomic（与主文件同一原子重写纪律）。
-        if !crate::jsonl::rewrite_atomic(&archive_path, archive_body.as_bytes()) {
+        if !crate::jsonl::rewrite_atomic(&archive_path, text.as_bytes()) {
             tracing::warn!(
                 account = %account,
                 "issue 1253: trade-log archive write failed — the rewrite is \
@@ -541,18 +537,9 @@ impl TradeDb {
             );
             return 0;
         }
-        let Ok(body) = kept
-            .iter()
-            .map(serde_json::to_string)
-            .collect::<Result<Vec<_>, _>>()
-            .map(|lines| lines.join("\n"))
-        else {
+        let Some(out) = Self::render_log(&kept, &broken) else {
             return 0;
         };
-        let mut out = body;
-        if !out.is_empty() {
-            out.push('\n');
-        }
         // 与 retract 同一原子重写纪律：重置窗口的崩溃不能撕开成交史。
         if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
             tracing::warn!(
@@ -782,16 +769,19 @@ mod tests {
         assert_eq!(db2.summary_for("poly").total_trades, 0);
         assert_eq!(db2.summary_for("default").total_trades, 1);
         assert_eq!(db2.summary().total_trades, 1);
-        // #1253: the retract ARCHIVED the removed rows before the rewrite —
-        // the pre-reset history stays file-level auditable, the main log
-        // carries only the survivor.
+        // #1253 + issue #20: the retract archives a byte-level copy of the
+        // ORIGINAL file before the rewrite — damaged rows land verbatim, not a
+        // re-serialized subset. The pre-reset history stays file-level auditable;
+        // the main log carries only the survivor.
         let archive = dir.join("trades.reset-archive-poly-300.jsonl");
         let archived = std::fs::read_to_string(&archive).expect("archive exists");
         assert!(
             archived.contains("\"poly-1\""),
             "the removed row is in the archive"
         );
-        assert_eq!(archived.lines().count(), 1);
+        // Byte-level copy = every original line (default + poly), not just the
+        // removed rows.
+        assert_eq!(archived.lines().count(), 2);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap().lines().count(),
             1,
@@ -1045,6 +1035,177 @@ mod tests {
         assert_eq!(read_page(&path, 2, 0)[0]["id"], "q-1");
         // limit=0 的窗口里不含被跳过的最新行。
         assert_eq!(read_page(&path, 2, 0)[2]["id"], "q-3");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #20: `retract` must preserve lines that fail to deserialize — a
+    /// damaged row must never be silently deleted from the trade history.
+    #[test]
+    fn retract_preserves_unparseable_line() {
+        let dir = std::env::temp_dir().join(format!("bktrade-retract-broken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trades.jsonl");
+
+        let mut r1 = TradeRecord::from_closed(&closed());
+        r1.id = "a".into();
+        let mut r2 = TradeRecord::from_closed(&closed());
+        r2.id = "b".into();
+        let mut r3 = TradeRecord::from_closed(&closed());
+        r3.id = "c".into();
+
+        let mut text = String::new();
+        text.push_str(&serde_json::to_string(&r1).unwrap());
+        text.push('\n');
+        text.push_str("{\"broken\"");
+        text.push('\n');
+        text.push_str(&serde_json::to_string(&r2).unwrap());
+        text.push('\n');
+        text.push_str(&serde_json::to_string(&r3).unwrap());
+        text.push('\n');
+        std::fs::write(&path, &text).unwrap();
+
+        let mut db = TradeDb::new(&path);
+        db.retract(&r2, 400);
+
+        let final_text = std::fs::read_to_string(&path).unwrap();
+        let final_lines: Vec<&str> = final_text.lines().collect();
+        assert_eq!(
+            final_lines.len(),
+            3,
+            "two valid records + the broken line must remain"
+        );
+        assert!(
+            final_lines.iter().any(|l| l.contains("broken")),
+            "the damaged line must be preserved"
+        );
+        assert!(
+            final_lines.iter().any(|l| l.contains("\"id\":\"a\"")),
+            "r1 must remain"
+        );
+        assert!(
+            final_lines.iter().any(|l| l.contains("\"id\":\"c\"")),
+            "r3 must remain"
+        );
+        assert!(
+            !final_lines.iter().any(|l| l.contains("\"id\":\"b\"")),
+            "the retracted record must be gone"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #20: `retract_account` must preserve unparseable lines in BOTH
+    /// the archive (byte-level copy) and the rewritten main log.
+    #[test]
+    fn retract_account_preserves_unparseable_line() {
+        let dir = std::env::temp_dir().join(format!(
+            "bktrade-retract-acct-broken-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trades.jsonl");
+
+        let mut r1 = TradeRecord::from_closed(&closed());
+        r1.id = "a".into();
+        r1.account_id = AccountId::from("default");
+        let mut r2 = TradeRecord::from_closed(&closed());
+        r2.id = "b".into();
+        r2.account_id = AccountId::from("poly");
+
+        let mut text = String::new();
+        text.push_str(&serde_json::to_string(&r1).unwrap());
+        text.push('\n');
+        text.push_str("{\"broken\"");
+        text.push('\n');
+        text.push_str(&serde_json::to_string(&r2).unwrap());
+        text.push('\n');
+        std::fs::write(&path, &text).unwrap();
+
+        let mut db = TradeDb::new(&path);
+        let n = db.retract_account("poly", 400);
+        assert_eq!(n, 1, "poly's record was retracted");
+
+        // Main log: r1 + broken line (r2 gone).
+        let main_text = std::fs::read_to_string(&path).unwrap();
+        let main_lines: Vec<&str> = main_text.lines().collect();
+        assert_eq!(main_lines.len(), 2, "main log keeps r1 + broken line");
+        assert!(
+            main_lines.iter().any(|l| l.contains("broken")),
+            "broken line preserved in main log"
+        );
+        assert!(
+            main_lines.iter().any(|l| l.contains("\"id\":\"a\"")),
+            "r1 remains in main log"
+        );
+        assert!(
+            !main_lines.iter().any(|l| l.contains("\"id\":\"b\"")),
+            "r2 removed from main log"
+        );
+
+        // Archive: byte-level copy of the ORIGINAL file (r1 + broken + r2).
+        let archive = dir.join("trades.reset-archive-poly-400.jsonl");
+        let archived = std::fs::read_to_string(&archive).expect("archive exists");
+        let archived_lines: Vec<&str> = archived.lines().collect();
+        assert_eq!(
+            archived_lines.len(),
+            3,
+            "archive is a byte-level copy of the original"
+        );
+        assert!(
+            archived_lines.iter().any(|l| l.contains("broken")),
+            "broken line preserved in archive"
+        );
+        assert!(
+            archived_lines.iter().any(|l| l.contains("\"id\":\"a\"")),
+            "r1 in archive"
+        );
+        assert!(
+            archived_lines.iter().any(|l| l.contains("\"id\":\"b\"")),
+            "r2 in archive"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #20: when `rewrite_atomic` fails, `retract` must leave the file
+    /// byte-identical (no partial rewrite, no silent data loss).
+    #[test]
+    fn retract_failed_rewrite_leaves_file_unchanged() {
+        let dir = std::env::temp_dir().join(format!("bktrade-retract-ro-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trades.jsonl");
+
+        let mut r1 = TradeRecord::from_closed(&closed());
+        r1.id = "a".into();
+        let mut r2 = TradeRecord::from_closed(&closed());
+        r2.id = "b".into();
+        let text = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&r1).unwrap(),
+            serde_json::to_string(&r2).unwrap(),
+        );
+        std::fs::write(&path, &text).unwrap();
+
+        // Make the directory read-only so the atomic rewrite's temp file
+        // cannot be created.
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut p = std::fs::metadata(&dir).unwrap().permissions();
+        p.set_mode(0o500);
+        std::fs::set_permissions(&dir, p).unwrap();
+
+        let mut db = TradeDb::new(&path);
+        db.retract(&r1, 400);
+
+        let final_text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            final_text, text,
+            "a failed rewrite must not damage the previous generation"
+        );
+
+        // Restore permissions for cleanup.
+        let mut q = std::fs::metadata(&dir).unwrap().permissions();
+        q.set_mode(0o700);
+        std::fs::set_permissions(&dir, q).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

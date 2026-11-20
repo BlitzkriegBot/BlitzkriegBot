@@ -580,6 +580,17 @@ impl blitzkrieg_core::store::StoreApi for CoreSeamCarrier {
     ) -> Result<blitzkrieg_core::store::WriteOutcome, blitzkrieg_core::model::CoreError> {
         Err(seam_not_driven("put_setting"))
     }
+
+    fn save_market_plugin(
+        &self,
+        _plugin: Option<&str>,
+    ) -> Result<(), blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("save_market_plugin"))
+    }
+
+    fn load_market_plugin(&self) -> Result<Option<String>, blitzkrieg_core::model::CoreError> {
+        Err(seam_not_driven("load_market_plugin"))
+    }
 }
 
 // ── SqliteStore: the real DB backend over a tempdir database ────────────────

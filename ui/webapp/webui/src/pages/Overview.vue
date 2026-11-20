@@ -170,7 +170,7 @@ const trades = computed(() => {
  */
 const foldDiverges = computed(() => {
   const ab = accountBalance.value
-  if (!ab || ab.seed === null) return false
+  if (!ab || ab.seed === null || ab.net === null) return false
   return Math.abs(trades.value.net - ab.net) > 0.005
 })
 
@@ -455,7 +455,7 @@ const needsStrategyHint = computed(() => {
           v-if="accountBalance.equity !== null && accountBalance.fees > 0"
           class="mt-2 flex items-center gap-1.5 text-[10.5px] leading-snug text-faint-fg"
         >
-          <Tooltip :content="`手续费支出 ${money(accountBalance.fees)} · 毛利 ${money(accountBalance.gross)} —— 成交记录口径（成交行按费率模型折叠）${foldDiverges ? '；与账本口径相差 ' + money(Math.abs(trades.net - accountBalance.net)) + '，钱数以账本为准' : ''}。手续费是成本：从利润里扣，不改变本金。`">
+          <Tooltip :content="`手续费支出 ${money(accountBalance.fees)} · 毛利 ${money(accountBalance.gross)} —— 成交记录口径（成交行按费率模型折叠）${foldDiverges ? '；与账本口径相差 ' + money(Math.abs(trades.net - (accountBalance.net ?? 0))) + '，钱数以账本为准' : ''}。手续费是成本：从利润里扣，不改变本金。`">
             <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2">
               手续费支出 {{ money(accountBalance.fees) }}（成交口径）· 毛利 {{ money(accountBalance.gross) }}
             </span>

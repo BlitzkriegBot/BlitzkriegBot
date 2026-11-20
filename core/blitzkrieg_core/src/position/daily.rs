@@ -125,6 +125,11 @@ impl PositionManager {
     /// reached the effective cap. Sticky for the rest of the day so a later
     /// winning trade cannot re-open entries.
     pub fn daily_loss_tripped_for(&self, account: &str) -> bool {
+        // Fail-closed: an unreadable budget reads as tripped — entries frozen
+        // until the file is repaired or explicitly reset.
+        if self.daily_budget_unreadable {
+            return true;
+        }
         let daily = self.daily_bucket(account);
         if daily.tripped {
             return true;
@@ -156,6 +161,15 @@ impl PositionManager {
         equity_usd: Decimal,
         basis: EquityBasis,
     ) -> Option<DailyRoll> {
+        // Fail-closed: the daily-loss budget file was unparseable on boot.
+        // Do NOT stamp a fresh day and do NOT re-anchor `opening_equity_usd`
+        // to today's equity — that would erase realized losses through a
+        // half-written file. Entries stay refused via `can_open` until the
+        // file is repaired or explicitly reset (same stance as
+        // `GateReason::BootUnverifiable`).
+        if self.daily_budget_unreadable {
+            return None;
+        }
         let today = utc_day_index(now_ms);
         if self
             .daily_by_account

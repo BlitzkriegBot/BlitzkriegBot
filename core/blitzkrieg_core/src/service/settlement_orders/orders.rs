@@ -192,7 +192,25 @@ impl Core {
                 // E28: the reservation is released in the ORDER'S OWN book —
                 // a venue reject must never refund another account's cash.
                 if let Ok(l) = self.accounts.get_mut(&o.account_id) {
-                    l.release(id);
+                    let released = l.release(id);
+                    // The released notional must equal the order's outstanding
+                    // commitment; over-release creates cash, under-release
+                    // leaves a stray hold the audit halts on.
+                    let remaining = (o.size - o.filled_size).max(Decimal::ZERO);
+                    let expected = o.price.checked_mul(remaining).ok_or_else(|| {
+                        CoreError::new(
+                            CoreErrorCode::InvalidParams,
+                            format!("order {id} reservation notional overflow"),
+                        )
+                    })?;
+                    if released != expected {
+                        return Err(CoreError::new(
+                            CoreErrorCode::InvalidParams,
+                            format!(
+                                "order {id} release mismatch: ledger released {released}, outstanding commitment {expected}"
+                            ),
+                        ));
+                    }
                 }
                 // E-VA: the virtual hold leaves the pot with the real one.
                 self.virtual_release_order(&o);

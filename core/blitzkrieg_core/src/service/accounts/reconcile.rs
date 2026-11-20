@@ -767,7 +767,11 @@ impl Core {
             .ome
             .live_orders()
             .into_iter()
-            .filter(|o| o.venue_order_id.is_none() && o.status == OrderStatus::Pending)
+            // #12: `confirm_live` can mark an order Live before the venue
+            // answers with a venue id; such an order has no place-verdict
+            // source other than the place-timeout sweep, so it must be
+            // retired here too — otherwise its reservation leaks forever.
+            .filter(|o| o.venue_order_id.is_none() && o.status.is_live())
             .map(|o| (o.order_id.clone(), o.submitted_at_ms))
             .collect::<Vec<_>>()
         {

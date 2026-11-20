@@ -399,6 +399,44 @@ fn a_never_acked_timed_out_place_is_retired_by_the_sweep() {
     );
 }
 
+/// #12: a Live order whose venue never answered with a venue id leaks its
+/// reservation forever — `resolve_place_timeouts` must retire it once the
+/// place-timeout budget is past, and release the BUY reservation with it.
+#[test]
+fn live_order_without_venue_id_is_retired_on_place_timeout() {
+    // live_core: placements stay Pending until a venue ack — the exact
+    // pre-ack state #12 is about.
+    let mut c = live_core(dec!(10_000));
+    let (id, _st) = c
+        .place(order(FillPolicy::Maker, dec!(0.40), dec!(2), "k1"), 0, 10)
+        .unwrap();
+    assert_eq!(c.ome().get(&id).unwrap().status, OrderStatus::Pending);
+    assert_ne!(c.ledger().reserved(), Decimal::ZERO);
+
+    // The venue acked "live" but never sent a venue_order_id.
+    c.confirm_live(&id, 10).unwrap();
+    assert_eq!(c.ome().get(&id).unwrap().status, OrderStatus::Live);
+
+    // Past the place-timeout budget with no venue evidence at all.
+    c.reconcile(crate::reconcile::VenueSnapshot {
+        open_order_ids: vec![],
+        trades: vec![],
+        now_ms: 10 + PLACE_TIMEOUT_VERDICT_MS + 1,
+    })
+    .unwrap();
+
+    assert_eq!(
+        c.ome().get(&id).unwrap().status,
+        OrderStatus::Cancelled,
+        "Live without a venue id must still be retired by the place timeout (#12)"
+    );
+    assert_eq!(
+        c.ledger().reserved(),
+        Decimal::ZERO,
+        "the reservation is released together with the intent (#12)"
+    );
+}
+
 /// #462 fix 1, acceptance (kernel-side evidence): the escalation's
 /// cancel-then-place is serialized through ONE queue the bridge drains
 /// before it places anything new — `take_pending_venue_cancels` yields

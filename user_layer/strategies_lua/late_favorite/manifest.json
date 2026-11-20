@@ -46,7 +46,7 @@
     },
     "btc_only": {
       "type": "int",
-      "default": "1",
+      "default": "0",
       "min": "0",
       "max": "1"
     }

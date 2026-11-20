@@ -1510,12 +1510,12 @@ const journalOpen = ref(false)
     title="强平仓位"
     :lines="forceCloseTarget ? [
       `${forceCloseTarget.asset} ${forceCloseTarget.direction.toUpperCase()} · ${Number(forceCloseTarget.shares).toFixed(3)} 份`,
-      forceCloseExpired.value
+      forceCloseExpired
         ? '该市场已结算，下单通道已关：按兜底价平账入历史（写人工审计），现金真值由对账 sweep 跟平。'
         : '该操作会以人工退出原因记录，实盘将等待成交回报。',
     ] : []"
     action-label="确认强平"
-    :busy="busy.value"
+    :busy="busy"
     @confirm="runForceClose"
   />
 </template>

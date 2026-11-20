@@ -119,7 +119,7 @@ useChart(el, () => option.value)
   <div class="relative w-full" :style="{ height: `${props.height}px` }">
     <div ref="el" class="absolute inset-0" />
     <div
-      v-if="props.rows.length < 2"
+      v-if="props.rows.length === 0"
       class="absolute inset-0 grid place-items-center text-[11.5px] text-faint-fg"
     >
       暂无平仓交易

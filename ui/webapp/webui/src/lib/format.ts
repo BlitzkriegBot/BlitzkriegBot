@@ -118,3 +118,18 @@ export function shortAddr(addr?: string | null): string {
   if (!addr) return '—'
   return addr.length > 12 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr
 }
+
+/**
+ * 等宽数字容器类。所有 `num / money / signedMoney / pct / signedPct /
+ * cents / duration / mmss / clockTime / dateTime` 的输出只在等宽容器
+ * 内渲染：容器挂 `.figures`（styles/theme.css）→ 子孙继承
+ * `font-variant-numeric: tabular-nums`，数字按列对齐、数值变化不抖
+ * 宽度。
+ *
+ * 调用点不再逐元素补 `num` / `stat-num`；容器类缺失由
+ * `scripts/tabular-figures.check.mjs`（注册在 `check:all` 里）在构建时
+ * 拦住——漏挂让门禁变红，不靠评审。
+ *
+ * 此常量是模板与门禁的单一拼写来源，二者必须同步改动。
+ */
+export const FIGURES_CLASS = 'figures'

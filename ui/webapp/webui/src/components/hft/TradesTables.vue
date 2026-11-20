@@ -117,7 +117,7 @@ const activePositions = computed(() => props.positions)
   <!-- positions -->
   <div v-if="tab === 'positions'">
     <div v-if="activePositions.length" class="overflow-x-auto">
-      <table class="w-full min-w-[640px] text-[13px]">
+      <table class="w-full min-w-[640px] text-[13px] figures">
         <thead>
           <tr class="text-left">
             <th class="label-micro px-2 pb-2">资产</th>
@@ -178,7 +178,7 @@ const activePositions = computed(() => props.positions)
        进入历史订单」），不再在这里堆尸体充「当前挂单」。 -->
   <div v-else-if="tab === 'orders'">
     <div v-if="openOrderRows.length" class="overflow-x-auto">
-      <table class="w-full min-w-[1000px] text-[13px]">
+      <table class="w-full min-w-[1000px] text-[13px] figures">
         <thead>
           <tr class="text-left">
             <th class="label-micro px-2 pb-2">订单号</th>
@@ -246,7 +246,7 @@ const activePositions = computed(() => props.positions)
       <!-- 13 列在手机上不可压成一列一个字符：min-width 让表格保持
            可读列宽、在容器内横向滚动（与 Plugins 页表格同一模式），
            否则 min-content 按"每列一个折行点"计算，数字会竖排。 -->
-      <table class="w-full min-w-[1160px] text-[13px]">
+      <table class="w-full min-w-[1160px] text-[13px] figures">
         <thead>
           <tr class="text-left">
             <th class="label-micro px-2 pb-2">资产</th>

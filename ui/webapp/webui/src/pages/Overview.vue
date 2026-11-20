@@ -429,7 +429,7 @@ const needsStrategyHint = computed(() => {
             v-if="accountBalance.equity !== null"
             :content="`真实余额 = 本金 ${money(accountBalance.seed)} ＋ 账本净利 ${signedMoney(accountBalance.net)}（账本口径：该账户现金流水累计，含手续费）。手续费支出 ${money(accountBalance.fees)} 与毛利 ${money(accountBalance.gross)} 是成交记录口径（成交行按费率模型折叠），与账本口径可能有差额——它们描述成交史，不参与余额计算。`"
           >
-            <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2">
+            <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2 figures">
               本金 {{ money(accountBalance.seed) }} ＋ 账本净利 {{ signedMoney(accountBalance.net) }}
             </span>
           </Tooltip>
@@ -456,7 +456,7 @@ const needsStrategyHint = computed(() => {
           class="mt-2 flex items-center gap-1.5 text-[10.5px] leading-snug text-faint-fg"
         >
           <Tooltip :content="`手续费支出 ${money(accountBalance.fees)} · 毛利 ${money(accountBalance.gross)} —— 成交记录口径（成交行按费率模型折叠）${foldDiverges ? '；与账本口径相差 ' + money(Math.abs(trades.net - accountBalance.net)) + '，钱数以账本为准' : ''}。手续费是成本：从利润里扣，不改变本金。`">
-            <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2">
+            <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2 figures">
               手续费支出 {{ money(accountBalance.fees) }}（成交口径）· 毛利 {{ money(accountBalance.gross) }}
             </span>
           </Tooltip>
@@ -497,7 +497,7 @@ const needsStrategyHint = computed(() => {
         :tone="roundCanTrade ? 'up' : 'gold'"
       >
         <template #sub>
-          <span v-if="roundDisplay">{{ duration(roundDisplay.ageSec) }} 已过 · {{ duration(roundTimeLeft) }} 剩余</span>
+          <span v-if="roundDisplay" class="figures">{{ duration(roundDisplay.ageSec) }} 已过 · {{ duration(roundTimeLeft) }} 剩余</span>
           <!-- issue 488: 行情插件活跃但轮次空 = 数据源没到达（网络/代理），不是「等待插件」。 -->
           <span v-else-if="snap?.marketActiveName">行情插件 {{ snap?.marketActiveName }} 活跃，等待轮次数据</span>
           <span v-else>等待行情插件</span>

@@ -29,6 +29,7 @@ import Button from '@/components/ui/button/Button.vue'
 import Switch from '@/components/ui/switch/Switch.vue'
 import EmptyState from '@/components/ui/empty/EmptyState.vue'
 import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
+import RollingNumber from '@/components/ui/roll/RollingNumber.vue'
 
 const store = usePanelStore()
 
@@ -391,7 +392,7 @@ function metricsRows(b: EvolutionMetricsRow, v: EvolutionMetricsRow): MetricRow[
         <div class="px-1 text-[13px]">
           <div class="font-semibold" :class="engineOn ? '' : 'text-faint-fg'">
             <Clock class="mr-1 inline size-3.5 text-primary" />距下轮深度进化
-            <span class="num">{{ untilNext(evo?.status?.nextCycleAtMs) }}</span>
+            <span class="num"><RollingNumber :value="untilNext(evo?.status?.nextCycleAtMs)" /></span>
           </div>
           <p class="mt-0.5 text-[11.5px] text-faint-fg">
             {{ cycleDetail }} · {{ cyclePeriod }}
@@ -401,7 +402,7 @@ function metricsRows(b: EvolutionMetricsRow, v: EvolutionMetricsRow): MetricRow[
       <Card dense>
         <CardHeader label="待决提案" />
         <div class="px-1 text-[13px]">
-          <div class="text-[22px] font-bold num">{{ pending.length }}</div>
+          <div class="text-[22px] font-bold num"><RollingNumber :value="pending.length" /></div>
           <p class="mt-0.5 text-[11.5px] text-faint-fg">
             {{ evo
               ? (autoActive
@@ -457,7 +458,7 @@ function metricsRows(b: EvolutionMetricsRow, v: EvolutionMetricsRow): MetricRow[
             <span class="text-[11.5px] text-faint-fg num">
               {{ row.p.decidedAtMs ? `${dateTime(row.p.decidedAtMs)}（${cycleAgo(row.p.decidedAtMs)}）` : '采纳时间未上报' }}
             </span>
-            <Badge v-if="row.p.cycleSeq" variant="outline">第 {{ row.p.cycleSeq }} 轮深度进化</Badge>
+            <Badge v-if="row.p.cycleSeq" variant="outline">第 <RollingNumber :value="row.p.cycleSeq" /> 轮深度进化</Badge>
             <span class="text-[11.5px] text-faint-fg num">{{ row.p.id }}</span>
           </div>
 
@@ -482,11 +483,11 @@ function metricsRows(b: EvolutionMetricsRow, v: EvolutionMetricsRow): MetricRow[
           <p v-else class="mt-2 text-[12px] text-faint-fg">该提案未记录参数移动。</p>
 
           <p class="mt-2 text-[12px] text-muted-fg">
-            采纳时窗口：胜率 <span class="num">{{ winRatePct(row.p.baseline.winRate).toFixed(1) }}%</span>
-            → <span class="num font-semibold">{{ winRatePct(row.p.variant.winRate).toFixed(1) }}%</span>
-            · 净 PnL <span class="num">{{ fmtNet(row.p.baseline) }}</span>
-            → <span class="num font-semibold">{{ fmtNet(row.p.variant) }}</span>
-            · 样本 <span class="num">{{ num(row.p.sampleCount) }}</span> 笔
+            采纳时窗口：胜率 <span class="num"><RollingNumber :value="winRatePct(row.p.baseline.winRate).toFixed(1) + '%'" /></span>
+            → <span class="num font-semibold"><RollingNumber :value="winRatePct(row.p.variant.winRate).toFixed(1) + '%'" /></span>
+            · 净 PnL <span class="num"><RollingNumber :value="fmtNet(row.p.baseline)" /></span>
+            → <span class="num font-semibold"><RollingNumber :value="fmtNet(row.p.variant)" /></span>
+            · 样本 <span class="num"><RollingNumber :value="num(row.p.sampleCount)" /></span> 笔
           </p>
 
           <div class="mt-3">
@@ -551,7 +552,7 @@ function metricsRows(b: EvolutionMetricsRow, v: EvolutionMetricsRow): MetricRow[
 
           <p class="mt-2 text-[12.5px] text-muted-fg">
             评估器理由：<span class="font-semibold text-primary">{{ reasonLabel(p.reason) }}</span>
-            · 置信度 <span class="num font-semibold">{{ p.confidence.toFixed(2) }}</span>
+            · 置信度 <span class="num font-semibold"><RollingNumber :value="p.confidence" decimals="2" /></span>
             · 样本 <span class="num font-semibold">{{ num(p.sampleCount) }}</span> 笔
           </p>
 
@@ -591,12 +592,12 @@ function metricsRows(b: EvolutionMetricsRow, v: EvolutionMetricsRow): MetricRow[
               <tbody>
                 <tr v-for="row in metricsRows(p.baseline, p.variant)" :key="row.name" class="border-t border-line">
                   <td class="py-1.5 font-medium">{{ row.name }}</td>
-                  <td class="py-1.5 text-right num text-faint-fg">{{ row.base }}</td>
-                  <td class="py-1.5 text-right num font-bold">{{ row.variant }}</td>
+                  <td class="py-1.5 text-right num text-faint-fg"><RollingNumber :value="row.base" /></td>
+                  <td class="py-1.5 text-right num font-bold"><RollingNumber :value="row.variant" /></td>
                   <td
                     class="py-1.5 text-right num font-semibold"
                     :class="row.better === null ? 'text-faint-fg' : row.better ? 'text-up' : 'text-down'"
-                  >{{ row.delta || '—' }}</td>
+                  ><RollingNumber :value="row.delta || '—'" /></td>
                 </tr>
               </tbody>
             </table>

@@ -806,45 +806,36 @@ const switcherLocked = computed(
 
 // control / exit / exitText / startHint / stopHint / send 已在上方
 // useEngineControl(snap, engineUp) 调用点声明（issue 781 拆分）。
+// issue 456/52: 单笔仓位强平改用 ConfirmWordDialog（逐字输入 FORCE），
+// 不再用阻塞式 window.confirm；两分支（已结束市场兜底价清除 / 正常 flatten）
+// 共用同一确认门，确认后按过期标记分别调对应动词。
+const forceCloseConfirmOpen = ref(false)
+const forceCloseTarget = ref<Position | null>(null)
+const forceCloseExpired = ref(false)
 
 async function forceClose(position: Position): Promise<void> {
   if (!control.value.canStop || busy.value) return
-  // 已结束市场走 `positions.force_close` 清除动词，不再问场地：下单通道已
-  // 关，flatten 只会被 MARKET_HALTED 拒掉弹一屏错误横幅。清除 = 按兜底价
-  // 平账入历史（写人工审计），现金真值由对账 sweep 跟平——判定门在内核，
-  // 按钮只管点名。分流与按钮共用 positionExpired（行族长轮次公式，回落
-  // 倒计时）——两处判据分叉会把「按钮说可清、确认框按平仓」的行送错动词
-  //（issue 733）。remaining_sec 整数除法把到期前不足 1 秒截成 0，与轮次
-  // 公式的边界差由内核门兜住（两动词都过内核判定，分错只会被拒不会误清）。
-  const expired = positionExpired(position, identityDurSec.value ?? 900)
-  if (expired) {
-    const ok = window.confirm(
-      `确认清除该已结束市场的持仓？\n\n${position.asset} ${position.direction.toUpperCase()} · ${Number(position.shares).toFixed(3)} 份\n最后价 ${Number(position.currentPrice).toFixed(3)}\n\n市场已结算、下单通道已关：按兜底价平账入历史（写人工审计），现金真值由对账 sweep 跟平。`,
-    )
-    if (!ok) return
-    busy.value = true
-    cmdMsg.value = null
-    try {
-      const res = await api.forceClosePosition({ positionId: position.id })
-      cmdMsg.value = `已清除 ${position.asset}（兜底价 ${Number(res.price).toFixed(3)}）`
-      await store.refresh()
-    } catch (e) {
-      cmdMsg.value = e instanceof Error ? e.message : String(e)
-    } finally {
-      busy.value = false
-      setTimeout(() => { cmdMsg.value = null }, 5000)
-    }
-    return
-  }
-  const confirmed = window.confirm(
-    `确认强行平仓？\n\n${position.asset} ${position.direction.toUpperCase()} · ${Number(position.shares).toFixed(3)} 份\n当前价 ${Number(position.currentPrice).toFixed(3)}\n\n该操作会以人工退出原因记录，实盘将等待成交回报。`,
-  )
-  if (!confirmed) return
+  forceCloseTarget.value = position
+  forceCloseExpired.value = positionExpired(position, identityDurSec.value ?? 900)
+  forceCloseConfirmOpen.value = true
+}
+
+async function runForceClose(): Promise<void> {
+  const position = forceCloseTarget.value
+  forceCloseTarget.value = null
+  forceCloseConfirmOpen.value = false
+  if (!position) return
   busy.value = true
   cmdMsg.value = null
   try {
-    const res = await api.flatten(position.id)
-    cmdMsg.value = res.message ?? `已请求平仓 ${position.asset}`
+    if (forceCloseExpired.value) {
+      // 已结束市场：下单通道已关，按兜底价平账入历史（写人工审计）。
+      const res = await api.forceClosePosition({ positionId: position.id })
+      cmdMsg.value = `已清除 ${position.asset}（兜底价 ${Number(res.price).toFixed(3)}）`
+    } else {
+      const res = await api.flatten(position.id)
+      cmdMsg.value = res.message ?? `已请求平仓 ${position.asset}`
+    }
     await store.refresh()
   } catch (e) {
     cmdMsg.value = e instanceof Error ? e.message : String(e)
@@ -1475,6 +1466,22 @@ const journalOpen = ref(false)
     :busy="orderBusy"
     :error="orderErr"
     @confirm="doSweepExpired"
+  />
+
+  <!-- issue 52: 单笔仓位强平确认词门 —— 逐字输入 FORCE，取代 window.confirm。 -->
+  <ConfirmWordDialog
+    v-model:open="forceCloseConfirmOpen"
+    word="FORCE"
+    title="强平仓位"
+    :lines="forceCloseTarget ? [
+      `${forceCloseTarget.asset} ${forceCloseTarget.direction.toUpperCase()} · ${Number(forceCloseTarget.shares).toFixed(3)} 份`,
+      forceCloseExpired.value
+        ? '该市场已结算，下单通道已关：按兜底价平账入历史（写人工审计），现金真值由对账 sweep 跟平。'
+        : '该操作会以人工退出原因记录，实盘将等待成交回报。',
+    ] : []"
+    action-label="确认强平"
+    :busy="busy.value"
+    @confirm="runForceClose"
   />
 </template>
 

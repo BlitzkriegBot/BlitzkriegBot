@@ -19,6 +19,9 @@
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use crate::store::StoreApi;
 
 pub use blitzkrieg_market_api::account::{
     AccountId, DEFAULT_ACCOUNT_ID, DEFAULT_SEED_VENUE, default_account_id,
@@ -329,6 +332,10 @@ pub struct AccountLedgers {
     /// refuses unknown ids, and `repair_display_after_removal` re-derives
     /// when a removal takes the pointed-at account away.
     display: AccountId,
+    /// The shared StoreApi this book's ledgers write money facts through —
+    /// `None` until `install_store` runs at assembly (backtester and most
+    /// in-process tests stay memory-only, the honest refusal).
+    store: Option<Arc<dyn StoreApi>>,
 }
 
 impl AccountLedgers {
@@ -361,6 +368,7 @@ impl AccountLedgers {
             ledgers,
             active,
             display,
+            store: None,
         }
     }
 
@@ -417,6 +425,17 @@ impl AccountLedgers {
     pub fn reset_all_to_seed(&mut self, seed: rust_decimal::Decimal) {
         for ledger in self.ledgers.values_mut() {
             ledger.reset_to_seed(seed);
+        }
+    }
+
+    /// Wire the shared StoreApi into THIS book and every ledger it owns —
+    /// runtime-created accounts (`insert`) take the store through `self.store`
+    /// on the same path. Called once at core assembly; before it, every
+    /// ledger writes JSONL only and reports memory-only honestly.
+    pub(crate) fn install_store(&mut self, store: Option<Arc<dyn StoreApi>>) {
+        self.store = store.clone();
+        for ledger in self.ledgers.values_mut() {
+            ledger.set_store(store.clone());
         }
     }
 
@@ -935,7 +954,9 @@ impl AccountLedgers {
                 ),
             ));
         }
-        self.ledgers.insert(account.id.clone(), Ledger::new());
+        let mut ledger = Ledger::new();
+        ledger.set_store(self.store.clone());
+        self.ledgers.insert(account.id.clone(), ledger);
         // #778(a): account.create's binding path — `insert` bypasses
         // `set_venue`, so the shared-venue warning must fire here too.
         let id = account.id.clone();

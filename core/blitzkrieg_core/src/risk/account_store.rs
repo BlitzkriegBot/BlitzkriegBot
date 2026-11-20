@@ -75,6 +75,14 @@ pub struct AccountRiskDb {
     db: Database,
 }
 
+impl std::fmt::Debug for AccountRiskDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccountRiskDb")
+            .field("path", &self.db.path())
+            .finish()
+    }
+}
+
 impl AccountRiskDb {
     /// Open (creating/migrating if needed) the store at `path`.
     pub fn open(path: impl Into<std::path::PathBuf>) -> anyhow::Result<Self> {

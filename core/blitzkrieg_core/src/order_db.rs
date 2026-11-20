@@ -11,19 +11,30 @@
 //! not grow without bound across restarts.
 
 use crate::model::TrackedOrder;
+use crate::store::{MoneyFact, StoreApi, WriteOutcome};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// An order log bound to a JSONL path.
 pub struct OrderDb {
     jsonl_path: PathBuf,
+    store: Option<Arc<dyn StoreApi>>,
 }
 
 impl OrderDb {
     pub fn new(jsonl_path: impl AsRef<Path>) -> Self {
         Self {
             jsonl_path: jsonl_path.as_ref().to_path_buf(),
+            store: None,
         }
+    }
+
+    /// Wire the shared StoreApi — every appended order also lands as a
+    /// `MoneyFact::Order` fact beside the byte-identical JSONL append (R7).
+    pub(crate) fn with_store(mut self, store: Option<Arc<dyn StoreApi>>) -> Self {
+        self.store = store;
+        self
     }
 
     pub fn path(&self) -> &Path {
@@ -39,6 +50,19 @@ impl OrderDb {
                 path = %self.jsonl_path.display(),
                 "order jsonl append failed — order kept in memory, not durable; trading continues"
             );
+        }
+        if let Some(ref s) = self.store {
+            match s.append_money_fact(&MoneyFact::Order(order)) {
+                Ok(WriteOutcome::Persisted) => {}
+                Ok(outcome) => tracing::warn!(
+                    order_id = %order.order_id,
+                    "order money_fact not persisted ({outcome:?}) — JSONL row kept, trading continues"
+                ),
+                Err(e) => tracing::warn!(
+                    order_id = %order.order_id,
+                    "order money_fact append refused — JSONL row kept, store write failed: {e:?}"
+                ),
+            }
         }
     }
 
@@ -176,6 +200,28 @@ mod tests {
         let loaded = db.load();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].order_id, "new");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_routes_order_through_store_and_keeps_jsonl() {
+        let dir = std::env::temp_dir().join(format!("orderdb-money-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (store, writes) = crate::store::test_support::RecordingStore::new();
+        let db = OrderDb::new(dir.join("orders.jsonl")).with_store(Some(store));
+
+        db.append(&order("o1", "k1", OrderStatus::Live));
+
+        let log = writes.lock().unwrap().clone();
+        assert!(
+            log.iter().any(|s| s == "money:order"),
+            "append must route the order as a money fact: {log:?}"
+        );
+        // R7: the JSONL row is still written, byte-identical to pre-seam behavior.
+        let loaded = db.load();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].order_id, "o1");
+        assert_eq!(loaded[0].status, OrderStatus::Live);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

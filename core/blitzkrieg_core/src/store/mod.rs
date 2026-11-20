@@ -19,6 +19,7 @@ pub use sqlite::SqliteStore;
 
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 
 use crate::account::config::CrossVenueArbConfig;
 use crate::account::{AccountId, AccountStatus, CredentialKeys};
@@ -35,7 +36,7 @@ pub type FieldChanges = Vec<(String, String)>;
 /// keys or files. One method = one domain write; composite invariants
 /// (plan-first validation, persist-before-memory ordering, audit lines)
 /// stay in the service layer exactly where they were.
-pub trait StoreApi: Send + Sync {
+pub trait StoreApi: Debug + Send + Sync {
     // ── Account book ─────────────────────────────────────────────────────
 
     /// Whether this store accepts account-book writes at all. `false` =
@@ -44,68 +45,120 @@ pub trait StoreApi: Send + Sync {
     /// The IPC strategy-enable mirror gate reads this instead of probing
     /// the config pair per call (the pre-seam `account_env_write_paths()`
     /// check, moved behind the seam).
-    fn account_writes_enabled(&self) -> bool;
+    fn account_writes_enabled(&self) -> bool {
+        false
+    }
 
     /// The account↔venue binding write (`account.venue.set`); an empty
     /// `venue` unbinds. Refuses while the legacy accounts toml exists.
-    fn save_account_venue(&self, account_id: &str, venue: &str) -> Result<(), CoreError>;
+    fn save_account_venue(&self, _account_id: &str, _venue: &str) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_account_venue: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// `account.create`: append the id with its display name, optional
     /// venue binding and the plugin's credential VARIABLE NAMES (values
     /// belong to [`StoreApi::save_credentials`], never here).
     fn save_account_create(
         &self,
-        account_id: &str,
-        name: Option<&str>,
-        venue: Option<&str>,
-        credential_keys: &CredentialKeys,
-    ) -> Result<(), CoreError>;
+        _account_id: &str,
+        _name: Option<&str>,
+        _venue: Option<&str>,
+        _credential_keys: &CredentialKeys,
+    ) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_account_create: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// `account.remove`: drop the id and sweep every row it owns. Refuses
     /// an unknown id, an emptying removal, or a legacy-toml presence; the
     /// display pointer is re-derived when it named the removed id.
-    fn remove_account(&self, account_id: &str) -> Result<(), CoreError>;
+    fn remove_account(&self, _account_id: &str) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "remove_account: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// The trading-switch write (`account.trading.set`). `true` clears the
     /// explicit-off row (absence is the "trading" spelling).
-    fn save_account_trading(&self, account_id: &str, enabled: bool) -> Result<(), CoreError>;
+    fn save_account_trading(&self, _account_id: &str, _enabled: bool) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_account_trading: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// The lifecycle-status write (`account.status.set`). `Active` clears
     /// the row (absence is "active").
     fn save_account_status(
         &self,
-        account_id: &str,
-        status: &AccountStatus,
-    ) -> Result<(), CoreError>;
+        _account_id: &str,
+        _status: &AccountStatus,
+    ) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_account_status: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// The unfreeze write (`account.unfreeze`): `Active` + trading-on are
     /// both spelled by absence, so this is ONE removal — no half-state.
-    fn save_account_active(&self, account_id: &str) -> Result<(), CoreError>;
+    fn save_account_active(&self, _account_id: &str) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_account_active: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// The display-pointer write (`display.account.set`).
-    fn save_display_account(&self, account_id: &str) -> Result<(), CoreError>;
+    fn save_display_account(&self, _account_id: &str) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_display_account: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// The strategy-enablement write (`account.strategies.set`). An empty
     /// list clears the row (absence = unrestricted).
     fn save_account_strategies(
         &self,
-        account_id: &str,
-        strategies: &[String],
-    ) -> Result<(), CoreError>;
+        _account_id: &str,
+        _strategies: &[String],
+    ) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_account_strategies: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// The round-family set write (`account.rounds.set`). An empty list
     /// clears the row (absence = no declared family set).
-    fn save_account_rounds(&self, account_id: &str, rounds: &[i64]) -> Result<(), CoreError>;
+    fn save_account_rounds(&self, _account_id: &str, _rounds: &[i64]) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_account_rounds: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// The venue's first reported equity (`realign_venue_cash`): the
     /// account's opening principal with source + timestamp, written exactly
     /// once (an already-recorded value is never overwritten).
     fn save_account_opening_equity(
         &self,
-        account_id: &str,
-        equity: Decimal,
-        at_ms: i64,
-    ) -> Result<(), CoreError>;
+        _account_id: &str,
+        _equity: Decimal,
+        _at_ms: i64,
+    ) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_account_opening_equity: no backend implements this yet".to_string(),
+        ))
+    }
 
     // ── Risk: the six systemic bounds ────────────────────────────────────
 
@@ -115,29 +168,57 @@ pub trait StoreApi: Send + Sync {
     /// honestly reported by its own `persisted`).
     fn save_risk_bounds(
         &self,
-        account_id: Option<&str>,
-        fields: &FieldChanges,
-    ) -> Result<bool, CoreError>;
+        _account_id: Option<&str>,
+        _fields: &FieldChanges,
+    ) -> Result<bool, CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_risk_bounds: no backend implements this yet".to_string(),
+        ))
+    }
 
     // ── Exit discipline ──────────────────────────────────────────────────
 
     /// The exit-discipline write (`risk.setExit`) for one account. Same
     /// return contract as [`StoreApi::save_risk_bounds`].
-    fn save_exit(&self, account_id: Option<&str>, fields: &FieldChanges)
-    -> Result<bool, CoreError>;
+    fn save_exit(
+        &self,
+        _account_id: Option<&str>,
+        _fields: &FieldChanges,
+    ) -> Result<bool, CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_exit: no backend implements this yet".to_string(),
+        ))
+    }
 
     // ── Cross-venue arb legs ─────────────────────────────────────────────
 
     /// `arb.config.set`: the five arb-leg facts as one write.
-    fn save_arb_config(&self, cfg: &CrossVenueArbConfig) -> Result<(), CoreError>;
+    fn save_arb_config(&self, _cfg: &CrossVenueArbConfig) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_arb_config: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// `arb.config.clear`: remove the arb-leg facts.
-    fn clear_arb_config(&self) -> Result<(), CoreError>;
+    fn clear_arb_config(&self) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "clear_arb_config: no backend implements this yet".to_string(),
+        ))
+    }
 
     /// `arb.config.get`: the boot read-back. Returns `None` when no section is
     /// persisted (the honest "unconfigured" answer). Reads the single
     /// `arb_pairs` row (id = 1).
-    fn load_arb_config(&self) -> Result<Option<crate::account::CrossVenueArbConfig>, CoreError>;
+    fn load_arb_config(&self) -> Result<Option<crate::account::CrossVenueArbConfig>, CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "load_arb_config: no backend implements this yet".to_string(),
+        ))
+    }
 
     // ── Execution-policy sections ────────────────────────────────────────
 
@@ -148,9 +229,11 @@ pub trait StoreApi: Send + Sync {
     /// write face owned). Returns the footprint for the reload snapshot.
     fn save_policy_section(
         &self,
-        account_id: &str,
-        state: &BTreeMap<String, Option<String>>,
-    ) -> Result<(), String>;
+        _account_id: &str,
+        _state: &BTreeMap<String, Option<String>>,
+    ) -> Result<(), String> {
+        Err("save_policy_section: no backend implements this yet".into())
+    }
 
     // ── Per-account round duration ───────────────────────────────────────
 
@@ -158,9 +241,14 @@ pub trait StoreApi: Send + Sync {
     /// length; `None` clears the override (reset to the default grid).
     fn save_account_round_duration(
         &self,
-        account_id: &str,
-        seconds: Option<i64>,
-    ) -> Result<(), CoreError>;
+        _account_id: &str,
+        _seconds: Option<i64>,
+    ) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_account_round_duration: no backend implements this yet".to_string(),
+        ))
+    }
 
     // ── Credentials ──────────────────────────────────────────────────────
 
@@ -175,9 +263,14 @@ pub trait StoreApi: Send + Sync {
     /// `reset_keys` is NOT a reset request).
     fn save_credentials(
         &self,
-        vars: &BTreeMap<String, String>,
-        reset_keys: &[&str],
-    ) -> Result<(), CoreError>;
+        _vars: &BTreeMap<String, String>,
+        _reset_keys: &[&str],
+    ) -> Result<(), CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_credentials: no backend implements this yet".to_string(),
+        ))
+    }
 
     // ── Money facts (issue #1278 — CONTRACT STAGE, NO CALLERS) ───────────
     //
@@ -203,29 +296,32 @@ pub trait StoreApi: Send + Sync {
     ///
     /// `Err` = the backend was ASKED and refused/failed. `Ok(MemoryOnly)` =
     /// the fact is authoritative in memory for this run and is NOT durable —
-    /// honest degradation, never silent success.
-    #[allow(dead_code)] // #1278 契约阶段，待审批后接线
+    /// honest degradation, never silent success. [`SqliteStore`](crate::store::SqliteStore)
+    /// lands every fact in the append-only `money_facts` table and reports
+    /// [`WriteOutcome::Persisted`]; a core assembled without a store (`None`)
+    /// is reported as [`MemoryOnlyReason::NoStoreConfigured`] by the caller
+    /// seam, never as silent success.
     fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
         Err(CoreError::new(
             CoreErrorCode::Internal,
             format!(
-                "append_money_fact({}): no backend implements this yet — #1278 contract stage",
+                "append_money_fact({}): no backend implements this yet",
                 fact.kind()
             ),
         ))
     }
 
     /// Upsert (`Some(value)`) or delete (`None`) one account-scoped setting.
-    /// The `StoreApi`-typed spelling of `AccountRiskDb::save_setting`
-    /// (`risk/account_store.rs`), which today carries bare SQL and is reached
-    /// only through the `account_risk_db: Option<AccountRiskDb>` side door —
-    /// not through this trait.
+    /// [`SqliteStore`](crate::store::SqliteStore) lands it in `account_settings`
+    /// (ensuring the account row first) and reports [`WriteOutcome::Persisted`].
     ///
     /// `AccountScope` rather than a bare `&str` because an unscoped setting
     /// write is exactly the bug class #1221/#1223 were: a write that lands on
     /// a guessed account. Making the account a required, typed argument means
     /// a future caller cannot forget it.
-    #[allow(dead_code)] // #1278 契约阶段，待审批后接线
+    ///
+    /// Never the VALUE in error text: a setting write may carry a secret-shaped
+    /// string (DEV §7 / R2), and an error text is a log line.
     fn put_setting(
         &self,
         scope: AccountScope<'_>,
@@ -235,10 +331,8 @@ pub trait StoreApi: Send + Sync {
         Err(CoreError::new(
             CoreErrorCode::Internal,
             format!(
-                "put_setting({}, {key}, {}): no backend implements this yet — #1278 contract stage",
+                "put_setting({}, {key}, {}): no backend implements this yet",
                 scope.account.as_str(),
-                // Never the VALUE: a setting write may carry a secret-shaped
-                // string (DEV §7 / R2), and an error text is a log line.
                 if value.is_some() { "upsert" } else { "delete" }
             ),
         ))
@@ -255,7 +349,6 @@ pub trait StoreApi: Send + Sync {
 /// What one durable write actually did. Deliberately NOT a `bool`: `true`
 /// reads as "fine" at every call site, which is how the current four money
 /// write faces lost the distinction in the first place.
-#[allow(dead_code)] // #1278 契约阶段，待审批后接线
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteOutcome {
     /// The fact is on disk (or in the carrier) and survives a restart.
@@ -287,14 +380,13 @@ pub enum MemoryOnlyReason {
 /// The account a scoped write targets. A struct rather than a bare `&str` so
 /// that adding scope (venue, book, round) later does not re-break every
 /// implementor, and so a call site physically cannot omit the account.
-#[allow(dead_code)] // #1278 契约阶段，待审批后接线
 #[derive(Debug, Clone, Copy)]
 pub struct AccountScope<'a> {
     pub account: &'a AccountId,
 }
 
-#[allow(dead_code)] // #1278 契约阶段，待审批后接线
 impl<'a> AccountScope<'a> {
+    #[allow(dead_code)] // 契约预留：未来扩展作用域时启用
     pub fn new(account: &'a AccountId) -> Self {
         Self { account }
     }
@@ -310,7 +402,6 @@ impl<'a> AccountScope<'a> {
 /// - `Fill` — `trade_db::TradeDb::record` (`src/trade_db.rs`)
 /// - `Ledger` — `Ledger::apply_tagged`'s journal append (`src/ledger.rs`)
 /// - `Settlement` — `SettlementJournal::append` (`src/settlement.rs`)
-#[allow(dead_code)] // #1278 契约阶段，待审批后接线
 #[derive(Debug, Clone, Copy)]
 pub enum MoneyFact<'a> {
     Order(&'a crate::model::TrackedOrder),
@@ -342,25 +433,75 @@ impl MoneyFact<'_> {
 /// this face exists for that alone.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
-    use super::StoreApi;
+    use super::{AccountScope, MoneyFact, StoreApi, WriteOutcome};
+    use crate::model::CoreError;
+    use std::sync::Arc;
 
     /// Install an arbitrary [`StoreApi`] backend on a core (replacing any
     /// assembly-wired store). The caller keeps its own read-back handle —
     /// the core has no store getter, by design: production reads go through
     /// the domain faces, not the carrier.
-    pub fn install_store(core: &mut crate::service::Core, store: Box<dyn StoreApi>) {
+    pub fn install_store(core: &mut crate::service::Core, store: Arc<dyn StoreApi>) {
         core.store = Some(store);
+    }
+
+    /// Test-only recording carrier: `append_money_fact`/`put_setting` record
+    /// the call and report `Persisted`; every other domain keeps the trait's
+    /// honest `Err` default. The four money-write faces' wiring tests use it
+    /// to assert the route without touching a file.
+    #[derive(Debug)]
+    pub struct RecordingStore {
+        writes: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl RecordingStore {
+        #[allow(clippy::new_ret_no_self)]
+        pub fn new() -> (Arc<dyn StoreApi>, Arc<std::sync::Mutex<Vec<String>>>) {
+            let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+            (
+                Arc::new(Self {
+                    writes: writes.clone(),
+                }) as Arc<dyn StoreApi>,
+                writes,
+            )
+        }
+
+        fn log(&self, what: &str) {
+            self.writes.lock().unwrap().push(what.to_string());
+        }
+    }
+
+    impl StoreApi for RecordingStore {
+        fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
+            self.log(&format!("money:{}", fact.kind()));
+            Ok(WriteOutcome::Persisted)
+        }
+
+        fn put_setting(
+            &self,
+            scope: AccountScope<'_>,
+            key: &str,
+            value: Option<&str>,
+        ) -> Result<WriteOutcome, CoreError> {
+            self.log(&format!(
+                "setting:{}={key}={value:?}",
+                scope.account.as_str()
+            ));
+            Ok(WriteOutcome::Persisted)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{FillPolicy, OrderRole, OrderStatus, Side, TrackedOrder};
+    use rust_decimal_macros::dec;
 
     /// The in-memory test backend: tests that want to observe writes
     /// without touching a file implement the trait over a recording map.
     /// Every method accepts and records.
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     struct MemStore {
         accounts_enabled: bool,
         writes: std::sync::Mutex<Vec<String>>,
@@ -561,6 +702,24 @@ mod tests {
             ));
             Ok(())
         }
+
+        fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
+            self.log(format!("money:{}", fact.kind()));
+            Ok(WriteOutcome::Persisted)
+        }
+
+        fn put_setting(
+            &self,
+            scope: AccountScope<'_>,
+            key: &str,
+            value: Option<&str>,
+        ) -> Result<WriteOutcome, CoreError> {
+            self.log(format!(
+                "setting:{}={key}={value:?}",
+                scope.account.as_str()
+            ));
+            Ok(WriteOutcome::Persisted)
+        }
     }
 
     #[test]
@@ -606,8 +765,16 @@ mod tests {
             &[],
         )
         .unwrap();
+        s.append_money_fact(&MoneyFact::Order(&order_for_money_test()))
+            .unwrap();
+        s.put_setting(
+            AccountScope::new(&AccountId::from("paper")),
+            "POLICY_TEST",
+            Some("1"),
+        )
+        .unwrap();
         let w = s.writes();
-        assert_eq!(w.len(), 16, "one line per domain write: {w:?}");
+        assert_eq!(w.len(), 18, "one line per domain write: {w:?}");
         assert_eq!(w[0], "venue:paper=kalshi");
         assert_eq!(w[1], "trading:paper=false");
         assert_eq!(w[2], "status:paper=frozen");
@@ -624,11 +791,49 @@ mod tests {
         assert_eq!(w[13], "round-duration:paper=3600");
         assert_eq!(w[14], "round-duration:paper=reset");
         assert_eq!(w[15], "credentials:[\"KALSHI_API_KEY\"]/[]");
+        assert_eq!(w[16], "money:order");
+        assert_eq!(w[17], "setting:paper=POLICY_TEST=Some(\"1\")");
     }
 
     #[test]
     fn mem_store_can_report_persistence_disabled() {
         let s = MemStore::recording(false);
         assert!(!s.account_writes_enabled());
+    }
+
+    /// A complete TrackedOrder for money-fact tests (order_db.rs keeps an
+    /// identical private helper — the two modules must not share fixtures).
+    fn order_for_money_test() -> TrackedOrder {
+        TrackedOrder {
+            order_id: "o1".into(),
+            internal_key: "k1".into(),
+            strategy: "spread_arb".into(),
+            asset: "BTC".into(),
+            direction: "up".into(),
+            token_id: "tok".into(),
+            condition_id: "cond".into(),
+            side: Side::Buy,
+            mode: FillPolicy::MakerThenTaker,
+            role: OrderRole::Maker,
+            price: dec!(0.43),
+            size: dec!(10),
+            filled_size: Decimal::ZERO,
+            avg_fill_price: None,
+            status: OrderStatus::Pending,
+            round_slot: 1,
+            submitted_at_ms: 1,
+            updated_at_ms: 1,
+            decision_at_ms: 1,
+            execute_at_ms: 1,
+            report_at_ms: 1,
+            venue_order_id: Some("0xabc".into()),
+            place_uncertain: false,
+            escalate_at_ms: None,
+            maker_timeout_ms: 0,
+            account_id: AccountId::from("paper"),
+            venue: String::new(),
+            round_duration_sec: 0,
+            rejected_reason: None,
+        }
     }
 }

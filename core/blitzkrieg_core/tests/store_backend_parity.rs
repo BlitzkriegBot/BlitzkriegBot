@@ -179,7 +179,7 @@ pub trait CredentialsStore {
 /// The in-memory backend: the same domain contract over plain maps. No
 /// disk, no env, no .env — this is the backend the acceptance's "swap the
 /// backend = change one assembly line" promises is interchangeable.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct MemoryStore {
     accounts: std::sync::Mutex<BTreeMap<String, MemAccount>>,
     round_duration: std::sync::Mutex<Option<i64>>,
@@ -189,7 +189,7 @@ pub struct MemoryStore {
     credentials: std::sync::Mutex<Vec<(String, String)>>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 struct MemAccount {
     name: Option<String>,
     venue: String,
@@ -395,6 +395,7 @@ fn seam_not_driven(op: &str) -> blitzkrieg_core::model::CoreError {
 /// write face below is what a store-carrying core hits — but before this
 /// impl no test ever drove `apply_systemic_limits` through it.
 #[cfg(feature = "test-support")]
+#[derive(Debug)]
 struct CoreSeamCarrier(std::sync::Arc<MemoryStore>);
 
 #[cfg(feature = "test-support")]
@@ -1387,7 +1388,7 @@ fn apply_systemic_limits_drives_the_store_seam_branch() {
     );
 
     let mem = std::sync::Arc::new(MemoryStore::new());
-    install_store(&mut core, Box::new(CoreSeamCarrier(mem.clone())));
+    install_store(&mut core, std::sync::Arc::new(CoreSeamCarrier(mem.clone())));
 
     let reply = core
         .apply_systemic_limits(

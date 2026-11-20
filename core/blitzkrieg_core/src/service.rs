@@ -13,6 +13,7 @@ use crate::sim::Book;
 use blitzkrieg_market_api::net::now_ms;
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 mod accounts;
@@ -94,7 +95,7 @@ pub struct Core {
     /// 的持久化后端；`.env` 对内核只读。`None` = persistence disabled
     /// for this core (backtester, most in-process tests) — the standard
     /// "persistence is disabled" refusals read this.
-    pub(crate) store: Option<Box<dyn crate::store::StoreApi>>,
+    pub(crate) store: Option<Arc<dyn crate::store::StoreApi>>,
     /// Per-strategy consecutive-loss breakers (KI-10 / D-18 A). The daily loss
     /// cap and kill switch stay global — see [`LossBreakers`].
     breaker: LossBreakers,

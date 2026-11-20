@@ -494,3 +494,31 @@ fn a_market_that_ended_before_we_entered_is_never_tracked() {
     assert_eq!(book.tracked_markets(), 1);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+#[test]
+fn book_routes_settlement_through_store_and_keeps_journal_line() {
+    let (store, writes) = crate::store::test_support::RecordingStore::new();
+    let mut book = SettlementBook::new(None).with_store(Some(store));
+
+    let position = position("p1", "tok", dec!(10), 1_000);
+    let resolution = MarketResolution {
+        condition_id: "cond-1".into(),
+        resolved: true,
+        payouts: vec![("tok".into(), dec!(1.0))],
+        neg_risk: false,
+        source: "core".into(),
+    };
+    let booking = booking_for(&position, &resolution).expect("position covered by the resolution");
+    let settled = book
+        .book(&booking, &resolution, 2_000)
+        .expect("first booking applies");
+
+    let log = writes.lock().unwrap().clone();
+    assert!(
+        log.iter().any(|s| s == "money:settlement"),
+        "book must route the settlement as a money fact: {log:?}"
+    );
+    assert_eq!(book.applied_count(), 1);
+    assert_eq!(settled.claim_id, "cond-1");
+    assert!(book.record(&settled.key).is_some());
+}

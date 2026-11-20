@@ -14,6 +14,7 @@
 use crate::model::Mode;
 use crate::position::OpenPosition;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// issue #953 (the snapshot follows the book): the DEFAULT open-position
 /// snapshot is per-run-mode, closing the same gap the trade log's split
@@ -41,13 +42,20 @@ pub struct PositionDb {
     /// fill already folded into the position book). Kept out of the JSONL so
     /// the typed position file stays pure.
     recon_path: PathBuf,
+    /// #14: the last serialized snapshot we actually wrote. `save` is
+    /// invoked by `persist_positions` from every settlement path (often
+    /// several times for a single trade) while the Core lock is held, and
+    /// each invocation used to rewrite the whole book, fsync it, and copy
+    /// it to `.bak`. If the book did not change since the last save we skip
+    /// all of that — coalescing the per-trade persist storm into one write.
+    last_saved: Mutex<Option<String>>,
 }
 
 impl PositionDb {
     pub fn new(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
         let recon_path = path.with_extension("recon");
-        Self { path, recon_path }
+        Self { path, recon_path, last_saved: Mutex::new(None) }
     }
 
     pub fn path(&self) -> &Path {
@@ -69,6 +77,19 @@ impl PositionDb {
                 buf.push('\n');
             }
         }
+        // #14: coalesce identical re-saves — persist_positions runs once per
+        // settlement path and a single trade can walk several of them, so the
+        // same snapshot was rewritten + fsynced + copied to .bak under the
+        // Core lock on every call. An unchanged book costs no IO at all.
+        if self
+            .last_saved
+            .lock()
+            .unwrap()
+            .as_deref()
+            .is_some_and(|last| last == buf.as_str())
+        {
+            return;
+        }
         // #463: the write is atomic (temp + fsync + rename) AND mirrors the
         // last GOOD generation into `positions.bak` — the snapshot the loader
         // falls back to when the canonical file is unreadable. The position
@@ -76,6 +97,7 @@ impl PositionDb {
         // it carries a backup.
         if crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
             let _ = std::fs::copy(&self.path, self.path.with_extension("bak"));
+            *self.last_saved.lock().unwrap() = Some(buf);
         } else {
             tracing::warn!(
                 path = %self.path.display(),
@@ -330,6 +352,43 @@ mod tests {
     /// acceptance C), dry derives `.dry.jsonl` beside it so a
     /// same-directory live→dry switch boots into the dry book's OWN file.
     /// Mirrors the trade-log split's contract test.
+    /// #14: re-saving an identical snapshot performs no IO — the second
+    /// save leaves the canonical file and `.bak` untouched (no rewrite, no
+    /// fsync, no copy), while a changed snapshot is still written and the
+    /// book loads correctly either way.
+    #[test]
+    fn an_unchanged_snapshot_is_not_rewritten() {
+        use std::fs::metadata;
+        let dir = std::env::temp_dir().join(format!("positiondb-coalesce-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = PositionDb::new(dir.join("positions.jsonl"));
+
+        db.save(&[pos("hft-1", dec!(10))]);
+        let first = metadata(db.path()).unwrap().modified().unwrap();
+        let bak_first = metadata(db.path().with_extension("bak")).unwrap().modified().unwrap();
+
+        // Same content again: no rewrite must happen.
+        db.save(&[pos("hft-1", dec!(10))]);
+        let second = metadata(db.path()).unwrap().modified().unwrap();
+        let bak_second = metadata(db.path().with_extension("bak")).unwrap().modified().unwrap();
+        assert_eq!(
+            first, second,
+            "an identical re-save must not rewrite the canonical file"
+        );
+        assert_eq!(
+            bak_first, bak_second,
+            "an identical re-save must not rewrite .bak"
+        );
+
+        // A changed snapshot IS written, and loads correctly.
+        db.save(&[pos("hft-1", dec!(10)), pos("hft-2", dec!(4))]);
+        let changed = metadata(db.path()).unwrap().modified().unwrap();
+        assert_ne!(first, changed, "a changed snapshot must be rewritten");
+        assert_eq!(db.load().len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn default_position_log_path_splits_by_mode() {
         assert_eq!(

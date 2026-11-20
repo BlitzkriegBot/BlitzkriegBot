@@ -283,7 +283,7 @@ fn arb_core_live(pot: Decimal, default_venue: Option<&str>, nofast: bool) -> Cor
         .expect("arb-b does not exist yet — the fixture account inserts");
     // LIVE cash is a per-account fact: the B leg's book must hold the pot too
     // (the equity gate reads the REQUEST'S OWN account).
-    c.accounts_mut()
+    let _ = c.accounts_mut()
         .get_mut(&AccountId::from("arb-b"))
         .expect("arb-b just inserted")
         .set_balance(pot);

@@ -318,13 +318,31 @@ impl Core {
                 // its own, so it goes where the process funder says — visible
                 // in the log, never silently swallowed.
                 if account_id.is_empty() {
-                    self.accounts
+                    if let Err(e) = self
+                        .accounts
                         .active_ledger_mut()
-                        .credit_redemption(payout, &result.id);
+                        .credit_redemption(payout, &result.id)
+                    {
+                        tracing::error!(
+                            claim = %result.id,
+                            account = %account_id,
+                            error = %e,
+                            "active ledger redemption store write failed — payout NOT credited"
+                        );
+                    }
                 } else {
                     let a = AccountId::from(account_id.as_str());
                     match self.accounts.get_mut(&a) {
-                        Ok(l) => l.credit_redemption(payout, &result.id),
+                        Ok(l) => {
+                            if let Err(e) = l.credit_redemption(payout, &result.id) {
+                                tracing::error!(
+                                    claim = %result.id,
+                                    account = %account_id,
+                                    error = %e,
+                                    "redemption store write failed — payout NOT credited"
+                                );
+                            }
+                        }
                         Err(e) => {
                             tracing::warn!(
                                 claim = %result.id,
@@ -332,9 +350,18 @@ impl Core {
                                 error = %e,
                                 "redemption claim names an unconfigured account — payout credited to the active book (0.3 fallback)"
                             );
-                            self.accounts
+                            if let Err(e) = self
+                                .accounts
                                 .active_ledger_mut()
-                                .credit_redemption(payout, &result.id);
+                                .credit_redemption(payout, &result.id)
+                            {
+                                tracing::error!(
+                                    claim = %result.id,
+                                    account = %account_id,
+                                    error = %e,
+                                    "fallback active ledger redemption store write failed — payout NOT credited"
+                                );
+                            }
                         }
                     }
                 }
@@ -440,7 +467,14 @@ impl Core {
                 };
                 match self.accounts.get_mut(&AccountId::from(account_id.as_str())) {
                     Ok(l) => {
-                        l.credit_merge(usd, &result.id);
+                        if let Err(e) = l.credit_merge(usd, &result.id) {
+                            tracing::error!(
+                                claim = %result.id,
+                                account = %account_id,
+                                error = %e,
+                                "merge credit store write failed"
+                            );
+                        }
                         tracing::info!(
                             claim = %result.id,
                             condition = %result.condition_id,

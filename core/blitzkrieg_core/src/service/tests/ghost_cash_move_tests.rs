@@ -282,7 +282,8 @@ fn the_same_residual_dedups_but_a_new_one_re_alerts() {
 
     // 恢复清槽：窗口内台账进账 +30（cashflow 台账事实），场地按事实报
     // 120 —— 残差 = (120−90) − 30 = 0 → 解释成立，槽位清空。
-    c.accounts
+    let _ = c
+        .accounts
         .active_ledger_mut()
         .credit_cashflow(Decimal::from(30), "rebate");
     c.realign_venue_cash("polymarket", Decimal::from(120));

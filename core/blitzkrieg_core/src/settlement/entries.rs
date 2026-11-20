@@ -103,10 +103,13 @@ impl SettlementBook {
             }
         }
         if let Some(j) = self.journal.as_ref() {
-            j.append(&JournalLine::Settlement {
+            let key = record.key.clone();
+            if let Err(e) = j.append(&JournalLine::Settlement {
                 at_ms: now_ms,
                 record: Box::new(record),
-            });
+            }) {
+                tracing::error!(key = %key, error = %e, "settlement store write failed");
+            }
         }
         let mut settled = booking.clone();
         settled.claim_id = self

@@ -800,10 +800,19 @@ impl Core {
                 Side::Buy => {
                     // Release the notional reserved at the LIMIT price for these
                     // shares, and pay the execution price in cash.
-                    ledger.settle_buy_fill(&d.order_id, notional, reserved_release);
-                    ledger.charge_fee(fee_usd);
+                    if let Err(e) = ledger.settle_buy_fill(&d.order_id, notional, reserved_release)
+                    {
+                        tracing::error!(order = %d.order_id, error = %e, "buy fill settlement store write failed");
+                    }
+                    if let Err(e) = ledger.charge_fee(fee_usd) {
+                        tracing::error!(order = %d.order_id, error = %e, "buy fill fee store write failed");
+                    }
                 }
-                Side::Sell => ledger.settle_sell_fill(notional, fee_usd),
+                Side::Sell => {
+                    if let Err(e) = ledger.settle_sell_fill(notional, fee_usd) {
+                        tracing::error!(order = %d.order_id, error = %e, "sell fill settlement store write failed");
+                    }
+                }
             }
             // A maker fill's modeled rebate rides the same journal as #388's
             // stream rows (`Cashflow`, ref `rebate`): it is venue cash that
@@ -811,17 +820,25 @@ impl Core {
             // trade record's `net` claims exactly this amount when the
             // position closes — the two books cannot drift.
             if maker_rebate_usd > Decimal::ZERO {
-                ledger.credit_cashflow(maker_rebate_usd, "rebate");
+                if let Err(e) = ledger.credit_cashflow(maker_rebate_usd, "rebate") {
+                    tracing::error!(order = %d.order_id, error = %e, "maker rebate store write failed");
+                }
                 self.stats.modeled_maker_rebate_usd += maker_rebate_usd;
             }
         } else {
             // Rollback/correction: revert the cash with no fee.
             match d.side {
-                Side::Buy => ledger.settle_sell_fill(-notional, Decimal::ZERO),
+                Side::Buy => {
+                    if let Err(e) = ledger.settle_sell_fill(-notional, Decimal::ZERO) {
+                        tracing::error!(order = %d.order_id, error = %e, "buy rollback settlement store write failed");
+                    }
+                }
                 // A reversed SELL gives the cash back to the venue; no reservation
                 // is involved (SELLs never reserve), so the release is zero.
                 Side::Sell => {
-                    ledger.settle_buy_fill(&d.order_id, -notional, Decimal::ZERO);
+                    if let Err(e) = ledger.settle_buy_fill(&d.order_id, -notional, Decimal::ZERO) {
+                        tracing::error!(order = %d.order_id, error = %e, "sell rollback settlement store write failed");
+                    }
                 }
             }
         }

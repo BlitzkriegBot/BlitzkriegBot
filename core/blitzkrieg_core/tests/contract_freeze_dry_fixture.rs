@@ -235,7 +235,7 @@ fn replay(events: Vec<TimedEvent>) -> blitzkrieg_core::backtest::BacktestReport 
             updated_at_ms: NOW,
         })
         .expect("the kalshi account mints (unique id)");
-    b.core_mut()
+    let _ = b.core_mut()
         .accounts_mut()
         .get_mut(&blitzkrieg_market_api::AccountId::from("kalshi"))
         .expect("kalshi just inserted")

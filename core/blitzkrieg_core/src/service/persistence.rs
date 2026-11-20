@@ -5,7 +5,7 @@ use super::{CloseCredential, CloseCredentialLine};
 use crate::jsonl;
 #[cfg(test)]
 use crate::model::AccountId;
-use crate::model::{CoreErrorCode, Side};
+use crate::model::{CoreError, CoreErrorCode, Side};
 use crate::schema::Event;
 use crate::service::Core;
 use rust_decimal::Decimal;
@@ -167,11 +167,14 @@ impl Core {
         }
     }
 
-    /// Persist one order's current snapshot (best effort).
-    pub(super) fn persist_order(&self, id: &str) {
+    /// Persist one order's current snapshot. The store write result is
+    /// returned explicitly; callers that cannot propagate (`emit_order`,
+    /// `emit_fill`) log the error instead of discarding it.
+    pub(super) fn persist_order(&self, id: &str) -> Result<(), CoreError> {
         if let (Some(db), Some(o)) = (self.order_db.as_ref(), self.ome.get(id)) {
-            db.append(o);
+            db.append(o)?;
         }
+        Ok(())
     }
 
     /// Restore the OPEN position book from durable storage (crash recovery). Call

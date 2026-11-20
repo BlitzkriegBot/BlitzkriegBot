@@ -449,7 +449,8 @@ fn a_mirror_bound_account_places_orders_on_mirror_tokens() {
             updated_at_ms: 0,
         })
         .unwrap();
-    c.accounts_mut()
+    let _ = c
+        .accounts_mut()
         .get_mut(&crate::account::AccountId::from("sim"))
         .unwrap()
         .set_balance(dec!(10));
@@ -567,7 +568,8 @@ fn a_polysimulator_executed_polymarket_token_stamps_execution_identity_end_to_en
             updated_at_ms: 0,
         })
         .unwrap();
-    c.accounts_mut()
+    let _ = c
+        .accounts_mut()
         .get_mut(&crate::account::AccountId::from("sim"))
         .unwrap()
         .set_balance(dec!(10));
@@ -700,7 +702,8 @@ async fn a_mirror_order_cancel_queues_to_the_mirror_executor() {
             updated_at_ms: 0,
         })
         .unwrap();
-    c.accounts_mut()
+    let _ = c
+        .accounts_mut()
         .get_mut(&crate::account::AccountId::from("sim"))
         .unwrap()
         .set_balance(dec!(10));

@@ -472,7 +472,7 @@ impl Core {
                 | crate::reconcile::ReconcileAction::MarkedForceClosed { core_order_id } => {
                     if let Some(order) = self.ome.get(core_order_id).cloned() {
                         let was_live = live_before.contains(order.order_id.as_str());
-                        self.release_order_bookkeeping(&order, was_live, "reconcile");
+                        self.release_order_bookkeeping(&order, was_live, "reconcile")?;
                     }
                     self.persist_order(core_order_id);
                 }

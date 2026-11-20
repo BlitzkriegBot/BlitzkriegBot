@@ -541,7 +541,25 @@ impl Core {
         if order.side == Side::Buy
             && let Ok(l) = self.accounts.get_mut(&order.account_id)
         {
-            l.release(id);
+            let released = l.release(id);
+            // The released notional must equal the order's outstanding
+            // commitment; over-release creates cash, under-release leaves a
+            // stray hold the audit halts on.
+            let remaining = (order.size - order.filled_size).max(Decimal::ZERO);
+            let expected = order.price.checked_mul(remaining).ok_or_else(|| {
+                CoreError::new(
+                    CoreErrorCode::InvalidParams,
+                    format!("order {id} reservation notional overflow"),
+                )
+            })?;
+            if released != expected {
+                return Err(CoreError::new(
+                    CoreErrorCode::InvalidParams,
+                    format!(
+                        "order {id} release mismatch: ledger released {released}, outstanding commitment {expected}"
+                    ),
+                ));
+            }
         }
         // E-VA: expiry/force-close releases the virtual hold too.
         self.virtual_release_order(&order);

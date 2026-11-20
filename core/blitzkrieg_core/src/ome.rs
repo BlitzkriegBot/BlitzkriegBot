@@ -772,8 +772,17 @@ impl Ome {
         })
     }
 
+    /// Mark an order terminal. Release-effective guard: only a terminal
+    /// status may be stamped — `debug_assert` vanishes under `--release`, so
+    /// this is a real, propagated `Err` (issue #54: `mark_terminal` had no
+    /// release-time state validation).
     pub fn mark_terminal(&mut self, id: &str, status: OrderStatus, now_ms: i64) -> CoreResult<()> {
-        debug_assert!(status.is_terminal());
+        if !status.is_terminal() {
+            return Err(CoreError::new(
+                CoreErrorCode::InvalidOrderState,
+                format!("{id}: {status:?} is not a terminal status"),
+            ));
+        }
         self.mutate(id, now_ms, |o| {
             o.status = status;
             Ok(())

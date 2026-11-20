@@ -92,6 +92,12 @@ pub fn spawn(
             // The poll's family mix: (family, assets-found) per declared
             // family, logged on change (the item-5 regression gate).
             let mut mix: Vec<(i64, usize)> = Vec::new();
+            // Every market discovered THIS tick across ALL families, kept so the
+            // tick can end with a single per-venue UNION subscription instead of
+            // each family's on_round_markets REPLACE-ing the feed's token slot
+            // in turn (5 families × poll_sec = a family's book only refreshed
+            // once per ~25s, which strategies read as a stalled price).
+            let mut all_markets: Vec<MarketDescriptor> = Vec::new();
 
             for fam in &families {
                 let label = duration_label(*fam).expect("families pre-filtered to declared labels");
@@ -183,7 +189,6 @@ pub fn spawn(
                     });
                 }
                 mix.push((*fam, found_assets.len()));
-
                 if markets.is_empty() {
                     // Kalshi-style once-per-process alarm: if a family yields
                     // nothing this poll and never has, surface it loudly so an
@@ -249,6 +254,7 @@ pub fn spawn(
                 // PER FAMILY: the B2 soft-unload gate resolves a batch's family
                 // from its own descriptors, so a mixed batch would let one
                 // unloaded family drag the others down with it.
+                all_markets.extend(markets.iter().cloned());
                 host.on_round_markets(markets).await;
                 let note = if missing.is_empty() {
                     String::new()
@@ -281,6 +287,33 @@ pub fn spawn(
                     "polymarket-extension: family mix (assets found per declared family): {hist}"
                 );
                 last_mix = mix;
+            }
+
+            // End of this tick: subscribe the per-venue UNION of every family's
+            // live tokens, exactly once. Each family's on_round_markets above
+            // only registers the round and opens its family clock — it no
+            // longer touches the feed. Without this union, five families'
+            // per-family set_tokens(REPLACE) kept evicting each other's slot
+            // and each family's book was re-polled only once per
+            // poll_sec × family_count, which strategies read as a stalled
+            // Polymarket price. One union set_tokens per tick lets the REST
+            // feed re-poll every token every base cadence (1s).
+            let mut by_venue: HashMap<String, Vec<String>> = HashMap::new();
+            for m in &all_markets {
+                if m.expires_at_ms > now {
+                    by_venue
+                        .entry(m.venue.clone())
+                        .or_default()
+                        .extend([m.up_token_id.clone(), m.down_token_id.clone()]);
+                }
+            }
+            for (venue, mut tokens) in by_venue {
+                tokens.sort();
+                tokens.dedup();
+                let tokens: Vec<String> = tokens.into_iter().filter(|t| !t.is_empty()).collect();
+                if !tokens.is_empty() {
+                    host.subscribe_tokens(&venue, tokens).await;
+                }
             }
         }
     })

@@ -498,10 +498,6 @@ impl MarketHost for CoreHost {
             }
             let now = now_ms();
             let models: Vec<m::CryptoMarket> = markets.iter().map(market_from_api).collect();
-            let tokens: Vec<String> = models
-                .iter()
-                .flat_map(|mk| [mk.up_token_id.clone(), mk.down_token_id.clone()])
-                .collect();
             // The plugin's own name: multi-plugin data planes key feeds (and
             // the #498 top-up predicate) on the venue, so the subscription for
             // this batch lands on the CALLING plugin's control — never on a
@@ -519,8 +515,18 @@ impl MarketHost for CoreHost {
                 .map(|m| m.venue.as_str())
                 .filter(|v| !v.is_empty())
                 .unwrap_or(fallback.as_str());
-            // Single lock: register the round, then subscribe its tokens (matches
-            // the historical ordering exactly).
+            // Single lock: register the round (engine_on_data opens the family
+            // clock). Subscription is NO LONGER done here: every discovery
+            // loop owns its feed and subscribes the per-venue UNION of all its
+            // families' tokens once per tick (see the plugin's discovery
+            // module). `on_round_markets` used to `subscribe_tokens(REPLACE)`
+            // per batch, so Polymarket's five round families (300/900/1h/4h/daily)
+            // kept evicting each other's subscription slot — each family's book
+            // was only re-polled once every poll_sec × family_count, which read
+            // to strategies as a stalled price feed. Registration and
+            // subscription are now separate concerns: registration stays here
+            // (per-family, clock-correct), subscription moves to discovery
+            // (per-venue union, one set_tokens per tick).
             let mut c = self.core.lock().await;
             c.engine_on_data(
                 crate::engine::DataEvent::RoundMarkets {
@@ -530,33 +536,26 @@ impl MarketHost for CoreHost {
                 now,
             );
             drop(c);
-            self.subscribe_tokens(plugin, tokens).await;
             // RFC-661 M2 (feed_source 复用管道): one upstream round batch feeds
-            // every consumer venue. The source's own registration above is the
-            // historical forward; each consumer re-registers the SAME batch
+            // every consumer venue. Each consumer re-registers the SAME batch
             // under ITS OWN venue tag so the engine's scanner holds the
             // consumer's own `(venue, token)` rows (M1's dual-key table). The
             // consumer registration lands AFTER the source's — the engine's
             // same-slot merge then admits the consumer's batch as fresh rows
             // (its venue tag differs, its tokens as byte strings are already
-            // known but its venue identity is its own). The consumer's tokens
-            // subscribe on ITS OWN feed control when it somehow carries one
-            // (an inert no-op for the parasitic shape, which mounts none —
-            // the subscription rides the source's upstream); the source's
-            // control is deliberately NOT re-poked here: its set_tokens is
-            // REPLACE semantics, and a consumer's token copy would evict the
-            // source's own set (one upstream connection serving one union —
-            // the source re-subscribes on its own rollovers).
+            // known but its venue identity is its own). Consumer-side
+            // subscription is the consumer discovery's own concern (parasitic
+            // consumers that mount nothing ride the source's upstream, as
+            // before); the source's control is deliberately NOT re-poked here:
+            // its set_tokens is REPLACE semantics, and a consumer's token copy
+            // would evict the source's own set (one upstream connection serving
+            // one union — the source re-subscribes on its own rollovers).
             let fanout = self.feed_fanout_for(plugin);
             for consumer in fanout {
                 let mut re_tagged: Vec<api::MarketDescriptor> = markets.clone();
                 for d in re_tagged.iter_mut() {
                     d.venue = consumer.clone();
                 }
-                let consumer_tokens: Vec<String> = re_tagged
-                    .iter()
-                    .flat_map(|d| [d.up_token_id.clone(), d.down_token_id.clone()])
-                    .collect();
                 self.core.lock().await.engine_on_data(
                     crate::engine::DataEvent::RoundMarkets {
                         markets: re_tagged.iter().map(market_from_api).collect(),
@@ -564,7 +563,6 @@ impl MarketHost for CoreHost {
                     },
                     now,
                 );
-                self.subscribe_tokens(&consumer, consumer_tokens).await;
             }
         })
     }

@@ -473,9 +473,9 @@ onMounted(() => {
           >
             <div class="flex items-center justify-between gap-2 min-w-0">
               <span class="min-w-0 truncate text-[13px] font-medium text-fg">{{ d.dataset }}</span>
-              <Badge variant="default">{{ num(d.manifest?.counts?.events) }} 事件</Badge>
+              <Badge class="figures" variant="default">{{ num(d.manifest?.counts?.events) }} 事件</Badge>
             </div>
-            <div class="mt-0.5 text-[11.5px] text-faint-fg">
+            <div class="mt-0.5 text-[11.5px] text-faint-fg figures">
               {{ shortAddr(d.manifest?.wallet) }} · {{ num(d.manifest?.counts?.trades) }} 笔成交 · {{ dateTime(d.manifest?.generatedAtMs) }}
             </div>
           </button>
@@ -491,7 +491,7 @@ onMounted(() => {
             <span v-else-if="d.state === 'done'" class="shrink-0 text-up">✓</span>
             <span v-else class="shrink-0 text-down">✕</span>
             <span class="min-w-0 truncate text-fg">{{ d.detail || d.phase }}</span>
-            <span v-if="d.state === 'running'" class="shrink-0 text-faint-fg">{{ num(d.progress) }} 笔</span>
+            <span v-if="d.state === 'running'" class="shrink-0 text-faint-fg figures">{{ num(d.progress) }} 笔</span>
             <span v-if="d.error" class="min-w-0 truncate text-down">{{ d.error }}</span>
           </div>
         </div>
@@ -596,7 +596,7 @@ onMounted(() => {
         <div class="flex flex-wrap items-center gap-2 text-[12px] text-muted-fg">
           <Badge variant="gold" dot>{{ backtestLabel }}</Badge>
           <Badge v-if="lastResult" variant="outline">{{ modeName(lastResult.mode) }}</Badge>
-          <span>
+          <span class="figures">
             事件 {{ num(report.sourceStats?.events) }} · 匹配盘口 {{ num(report.feed?.books) }}
             · tick {{ report.tickMs }}ms · 虚拟时长 {{ duration(Math.floor(Number(report.virtualMs ?? 0) / 1000)) }}
           </span>
@@ -640,25 +640,25 @@ onMounted(() => {
       <div class="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
         <StatTile label="净盈亏" :tone="netPnl >= 0 ? 'up' : 'down'" :value="signedMoney(netPnl)">
           <template #sub>
-            毛利 +{{ money(report.trades?.grossProfitUsd) }} · 毛亏 {{ money(report.trades?.grossLossUsd) }}
+            <span class="figures">毛利 +{{ money(report.trades?.grossProfitUsd) }} · 毛亏 {{ money(report.trades?.grossLossUsd) }}</span>
           </template>
         </StatTile>
         <StatTile label="胜率" :value="pct(report.trades?.winRatePct)">
           <template #sub>
-            <span class="text-up">{{ num(report.trades?.wins) }}</span> 胜 ·
+            <span class="figures"><span class="text-up">{{ num(report.trades?.wins) }}</span> 胜 ·
             <span class="text-down">{{ num(report.trades?.losses) }}</span> 亏 ·
-            共 {{ num(report.trades?.closed) }} 笔
+            共 {{ num(report.trades?.closed) }} 笔</span>
           </template>
         </StatTile>
         <StatTile
           label="盈亏比"
           :value="report.trades?.profitFactor != null ? num(report.trades.profitFactor) : '—'"
         >
-          <template #sub>均笔 {{ signedMoney(report.trades?.avgPnlUsd) }}</template>
+          <template #sub><span class="figures">均笔 {{ signedMoney(report.trades?.avgPnlUsd) }}</span></template>
         </StatTile>
         <StatTile label="最大回撤" :value="money(report.trades?.maxDrawdownUsd)">
           <template #sub>
-            占权益峰 {{ pct(report.trades?.maxDrawdownPct) }} · 手续费 {{ money(report.trades?.feesUsd) }}
+            <span class="figures">占权益峰 {{ pct(report.trades?.maxDrawdownPct) }} · 手续费 {{ money(report.trades?.feesUsd) }}</span>
           </template>
         </StatTile>
       </div>
@@ -678,7 +678,7 @@ onMounted(() => {
           </template>
         </CardHeader>
         <div ref="eqEl" class="h-56 w-full" />
-        <p v-if="truncated > 0" class="mt-1 text-[11.5px] text-faint-fg">
+        <p v-if="truncated > 0" class="mt-1 text-[11.5px] text-faint-fg figures">
           曲线只画了报告保留的成交明细（另有 {{ num(truncated) }} 笔超出容量未画）；上面的汇总数字仍是全量的。
         </p>
       </Card>

@@ -335,6 +335,16 @@
     letter-spacing: -0.02em;
   }
 
+  /* 容器级等宽数字：挂在数据展示容器（<table>/<div>/<span>/<Badge>）上，
+     子孙元素继承 `font-variant-numeric: tabular-nums`，数字按列对齐、
+     数值变化不抖宽度。调用点只挂容器类，不再逐 <td>/<span> 补 `num`；
+     容器是等宽的唯一系统属性，由 scripts/tabular-figures.check.mjs
+     （`check:all` 链里）钉住覆盖。 */
+  .figures {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1, 'zero' 1;
+  }
+
   .text-up {
     color: var(--up);
   }

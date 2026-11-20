@@ -45,7 +45,7 @@ function detailOf(r: IntentAuditRecordView): string {
 
 <template>
   <div v-if="props.records.length" class="-mx-2 overflow-x-auto">
-    <table class="w-full min-w-[680px] text-[13px]">
+    <table class="w-full min-w-[680px] text-[13px] figures">
       <thead>
         <tr class="text-left">
           <th class="label-micro px-2 pb-2.5">时间</th>

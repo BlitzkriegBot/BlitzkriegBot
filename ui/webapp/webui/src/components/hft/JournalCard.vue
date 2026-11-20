@@ -110,7 +110,7 @@ watch(journalOpen, (v) => { if (v) void loadJournal() })
       </p>
       <template v-else-if="journalRows.length">
         <div class="overflow-x-auto">
-          <table class="w-full min-w-[640px] text-[12.5px]">
+          <table class="w-full min-w-[640px] text-[12.5px] figures">
             <thead>
               <tr class="text-left">
                 <th class="label-micro px-2 pb-2">时间</th>

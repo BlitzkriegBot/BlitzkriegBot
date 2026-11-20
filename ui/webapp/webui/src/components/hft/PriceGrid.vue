@@ -71,7 +71,7 @@ function spreadCents(m: MarketPrice): number {
         <span class="flex min-w-0 items-center gap-1.5">
           <span class="truncate text-[13px] font-bold tracking-wide">{{ m.asset }}</span>
         </span>
-        <Badge :variant="spreadCents(m) <= 1 ? 'up' : 'gold'">
+        <Badge class="figures" :variant="spreadCents(m) <= 1 ? 'up' : 'gold'">
           {{ spreadCents(m).toFixed(1) }}¢
         </Badge>
       </div>

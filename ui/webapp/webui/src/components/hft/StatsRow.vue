@@ -136,7 +136,7 @@ defineProps<{
           :value="recon.equity !== null ? money(recon.equity) : money(recon.cash)"
           :tone="isDry ? 'gold' : 'default'"
         />
-        <p v-if="recon.equity !== null" class="mt-1 text-[10px] leading-snug text-faint-fg">
+        <p v-if="recon.equity !== null" class="mt-1 text-[10px] leading-snug text-faint-fg figures">
           本金 {{ money(recon.seed) }} ＋ 已实现净利 {{ signedMoney(recon.net) }}
           <Tooltip :content="`真实余额 = 本金 ${money(recon.seed)} ＋ 扣费后净利 ${signedMoney(recon.net)}。手续费是成本：毛利 ${money(recon.gross)} − 手续费 ${money(recon.fees)} = 净利。手续费不改变本金，因此不并入余额。${balanceAccountNote}`">
             <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2">

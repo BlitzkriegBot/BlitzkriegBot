@@ -29,6 +29,7 @@ import Button from '@/components/ui/button/Button.vue'
 import Switch from '@/components/ui/switch/Switch.vue'
 import EmptyState from '@/components/ui/empty/EmptyState.vue'
 import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
+import ConfirmDialog from '@/components/ui/confirm/ConfirmDialog.vue'
 import RollingNumber from '@/components/ui/roll/RollingNumber.vue'
 
 const store = usePanelStore()
@@ -82,6 +83,26 @@ const busy = ref<string | null>(null)
 const flash = ref<{ tone: 'info' | 'warn' | 'error'; msg: string } | null>(null)
 let flashTimer: ReturnType<typeof setTimeout> | null = null
 
+/** 非阻塞确认弹层状态：取代 window.confirm，不阻塞 headless 环境。 */
+const confirmOpen = ref(false)
+const confirmTitle = ref('')
+const confirmMsg = ref('')
+let pendingConfirm: (() => Promise<void>) | null = null
+
+async function askConfirm(title: string, msg: string, fn: () => Promise<void>): Promise<void> {
+  confirmTitle.value = title
+  confirmMsg.value = msg
+  pendingConfirm = fn
+  confirmOpen.value = true
+}
+
+async function runConfirm(): Promise<void> {
+  const fn = pendingConfirm
+  confirmOpen.value = false
+  pendingConfirm = null
+  if (fn) await fn()
+}
+
 function showFlash(tone: 'info' | 'warn' | 'error', msg: string): void {
   flash.value = { tone, msg }
   if (flashTimer) clearTimeout(flashTimer)
@@ -120,32 +141,31 @@ async function setAuto(next: boolean): Promise<void> {
     : '已关闭自动进化：每个提案都在待决区等你拍板')
 }
 
-async function setEngine(next: boolean): Promise<void> {
-  if (next && !window.confirm('启用进化引擎？内核会为每个策略建立影子变异体并持续评估（有 CPU 开销，所有动作仍在原有风控锁内）。')) {
-    return
-  }
-  if (!await act('evolve', () => api.setEvolve(next))) return
+async function applyEngine(enabled: boolean): Promise<void> {
+  if (!await act('evolve', () => api.setEvolve(enabled))) return
   const now = evo.value?.status?.enabled ?? false
-  if (now !== next) {
+  if (now !== enabled) {
     showFlash('warn', `指令已发出，但内核回报的引擎状态仍是「${now ? '运行中' : '未启用'}」——请稍后刷新或查内核日志。`)
     return
   }
-  showFlash('info', next
+  showFlash('info', enabled
     ? `进化引擎已启用：开始评估影子变异体${autoEvolve.value ? '，并按自动模式自行采纳' : '，达标的变异挂到待决区等你拍板'}。深度轮首次计时从此刻开始。`
     : '进化引擎已关闭：不再评估、不再采纳，已挂起的提案保留但不会推进。')
 }
 
-async function decide(p: EvolutionProposalRow, decision: 'accept' | 'reject' | 'defer'): Promise<void> {
-  // 自动模式（引擎开着且自动开着）内核自己会采纳，人工采纳只会和它抢同一个提案。
-  // 按钮已经隐藏，这里再挡一次，防的是渲染与内核状态切换之间的时间差。
-  if (decision === 'accept' && autoActive.value) {
-    showFlash('warn', '自动进化已开启：内核会自行采纳提案。要人工拍板，请先关掉上方开关。')
+async function setEngine(next: boolean): Promise<void> {
+  if (next) {
+    await askConfirm(
+      '启用进化引擎',
+      '内核会为每个策略建立影子变异体并持续评估，有 CPU 开销；所有动作仍在原有风控锁内。',
+      () => applyEngine(true),
+    )
     return
   }
-  if (decision === 'accept'
-    && !window.confirm(`采纳后立即热更新 ${p.strategy} 的实盘参数（原参数已存档，可一键回滚）。确认采纳 ${p.id} 吗？`)) {
-    return
-  }
+  await applyEngine(false)
+}
+
+async function applyDecide(p: EvolutionProposalRow, decision: 'accept' | 'reject' | 'defer'): Promise<void> {
   if (!await act(`${p.id}-${decision}`, () => api.decideEvolution(p.id, decision))) return
 
   // 以刷新后的快照为准：只有内核回报了目标状态才算生效。
@@ -159,16 +179,39 @@ async function decide(p: EvolutionProposalRow, decision: 'accept' | 'reject' | '
   const who = after.decidedBy === 'auto' ? '自动进化' : after.decidedBy === 'user' ? '人工' : '未上报'
   const when = after.decidedAtMs ? `，${dateTime(after.decidedAtMs)}` : ''
   showFlash('info', {
-    accept: `已采纳并生效：${p.strategy} 现在跑的是这组变异参数（${who}决定${when}）。参数移动见上方「已采纳的变异」。`,
-    reject: `已拒绝：${p.strategy} 保持现行参数（${who}决定${when}）。`,
+    accept: `已采纳并生效：${p.strategy} 现在跑的是这组变异参数${when}。参数移动见上方「已采纳的变异」。`,
+    reject: `已拒绝：${p.strategy} 保持现行参数${when}。`,
     defer: `已延后：${p.id} 留在待决区，7 天内仍可处理。`,
   }[decision])
 }
 
+async function decide(p: EvolutionProposalRow, decision: 'accept' | 'reject' | 'defer'): Promise<void> {
+  // 自动模式（引擎开着且自动开着）内核自己会采纳，人工采纳只会和它抢同一个提案。
+  // 按钮已经隐藏，这里再挡一次，防的是渲染与内核状态切换之间的时间差。
+  if (decision === 'accept' && autoActive.value) {
+    showFlash('warn', '自动进化已开启：内核会自行采纳提案。要人工拍板，请先关掉上方开关。')
+    return
+  }
+  if (decision === 'accept') {
+    await askConfirm(
+      '采纳变异',
+      `采纳后立即热更新 ${p.strategy} 的实盘参数。原参数已存档，可一键回滚。确认采纳 ${p.id} 吗？`,
+      () => applyDecide(p, 'accept'),
+    )
+    return
+  }
+  await applyDecide(p, decision)
+}
+
 async function rollback(strategy: string): Promise<void> {
-  if (!window.confirm(`把 ${strategy} 回滚到上一次采纳前的参数？（只撤销最近一次，更早的可在审计文件中追溯）`)) return
-  await act(`rollback-${strategy}`, () => api.rollbackStrategy(strategy))
-  showFlash('info', `已发出回滚：${strategy} 恢复到上一组参数。若「已采纳的变异」未随之变化，说明内核未接受该回滚。`)
+  await askConfirm(
+    '回滚参数',
+    `把 ${strategy} 回滚到上一次采纳前的参数。只撤销最近一次，更早的可在审计文件中追溯。`,
+    async () => {
+      await act(`rollback-${strategy}`, () => api.rollbackStrategy(strategy))
+      showFlash('info', `已发出回滚：${strategy} 恢复到上一组参数。若「已采纳的变异」未随之变化，说明内核未接受该回滚。`)
+    },
+  )
 }
 
 /* ── 展示辅助 ──────────────────────────────────────────────────────────── */
@@ -666,5 +709,13 @@ function metricsRows(b: EvolutionMetricsRow, v: EvolutionMetricsRow): MetricRow[
         可在内核日志里搜 <span class="num">evolution</span> 确认。
       </p>
     </Card>
+
+    <ConfirmDialog
+      v-model:open="confirmOpen"
+      :title="confirmTitle"
+      :message="confirmMsg"
+      :busy="!!busy"
+      @confirm="runConfirm"
+    />
   </div>
 </template>

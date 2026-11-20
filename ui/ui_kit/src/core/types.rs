@@ -1277,11 +1277,26 @@ impl UiSnapshot {
     pub fn wins(&self) -> usize {
         self.trades.iter().filter(|t| t.net_pnl_usd > 0.0).count()
     }
+
+    /// 已平仓且净亏的笔数（`net_pnl_usd < 0.0`）。净利恰为 0 的「平仓」行
+    /// 不进胜负分母：胜率口径是 `wins / (wins + losses)`，与 `trade_db` /
+    /// `trade_summary` 的成交口径同源，绝不把平仓笔误读成负笔而压低胜率
+    /// （issue #53：账本/成交/UI 三条口径的胜率必须对齐）。
+    pub fn losses(&self) -> usize {
+        self.trades.iter().filter(|t| t.net_pnl_usd < 0.0).count()
+    }
+
+    /// 胜率口径：已知盈亏的已平仓笔数之比，0 笔 = 0.0%。
+    ///
+    /// 旧实现以全部 `trades`（含 `net_pnl_usd == 0` 的平仓行）作分母，把
+    /// 平仓笔当成负笔，导致 UI 口径与成交口径（trade_summary）分歧。平行
+    /// 不胜也不负：只进总仓数，不进胜负分母。
     pub fn win_rate(&self) -> f64 {
-        if self.trades.is_empty() {
+        let decided = self.wins() + self.losses();
+        if decided == 0 {
             0.0
         } else {
-            self.wins() as f64 / self.trades.len() as f64 * 100.0
+            self.wins() as f64 / decided as f64 * 100.0
         }
     }
     pub fn mode(&self) -> &str {
@@ -1315,5 +1330,103 @@ impl UiSnapshot {
             }
         }
         rows.iter().find(|v| !v.venue.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trade(net_pnl_usd: f64) -> TradeView {
+        TradeView {
+            id: "t".into(),
+            strategy: "s".into(),
+            asset: "BTC".into(),
+            direction: "up".into(),
+            entry_price: 0.4,
+            exit_price: 0.5,
+            shares: 10.0,
+            net_pnl_usd,
+            net_pnl_pct: 0.0,
+            fees_usd: 0.0,
+            exit_reason: String::new(),
+            hold_time_sec: 0,
+            entry_time: 0,
+            exit_time: 0,
+            venue: String::new(),
+            account_id: String::new(),
+        }
+    }
+
+    /// issue #53: UI 口径胜率（`UiSnapshot::win_rate`）必须与成交口径
+    ///（`trade_db` / `trade_summary` 的 `wins / (wins + losses)`）对齐：
+    /// 平仓行（净利为 0）不进胜负分母，否则胜率被稀释。
+    #[test]
+    fn win_rate_excludes_flat_trades_from_denominator() {
+        let snap = UiSnapshot {
+            trades: vec![
+                trade(1.0),
+                trade(2.0),
+                trade(3.0),
+                trade(4.0), // 胜 ×4
+                trade(-1.0),
+                trade(-2.0),
+                trade(-3.0), // 负 ×3
+                trade(0.0),
+                trade(0.0),
+                trade(0.0), // 平 ×3，不进胜负分母
+            ],
+            ..UiSnapshot::default()
+        };
+        assert_eq!(snap.wins(), 4);
+        assert_eq!(snap.losses(), 3);
+        assert!(
+            (snap.win_rate() - (4.0 / 7.0 * 100.0)).abs() < 1e-9,
+            "win_rate = 4/(4+3)*100 ≈ 57.14，旧口径 4/10*100 = 40 会和 trade_summary 分歧"
+        );
+    }
+
+    #[test]
+    fn win_rate_is_zero_without_decided_trades() {
+        let snap = UiSnapshot {
+            trades: vec![trade(0.0), trade(0.0)],
+            ..UiSnapshot::default()
+        };
+        assert_eq!(snap.wins(), 0);
+        assert_eq!(snap.losses(), 0);
+        assert_eq!(snap.win_rate(), 0.0);
+    }
+
+    /// 净值口径是账本口径（`cumulative_net_pnl = balance − opening_equity`），
+    /// 开盘权益未知时返回 `None`，绝不从成交行折叠出一个假的账本数。
+    #[test]
+    fn net_pnl_is_ledger_only_never_trade_folded() {
+        let ledger = UiSnapshot {
+            balance: Some(BalanceView {
+                balance: 1015.0,
+                reserved: 4.0,
+                available: 1011.0,
+                seed: Some(1000.0),
+                opening_equity: Some(1000.0),
+                cumulative_net_pnl: Some(15.0),
+            }),
+            ..UiSnapshot::default()
+        };
+        assert_eq!(ledger.net_pnl(), Some(15.0));
+        assert_eq!(ledger.net_pnl_source(), "ledger");
+
+        let unknown = UiSnapshot {
+            balance: Some(BalanceView {
+                balance: 1015.0,
+                reserved: 4.0,
+                available: 1011.0,
+                seed: Some(1000.0),
+                opening_equity: None,
+                cumulative_net_pnl: None,
+            }),
+            ..UiSnapshot::default()
+        };
+        assert_eq!(unknown.net_pnl(), None);
+        assert_eq!(unknown.net_pnl_source(), "trade-fold");
     }
 }

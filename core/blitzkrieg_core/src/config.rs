@@ -3,12 +3,19 @@
 //! The TOML config layer is RETIRED (issue #967, phase 5): no file is an
 //! effective source any more. The kernel's settings come from, in order,
 //!
-//! **CLI > env (`.env` folded into the process environment) > built-in default**
+//! **CLI > SQLite > env (`.env` folded into the process environment) > built-in default**
 //!
-//! Resolution is a pure function ([`pick`]) so the precedence is testable
-//! without a process. Every effective value carries its [`Source`], and the
-//! binary logs the non-default ones at startup — "where did this number come
-//! from" is answerable from the log alone.
+//! [`pick`] is the single place this precedence is expressed; every boot-time
+//! resolution goes through it. SQLite is the single source of truth for
+//! persisted configuration: a row there outranks `.env` and the compiled
+//! default. `.env` is read-only for the kernel and carries only sensitive
+//! information (credential env var names) — business config no longer lives
+//! there, and no ad hoc second source may be read on the side.
+//!
+//! Resolution is a pure function so the precedence is testable without a
+//! process. Every effective value carries its [`Source`], and the binary logs
+//! the non-default ones at startup — "where did this number come from" is
+//! answerable from the log alone.
 //!
 //! A `source=toml` line in a boot log is a regression, not a configuration.
 
@@ -21,6 +28,8 @@ use rust_decimal::Decimal;
 pub enum Source {
     /// Command-line flag.
     Cli,
+    /// A SQLite row — the single source of truth for persisted configuration.
+    Sqlite,
     /// `BK_*` / `SHADOW_*` environment variable (from the deployment env or
     /// the `.env` file the launcher folds into it).
     Env,
@@ -32,6 +41,7 @@ impl Source {
     pub fn as_str(self) -> &'static str {
         match self {
             Source::Cli => "cli",
+            Source::Sqlite => "sqlite",
             Source::Env => "env",
             Source::Default => "default",
         }
@@ -58,9 +68,15 @@ impl<T> Sourced<T> {
 
 /// Resolve one setting through the precedence chain. The single place the
 /// order is expressed; every caller goes through it.
-pub fn pick<T>(cli: Option<T>, env: Option<T>, default: T) -> Sourced<T> {
+///
+/// Precedence: `cli` > `sqlite` > `env` > `default`. A `None` layer simply
+/// does not speak; the first non-`None` layer wins, so a missing key falls
+/// back to the compiled default rather than being silently invented.
+pub fn pick<T>(sqlite: Option<T>, cli: Option<T>, env: Option<T>, default: T) -> Sourced<T> {
     if let Some(v) = cli {
         Sourced::new(v, Source::Cli)
+    } else if let Some(v) = sqlite {
+        Sourced::new(v, Source::Sqlite)
     } else if let Some(v) = env {
         Sourced::new(v, Source::Env)
     } else {
@@ -368,10 +384,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn precedence_is_cli_env_default() {
-        assert_eq!(pick(Some(1), Some(2), 3).source, Source::Cli);
-        assert_eq!(pick(None, Some(2), 3), Sourced::new(2, Source::Env));
-        assert_eq!(pick(None, None, 3), Sourced::new(3, Source::Default));
+    fn precedence_is_cli_sqlite_env_default() {
+        assert_eq!(pick(Some(1), None, Some(2), 3).source, Source::Sqlite);
+        assert_eq!(pick(Some(9), Some(1), None, 3).source, Source::Cli);
+        assert_eq!(
+            pick(None, Some(1), Some(2), 3),
+            Sourced::new(1, Source::Cli)
+        );
+        assert_eq!(pick(None, None, Some(2), 3), Sourced::new(2, Source::Env));
+        assert_eq!(pick(None, None, None, 3), Sourced::new(3, Source::Default));
+        // Each layer wins exactly the layers below it, never the ones above.
+        assert_eq!(pick(Some(9), None, Some(2), 3).source, Source::Sqlite);
+        assert_eq!(pick(None, None, Some(2), 3).source, Source::Env);
+    }
+
+    #[test]
+    fn pick_missing_key_falls_back_to_default() {
+        assert_eq!(
+            pick(None::<i32>, None::<i32>, None::<i32>, 7),
+            Sourced::new(7, Source::Default)
+        );
+    }
+
+    /// Issue #44: `SQLite 覆盖 .env` — `.env` folds into the process env
+    /// layer, so a SQLite row still wins over an env-supplied value; a key
+    /// present only in `.env` resolves from env.
+    #[test]
+    fn pick_sqlite_overrides_env() {
+        assert_eq!(
+            pick(Some(1), None, Some(2), 3),
+            Sourced::new(1, Source::Sqlite)
+        );
+        assert_eq!(
+            pick(None::<i32>, None::<i32>, Some(2), 3),
+            Sourced::new(2, Source::Env)
+        );
     }
 
     /// issue #1189: two accounts can run different exit disciplines; an

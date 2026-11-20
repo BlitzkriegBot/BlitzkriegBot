@@ -57,6 +57,12 @@ export interface PanelAccountRow {
    *  累计 Seed 入金。净利的账本口径 = balance − seededTotal（构造上恒等）；
    *  成交行的模型费净利降级为「成交口径」展示。老内核缺字段 = undefined。 */
   seededTotal?: string | number
+  /**
+   * 累计净 PnL（账本口径 SSOT，issue #1046/#1063）：balance − opening_equity。
+   * 面板的净利以此为准，不得再按 cash − seed 另算一套；期初权益未知时
+   * （LIVE 尚未收到首笔 venue equity）为 null，面板须显示「未知」。
+   * 老内核缺字段 = undefined。 */
+  cumulativeNetPnl?: number | null
 }
 
 export const usePanelStore = defineStore('panel', () => {
@@ -417,6 +423,7 @@ export const usePanelStore = defineStore('panel', () => {
           rounds?: unknown
           reserved?: string
           seededTotal?: string | number
+          cumulativeNetPnl?: number | null
         }>
       } | undefined
       if (!doc) return '网关未返回账户数据'
@@ -437,6 +444,7 @@ export const usePanelStore = defineStore('panel', () => {
         rounds: Array.isArray(a.rounds) ? [...(a.rounds as number[])] : undefined,
         reserved: a.reserved ?? '',
         seededTotal: a.seededTotal,
+        cumulativeNetPnl: a.cumulativeNetPnl ?? null,
       }))
       // issue 561：镜像只供行数据与显示兜底 —— display 账户优先读快照
       // （内核事实），报文的 displayAccount 在场也采纳（快照未到的一拍）；

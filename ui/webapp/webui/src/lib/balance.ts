@@ -39,12 +39,15 @@ import type { Snapshot } from '@/api/client'
 export interface BalanceView {
   /** Starting principal, or null when the core did not report one (LIVE, old core). */
   seed: number | null
-  /** Realized net profit over the deduped closed-trade rows — already after fees. */
-  net: number
+  /** Realized net profit over the deduped closed-trade rows — already after fees.
+   * Null when the core reported no principal/opening equity (LIVE before the
+   * first venue equity): render 「未知」, never fold to a number. */
+  net: number | null
   /** Total fees paid, an expense. Already deducted from `net`, never added to it. */
   fees: number
-  /** Realized gross profit: `net + fees`. The figure fees are a cost *against*. */
-  gross: number
+  /** Realized gross profit: `net + fees`. The figure fees are a cost *against*.
+   * Null when `net` is null. */
+  gross: number | null
   /**
    * 本金 ＋ 净利润 — the DRY headline. Null when the core reported no principal
    * (LIVE, or a core older than the field), which is when `cash` takes over.
@@ -72,24 +75,24 @@ export interface BalanceView {
 
 export function balanceView(
   balance: Snapshot['balance'] | null | undefined,
-  net: number,
+  net: number | null,
   fees: number,
 ): BalanceView {
   const cash = Number(balance?.balance ?? 0)
   const reserved = Number(balance?.reserved ?? 0)
   const available = Number(balance?.available ?? 0)
   const seed = balance?.seed === null || balance?.seed === undefined ? null : Number(balance.seed)
-  const realized = Number(net) || 0
+  const realized = net === null || net === undefined ? null : Number(net) || 0
   const paidFees = Number(fees) || 0
 
   return {
     seed,
     net: realized,
     fees: paidFees,
-    gross: realized + paidFees,
-    equity: seed === null ? null : seed + realized,
+    gross: realized === null ? null : realized + paidFees,
+    equity: seed === null || realized === null ? null : seed + realized,
     identityBroken:
-      seed !== null && Math.abs(cash - (seed + realized)) > 0.005,
+      seed !== null && realized !== null && Math.abs(cash - (seed + realized)) > 0.005,
     cash,
     reserved,
     available,

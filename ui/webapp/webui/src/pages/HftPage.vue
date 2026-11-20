@@ -527,7 +527,7 @@ const balanceLabel = computed(() =>
 // 与 StatsRow 的 recon 接口保持兼容：始终存在一个 BalanceView 形状的对象，
 // 账户行未到时给出空默认（不渲染编造的数字）。
 const recon = computed(() => accountBalance.value ?? {
-  seed: null, net: 0, fees: 0, gross: 0, equity: null, cash: 0, reserved: 0, available: 0,
+  seed: null, net: null, fees: 0, gross: null, equity: null, cash: 0, reserved: 0, available: 0,
 })
 
 // ── history filters ─────────────────────────────────────────────────────────

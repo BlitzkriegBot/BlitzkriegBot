@@ -23,7 +23,7 @@ defineProps<{
   cumStats: CumStats
   winBands: { label: string; tone: 'up' | 'down'; count: number; frac: number }[]
   tradeStats: { count: number; today: number; todayNet: number | null; todayUnknownPnlCount: number; volume: number; avg: number }
-  recon: { equity: number | null; cash: number; seed: number | null; net: number; gross: number; fees: number }
+  recon: { equity: number | null; cash: number; seed: number | null; net: number | null; gross: number | null; fees: number }
   /** 持仓浮动合计（今日表现卡的浮动行）。 */
   positionUnrealized: number
   /** DRY / LIVE 运行模式（词不是数字 — 那一行 :roll="false"）。 */

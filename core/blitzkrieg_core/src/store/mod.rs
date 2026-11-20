@@ -337,6 +337,26 @@ pub trait StoreApi: Debug + Send + Sync {
             ),
         ))
     }
+
+    // ── Config persistence ──────────────────────────────────────────────
+
+    /// `market.plugin.set`: persist the market-plugin override cell
+    /// (`data/runtime/config.json`'s `marketPlugin` cell) durably through the
+    /// store. Process-level, not account-scoped — the cell names the plugin the
+    /// next session boots with (outranks first-registered, never an explicit
+    /// `--market-plugin`). Upsert `Some(name)` / clear `None`.
+    ///
+    /// [`SqliteStore`](crate::store::SqliteStore) lands it in `account_settings`
+    /// under the reserved `defaults` account (key `marketPlugin`) and reports
+    /// [`WriteOutcome::Persisted`]. The existing `config.json` write is KEPT:
+    /// this is an additive abstraction, not a replacement — see
+    /// [`crate::market::persist_cell`].
+    fn save_market_plugin(&self, _plugin: Option<&str>) -> Result<WriteOutcome, CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_market_plugin: no backend implements this yet".to_string(),
+        ))
+    }
 }
 
 // ── #1278 contract types (no callers yet) ────────────────────────────────
@@ -487,6 +507,11 @@ pub mod test_support {
                 "setting:{}={key}={value:?}",
                 scope.account.as_str()
             ));
+            Ok(WriteOutcome::Persisted)
+        }
+
+        fn save_market_plugin(&self, plugin: Option<&str>) -> Result<WriteOutcome, CoreError> {
+            self.log(&format!("market-plugin={plugin:?}"));
             Ok(WriteOutcome::Persisted)
         }
     }
@@ -718,6 +743,11 @@ mod tests {
                 "setting:{}={key}={value:?}",
                 scope.account.as_str()
             ));
+            Ok(WriteOutcome::Persisted)
+        }
+
+        fn save_market_plugin(&self, plugin: Option<&str>) -> Result<WriteOutcome, CoreError> {
+            self.log(format!("market-plugin={plugin:?}"));
             Ok(WriteOutcome::Persisted)
         }
     }

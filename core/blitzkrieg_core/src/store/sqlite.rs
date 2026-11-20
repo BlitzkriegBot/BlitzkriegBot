@@ -61,6 +61,12 @@ use crate::store::{AccountScope, FieldChanges, MoneyFact, WriteOutcome};
 /// the table is already account-keyed, so the key carries no id).
 pub const ROUND_DURATION_SETTING: &str = "round.duration_sec";
 
+/// The `account_settings` key for the process-level market-plugin override
+/// cell (the `marketPlugin` cell of `data/runtime/config.json`). The cell is
+/// process-level, so it lands under the reserved `defaults` account (the FK
+/// scaffold for globals) rather than a real account.
+pub const MARKET_PLUGIN_SETTING: &str = "marketPlugin";
+
 /// The reserved `defaults` account selector (env_state.rs): its row exists
 /// only so the globals `POLICY_*` rows satisfy the `account_settings` FK —
 /// scaffolding, never an account. Marked with [`DEFAULTS_STATUS_REASON`] so
@@ -996,6 +1002,17 @@ impl super::StoreApi for SqliteStore {
         self.write_settings(scope.account.as_str(), &[(key, value)])?;
         Ok(WriteOutcome::Persisted)
     }
+
+    /// #36: the process-level market-plugin override cell. Lands in
+    /// `account_settings` under the reserved `defaults` account (the FK
+    /// scaffold for globals), key `marketPlugin`, so it shares the table with
+    /// the `POLICY_*` globals section. `ensure_account` is idempotent and never
+    /// overwrites the scaffold row. Upsert `Some(name)` / clear `None`.
+    fn save_market_plugin(&self, plugin: Option<&str>) -> Result<WriteOutcome, CoreError> {
+        self.ensure_account(DEFAULTS_ACCOUNT_ID, None)?;
+        self.write_settings(DEFAULTS_ACCOUNT_ID, &[(MARKET_PLUGIN_SETTING, plugin)])?;
+        Ok(WriteOutcome::Persisted)
+    }
 }
 
 #[cfg(test)]
@@ -1178,6 +1195,52 @@ mod tests {
             })
             .unwrap();
         assert_eq!(dur, None, "the reset removes the key");
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #36: the process-level market-plugin override cell lands in
+    /// `account_settings` under the reserved `defaults` account (key
+    /// `marketPlugin`), upsert on `Some` and sweep on `None`, and reports
+    /// `Persisted`.
+    #[test]
+    fn save_market_plugin_lands_in_defaults_settings() {
+        let (store, dir) = temp_store();
+        assert_eq!(
+            store.save_market_plugin(Some("kalshi")).unwrap(),
+            WriteOutcome::Persisted,
+            "the upsert reports Persisted"
+        );
+        let value = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                crate::db::account_setting_get(conn, DEFAULTS_ACCOUNT_ID, MARKET_PLUGIN_SETTING)
+            })
+            .unwrap();
+        assert_eq!(value.as_deref(), Some("kalshi"));
+
+        // A second upsert replaces the value (one cell, not a row per write).
+        store.save_market_plugin(Some("polymarket")).unwrap();
+        let value = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                crate::db::account_setting_get(conn, DEFAULTS_ACCOUNT_ID, MARKET_PLUGIN_SETTING)
+            })
+            .unwrap();
+        assert_eq!(value.as_deref(), Some("polymarket"));
+
+        // `None` sweeps the key: the cell is cleared again.
+        store.save_market_plugin(None).unwrap();
+        let value = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                crate::db::account_setting_get(conn, DEFAULTS_ACCOUNT_ID, MARKET_PLUGIN_SETTING)
+            })
+            .unwrap();
+        assert_eq!(value, None, "the reset sweeps the market-plugin cell");
         drop(store);
         let _ = std::fs::remove_dir_all(dir);
     }

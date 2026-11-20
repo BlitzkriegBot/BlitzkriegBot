@@ -499,31 +499,64 @@ async fn persist_cell(
     now_ms: i64,
 ) -> Result<(), crate::model::CoreError> {
     use crate::model::{CoreError, CoreErrorCode};
-    let path = {
+    let (path, store) = {
         let c = core.lock().await;
-        c.config().runtime_config_path.clone()
+        (c.config().runtime_config_path.clone(), c.store.clone())
     };
-    let path = path.ok_or_else(|| {
+
+    // No durable carrier configured for this core: persistence is disabled
+    // (backtests and in-process tests have neither a store nor a config path).
+    let Some(store) = store.as_deref() else {
+        let Some(path) = path else {
+            return Err(CoreError::new(
+                CoreErrorCode::InvalidParams,
+                "market.plugin.set: no runtime config path configured — \
+                 persistence is disabled for this core (backtests and \
+                 in-process tests); nothing was applied"
+                    .to_string(),
+            ));
+        };
+        // No store, but a file path: keep the existing file write unchanged.
+        return crate::runtime_config::persist_market_plugin_to(
+            std::path::Path::new(&path),
+            plugin,
+            actor,
+            now_ms,
+        )
+        .map_err(|e| {
+            CoreError::new(
+                CoreErrorCode::InvalidParams,
+                format!("market.plugin.set: persist failed, nothing changed: {e}"),
+            )
+        });
+    };
+
+    // Store route: persist the market-plugin cell durably through the store
+    // (upsert `Some(name)` / clear `None`). This is the new StoreApi seam.
+    store.save_market_plugin(plugin).map_err(|e| {
         CoreError::new(
-            CoreErrorCode::InvalidParams,
-            "market.plugin.set: no runtime config path configured — \
-             persistence is disabled for this core (backtests and \
-             in-process tests); nothing was applied"
-                .to_string(),
+            CoreErrorCode::Internal,
+            format!("market.plugin.set: store persist failed, nothing changed: {e}"),
         )
     })?;
-    crate::runtime_config::persist_market_plugin_to(
-        std::path::Path::new(&path),
-        plugin,
-        actor,
-        now_ms,
-    )
-    .map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("market.plugin.set: persist failed, nothing changed: {e}"),
+
+    // The existing config.json write is KEPT: additive abstraction, not
+    // replacement — the cell remains the on-disk form the boot reads back.
+    if let Some(path) = path {
+        crate::runtime_config::persist_market_plugin_to(
+            std::path::Path::new(&path),
+            plugin,
+            actor,
+            now_ms,
         )
-    })
+        .map_err(|e| {
+            CoreError::new(
+                CoreErrorCode::InvalidParams,
+                format!("market.plugin.set: persist failed, nothing changed: {e}"),
+            )
+        })?;
+    }
+    Ok(())
 }
 
 // ── 行情插件凭据（API 配置 UI 的内核侧）─────────────────────────────────────
@@ -943,6 +976,43 @@ mod set_tests {
             "the persist refusal carries the round_duration.set posture: {}",
             err.message
         );
+    }
+
+    /// #36: `market.plugin.set` writes through `Core.store` (StoreApi seam)
+    /// in addition to the existing `config.json` cell — additive, not a
+    /// replacement. A core assembled with a store sees the write land on the
+    /// store; the file cell is still written for the boot read-back.
+    #[tokio::test]
+    async fn store_route_receives_the_market_plugin_write() {
+        use crate::store::test_support::{RecordingStore, install_store};
+
+        let dir = scratch("store-route");
+        let cell = cell_in(&dir);
+        let core = core_with_cell(Some(cell.clone()));
+        let (store, writes) = RecordingStore::new();
+        {
+            let mut g = core.lock().await;
+            install_store(&mut g, store);
+        }
+        let reg = registry_with(&["alpha", "beta"]);
+
+        let update = apply_plugin_set(&reg, &core, &patch(Some("alpha"), false), "uid:test", 1)
+            .await
+            .expect("a registered name writes through the store");
+
+        assert_eq!(update.next_session_plugin, "alpha");
+        // The StoreApi seam recorded the write.
+        let logged = writes.lock().unwrap().clone();
+        assert!(
+            logged.iter().any(|s| s == "market-plugin=Some(\"alpha\")"),
+            "the store recorded the market-plugin write: {logged:?}"
+        );
+        // The config.json cell is still written (additive, not replacement).
+        let cell_after =
+            crate::runtime_config::load_market_plugin_from(std::path::Path::new(&cell))
+                .expect("the cell must hold the write");
+        assert_eq!(cell_after.plugin, "alpha");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

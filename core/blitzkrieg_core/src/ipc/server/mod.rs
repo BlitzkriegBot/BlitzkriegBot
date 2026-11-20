@@ -713,7 +713,14 @@ async fn handle_line(
     };
 
     match reply {
-        Ok(v) => serde_json::to_string(&Success::new(id, v)).unwrap_or_default(),
+        Ok(v) => match serde_json::to_string(&Success::new(id.clone(), v)) {
+            Ok(s) => s,
+            // 成功路径的响应本身无法编码：降级为结构化错误帧，绝不向客户端
+            // 发空行。空行会被会话读循环当成对端断连
+            // (`line.trim().is_empty() → break 'session`)，让编码故障看起来
+            // 像正常结束（issue #46 fail-closed）。
+            Err(e) => fail(id, Failure::APPLICATION, format!("response encoding failed: {e}"), None),
+        },
         Err((code, msg, data)) => fail(id, code, msg, data),
     }
 }
@@ -741,8 +748,19 @@ where
     })
 }
 
+/// 编码错误帧自身失败时不可再退化：退回一条最小的、手工拼装、不可再失败的
+/// JSON-RPC 错误帧。绝不返回空行——空行会被会话读循环当成对端断连，让
+/// 故障看起来像正常结束（issue #46 fail-closed）。
 fn fail(id: Value, code: i32, message: String, data: Option<ErrorData>) -> String {
-    serde_json::to_string(&Failure::new(id, code, message, data)).unwrap_or_default()
+    match serde_json::to_string(&Failure::new(id.clone(), code, message, data)) {
+        Ok(s) => s,
+        Err(_) => {
+            let id_json = serde_json::to_string(&id).unwrap_or_else(|_| "null".to_string());
+            format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{id_json},\"error\":{{\"code\":-32603,\"message\":\"internal error: response encoding failed\"}}}}"
+            )
+        }
+    }
 }
 
 fn core_err(e: crate::model::CoreError) -> (i32, String, Option<ErrorData>) {

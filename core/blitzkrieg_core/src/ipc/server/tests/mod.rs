@@ -829,3 +829,4 @@ mod tests_snapshot_dedupe;
 mod tests_strategy_verbs;
 mod tests_update_verbs;
 mod tests_venue_binding;
+mod tests_fail_closed;

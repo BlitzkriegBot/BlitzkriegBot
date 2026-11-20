@@ -33,43 +33,69 @@ pub async fn run(
         });
     }
 
-    // 进化引擎的两个开关：`kernel_meta` 是家（`.env` 的 `SHADOW_*` 只是旧部署
-    // 的回退）。必须在 Core 构造前读 —— 它们决定引擎启动时是否 scaffolding。
-    // 读失败 / 无行 = 沿用 env，不新增失败面（真正的打开失败由下面的
-    // `open_account_risk_db` 统一拒绝）。
-    if let Ok(db) = crate::risk::account_store::AccountRiskDb::open(crate::db::default_db_path()) {
-        if let Ok(Some(raw)) = db.load_kernel_meta(crate::risk::account_store::SHADOW_ENABLED_META)
-        {
-            match raw.trim() {
-                "true" => config.shadow_evolution_enabled = true,
-                "false" => config.shadow_evolution_enabled = false,
-                other => eprintln!(
-                    "blitzkrieg-core: WARNING: kernel_meta shadow_enabled=`{other}` is not \
-                     true/false — the env spelling stands"
-                ),
-            }
+// 进化引擎的两个开关：`kernel_meta` 是家（`.env` 的 `SHADOW_*` 只是旧部署
+// 的回退）。必须在 Core 构造前读 —— 它们决定引擎启动时是否 scaffolding。
+//
+// issue #46（fail-closed）：`AccountRiskDb` 打开失败或 `kernel_meta` 读取
+// 失败不得静默回退 `.env` 拼写——那样会让内核在 operator 不察觉的
+// 情况下以旧键启动，而与之对齐的主 boot 路径（下方的
+// `open_account_risk_db`）是拒绝启动的。打开/读取失败一律 `?` 向上
+// 抛结构化错误；只有主键缺失（`Ok(None)`）才不是失败，那时再沿用
+// env 拼写。
+    let meta_db_path = crate::db::default_db_path();
+    let meta_db = crate::risk::account_store::AccountRiskDb::open(&meta_db_path)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "account risk DB open failed at {} ({e}) — refusing to boot \
+                 (fail-closed: kernel metadata store cannot be read; the env spelling \
+                 is not a fallback — issue #46)",
+                meta_db_path.display()
+            )
+        })?;
+    let raw = meta_db
+        .load_kernel_meta(crate::risk::account_store::SHADOW_ENABLED_META)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "kernel meta `shadow_enabled` read failed ({e}) — refusing to boot \
+                 (fail-closed: env fallback is retired — issue #46)"
+            )
+        })?;
+    if let Some(raw) = raw {
+        match raw.trim() {
+            "true" => config.shadow_evolution_enabled = true,
+            "false" => config.shadow_evolution_enabled = false,
+            other => eprintln!(
+                "blitzkrieg-core: WARNING: kernel_meta shadow_enabled=`{other}` is not \
+                 true/false — the env spelling stands"
+            ),
         }
-        if let Ok(Some(raw)) =
-            db.load_kernel_meta(crate::risk::account_store::SHADOW_AUTO_EVOLVE_META)
-        {
-            match raw.trim() {
-                "true" => {
-                    config
-                        .shadow_evolution_tuning
-                        .get_or_insert_with(Default::default)
-                        .auto_evolve = Some(true)
-                }
-                "false" => {
-                    config
-                        .shadow_evolution_tuning
-                        .get_or_insert_with(Default::default)
-                        .auto_evolve = Some(false)
-                }
-                other => eprintln!(
-                    "blitzkrieg-core: WARNING: kernel_meta shadow_auto_evolve=`{other}` is not \
-                     true/false — the env spelling stands"
-                ),
+    }
+    let raw = meta_db
+        .load_kernel_meta(crate::risk::account_store::SHADOW_AUTO_EVOLVE_META)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "kernel meta `shadow_auto_evolve` read failed ({e}) — refusing to boot \
+                 (fail-closed: env fallback is retired — issue #46)"
+            )
+        })?;
+    if let Some(raw) = raw {
+        match raw.trim() {
+            "true" => {
+                config
+                    .shadow_evolution_tuning
+                    .get_or_insert_with(Default::default)
+                    .auto_evolve = Some(true)
             }
+            "false" => {
+                config
+                    .shadow_evolution_tuning
+                    .get_or_insert_with(Default::default)
+                    .auto_evolve = Some(false)
+            }
+            other => eprintln!(
+                "blitzkrieg-core: WARNING: kernel_meta shadow_auto_evolve=`{other}` is not \
+                 true/false — the env spelling stands"
+            ),
         }
     }
 
@@ -1201,7 +1227,19 @@ pub(super) fn spawn_session(
                     tokio::time::timeout(WRITE_STALL, out_tx.send(format!("{response}\n"))).await;
                 match sent {
                     Ok(Ok(())) => {}
-                    _ => break 'session,
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            error = %e,
+                            "IPC session response channel closed — tearing down session (write fail-closed)"
+                        );
+                        break 'session;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "IPC session write stalled past WRITE_STALL — client unreachable, tearing down session (write fail-closed)"
+                        );
+                        break 'session;
+                    }
                 }
             }
             // 无换行残留超限：截断（清空，不再喂给解析）并断开（契约 3）。

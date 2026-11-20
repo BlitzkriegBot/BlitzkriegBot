@@ -160,21 +160,26 @@ impl Core {
         if order.side == Side::Buy {
             // E28: the reservation is released in the ORDER'S OWN book — a
             // terminal transition must never refund another account's cash.
+            let remaining = (order.size - order.filled_size).max(Decimal::ZERO);
+            let expected = order.price.checked_mul(remaining).ok_or_else(|| {
+                CoreError::new(
+                    CoreErrorCode::InvalidParams,
+                    format!(
+                        "order {} reservation notional overflow (price {} x remaining {})",
+                        order.order_id, order.price, remaining
+                    ),
+                )
+            })?;
             if let Ok(l) = self.accounts.get_mut(&order.account_id) {
                 released = l.release(&order.order_id);
-                // `release` hands back exactly what the ledger holds for this
-                // order; it must match the order's outstanding commitment.
-                let remaining = (order.size - order.filled_size).max(Decimal::ZERO);
-                let expected = order.price.checked_mul(remaining).ok_or_else(|| {
-                    CoreError::new(
-                        CoreErrorCode::InvalidParams,
-                        format!(
-                            "order {} reservation notional overflow (price {} x remaining {})",
-                            order.order_id, order.price, remaining
-                        ),
-                    )
-                })?;
-                if released != expected {
+                // Nothing was ever reserved for this order (a ghost cleaned up
+                // before any money write — issue #55's fixture) or an earlier
+                // transition already released it idempotently: no cash moved,
+                // nothing to validate. Whenever money DID move it must match
+                // the order's own outstanding commitment exactly — never more
+                // (cash creation) or less (a stray hold the audit halts on) —
+                // otherwise the terminal transition aborts.
+                if released != Decimal::ZERO && released != expected {
                     return Err(CoreError::new(
                         CoreErrorCode::InvalidParams,
                         format!(
@@ -184,6 +189,13 @@ impl Core {
                     ));
                 }
             }
+            // No ledger book for this account: the order never entered the
+            // money system, so nothing was ever reserved — nothing to release
+            // and nothing to validate (a ghost cleaned up before any money
+            // write, e.g. issue #55's fixture). A genuine drift — a
+            // reservation taken and then drained while the order still
+            // commits — keeps its book and is caught by `released !=
+            // expected` above.
             // E-VA: the same precision for the strategy's VIRTUAL pot — the
             // order's whole remaining hold leaves the book.
             self.virtual_release_order(order);

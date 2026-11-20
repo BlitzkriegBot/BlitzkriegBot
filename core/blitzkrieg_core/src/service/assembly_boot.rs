@@ -40,6 +40,21 @@ impl Core {
         Self::with_account_book(config, accounts)
     }
 
+    /// #1278 seam: forward one money fact to the wired store; with no store
+    /// wired (tests, backtester) report `MemoryOnly { NoStoreConfigured }`
+    /// honestly instead of silently succeeding.
+    pub fn append_money_fact(
+        &self,
+        fact: &crate::store::MoneyFact<'_>,
+    ) -> Result<crate::store::WriteOutcome, crate::model::CoreError> {
+        match &self.store {
+            Some(store) => store.append_money_fact(fact),
+            None => Ok(crate::store::WriteOutcome::MemoryOnly {
+                reason: crate::store::MemoryOnlyReason::NoStoreConfigured,
+            }),
+        }
+    }
+
     /// The constructor with the account book SUPPLIED (E28): a multi-account
     /// book for tests without touching the operator's `.env` account rows the
     /// process cwd decides. Production always enters through [`Core::new`],

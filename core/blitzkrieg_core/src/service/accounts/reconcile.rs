@@ -468,8 +468,17 @@ impl Core {
                 crate::reconcile::ReconcileAction::MarkedFilled { core_order_id } => {
                     self.persist_order(core_order_id)?;
                 }
-                crate::reconcile::ReconcileAction::MarkedCancelled { core_order_id }
-                | crate::reconcile::ReconcileAction::MarkedForceClosed { core_order_id } => {
+                crate::reconcile::ReconcileAction::MarkedCancelled { core_order_id } => {
+                    // detect_ghosts closed these through Core::cancel (exits.rs:93),
+                    // which already ran release_order_bookkeeping and validated it.
+                    // Re-releasing here observes an emptied reservation and aborts
+                    // a clean sweep — bookkeeping happened exactly once, at cancel.
+                    self.persist_order(core_order_id)?;
+                }
+                crate::reconcile::ReconcileAction::MarkedForceClosed { core_order_id } => {
+                    // Ghost the venue never knew: detect_ghosts stamped ForceClosed
+                    // but left the money bookkeeping to the sweep — release exactly
+                    // once, fail-closed (a mismatch aborts, no silent stray holds).
                     if let Some(order) = self.ome.get(core_order_id).cloned() {
                         let was_live = live_before.contains(order.order_id.as_str());
                         self.release_order_bookkeeping(&order, was_live, "reconcile")?;
@@ -607,14 +616,7 @@ impl Core {
             // shares. An unknown account is logged and skipped (no implicit
             // book, no silent mint).
             if let Ok(l) = self.accounts.get_mut(&position_account) {
-                if let Err(e) = l.settle_sell_fill(notional, fee_usd) {
-                    tracing::error!(
-                        token = %t.token_id,
-                        account = %position_account.as_str(),
-                        error = %e,
-                        "external sell settlement store write failed"
-                    );
-                }
+                l.settle_sell_fill(notional, fee_usd);
             } else {
                 tracing::error!(
                     token = %t.token_id,

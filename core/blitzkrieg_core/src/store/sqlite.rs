@@ -999,20 +999,6 @@ impl super::StoreApi for SqliteStore {
         Ok(WriteOutcome::Persisted)
     }
 
-    /// #1278: 一个账户作用域的设定单元写（upsert `Some` / 删除 `None`），
-    /// 先 `ensure_account` 保证 FK 前置行存在（不覆盖已有行），再走
-    /// `write_settings` 的 upsert/sweep。落库后返回 `Persisted`。
-    fn put_setting(
-        &self,
-        scope: AccountScope<'_>,
-        key: &str,
-        value: Option<&str>,
-    ) -> Result<WriteOutcome, CoreError> {
-        self.ensure_account(scope.account.as_str(), None)?;
-        self.write_settings(scope.account.as_str(), &[(key, value)])?;
-        Ok(WriteOutcome::Persisted)
-    }
-
     /// issue #47: config.json 直写替换为 SQLite persist 路径。market_plugin
     /// 单元以 JSON 字符串落 `kernel_meta.runtime_config_json`，与导入时
     /// `db_import.rs` 的 `runtime_config_json` 单元格同一格式；读者通过
@@ -1066,7 +1052,6 @@ impl super::StoreApi for SqliteStore {
             .map(|s| s.trim().to_string());
         Ok(plugin)
     }
-}
 }
 
 #[cfg(test)]

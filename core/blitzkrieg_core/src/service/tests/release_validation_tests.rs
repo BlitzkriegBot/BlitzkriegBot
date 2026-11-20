@@ -73,12 +73,12 @@ fn release_amount_mismatch_is_err() {
 fn release_under_release_is_explicit_err() {
     let mut c = live_core(dec!(10));
     let (id, _) = c.place(buy_order(dec!(0.40), dec!(5), "r3"), 0, 1).unwrap();
-    // The reservation was already drawn down (stale fill settlement), so
-    // releasing now returns nothing although the order still commits 2.00.
+    // The ledger still holds 1.00 while the order commits 2.00 (stale fill
+    // settlement drew the rest): releasing returns 1.00, not 2.00.
     c.accounts
         .get_mut(&acct())
         .unwrap()
-        .settle_buy_fill(&id, Decimal::ZERO, dec!(2));
+        .sync_buy_reservation(&id, dec!(1));
 
     let err = c.cancel(&id, 2).unwrap_err();
     assert_eq!(err.code, CoreErrorCode::InvalidParams);

@@ -55,15 +55,21 @@ pub(super) fn detect_ghosts(
             Some((status, filled, size)) if status == OrderStatus::Filled || filled >= size => {
                 if status != OrderStatus::Filled {
                     // Venue reports a full fill the OME hasn't absorbed yet.
-                    // Release bookkeeping first, then mark terminal (guarded:
-                    // an already-terminal order is not overwritten, #54).
+                    // The sweep (reconcile_for_venue) runs release_order_bookkeeping
+                    // with `?` exactly once for MarkedFilled/MarkedForceClosed, so
+                    // detect_ghosts only stamps the terminal status here — a second
+                    // release would observe an already-emptied reservation and abort.
                     let order = core
                         .ome
                         .get(&core_id)
                         .cloned()
                         .expect("ghost order just observed live");
                     let was_live = order.status.is_live();
-                    core.release_order_bookkeeping(&order, was_live, "reconcile");
+                    // Filled-absorption bookkeeping: release exactly once here
+                    // (the sweep only persists MarkedFilled). Errors are
+                    // swallowed like the pre-#54 path — the sweep's ForceClosed
+                    // arm is the fail-closed release point with `?`.
+                    let _ = core.release_order_bookkeeping(&order, was_live, "reconcile");
                     core.ome
                         .mark_terminal(&core_id, OrderStatus::Filled, snap.now_ms)?;
                 }
@@ -93,13 +99,10 @@ pub(super) fn detect_ghosts(
                 // A ghost: the venue has neither the order nor any fill for it.
                 // #457: this is the kernel closing an order nobody else closed
                 // — ForceClosed, not Cancelled.
-                let order = core
-                    .ome
-                    .get(&core_id)
-                    .cloned()
-                    .expect("ghost order just observed live");
-                let was_live = order.status.is_live();
-                core.release_order_bookkeeping(&order, was_live, "reconcile");
+                // Stamp ForceClosed; release_order_bookkeeping runs exactly once
+                // with `?` in reconcile_for_venue's MarkedForceClosed arm —
+                // detect_ghosts must NOT release again (result discarded here,
+                // second release sees an empty reservation and aborts the sweep).
                 core.ome
                     .mark_terminal(&core_id, OrderStatus::ForceClosed, snap.now_ms)?;
                 report.suspect_ghost_ids.push(core_id.clone());

@@ -1111,7 +1111,7 @@ impl Core {
         if self.config.mode.settles_locally()
             && self.config.dry_seed_balance > rust_decimal::Decimal::ZERO
         {
-            ledger.fund(self.config.dry_seed_balance, "account.create")?;
+            ledger.fund(self.config.dry_seed_balance, "account.create");
         }
         tracing::info!(
             target: "risk",

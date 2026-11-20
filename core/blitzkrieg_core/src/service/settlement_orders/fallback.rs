@@ -341,16 +341,7 @@ impl Core {
             let a = AccountId::from(account_id.as_str());
             match self.accounts.get_mut(&a) {
                 Ok(l) => {
-                    if let Err(e) =
-                        l.credit_redemption_with_correction(booked, venue_usd, &position_id)
-                    {
-                        tracing::error!(
-                            position = %position_id,
-                            account = %account_id,
-                            error = %e,
-                            "fallback claim redemption store write failed — cash NOT credited"
-                        );
-                    }
+                    l.credit_redemption_with_correction(booked, venue_usd, &position_id);
                 }
                 Err(e) => {
                     // An unknown account cannot happen (the claim was booked

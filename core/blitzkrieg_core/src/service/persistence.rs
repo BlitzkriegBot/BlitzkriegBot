@@ -172,7 +172,7 @@ impl Core {
     /// `emit_fill`) log the error instead of discarding it.
     pub(super) fn persist_order(&self, id: &str) -> Result<(), CoreError> {
         if let (Some(db), Some(o)) = (self.order_db.as_ref(), self.ome.get(id)) {
-            db.append(o)?;
+            db.append(o);
         }
         Ok(())
     }

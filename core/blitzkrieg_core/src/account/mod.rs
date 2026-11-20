@@ -412,9 +412,7 @@ impl AccountLedgers {
     /// boot-replay logic keys on that spelling.
     pub fn seed_all(&mut self, seed: rust_decimal::Decimal) {
         for ledger in self.ledgers.values_mut() {
-            if let Err(e) = ledger.seed(seed) {
-                tracing::error!(error = %e, "seed_all store write failed");
-            }
+            ledger.seed(seed);
         }
     }
 
@@ -426,9 +424,7 @@ impl AccountLedgers {
     /// reset the environment".
     pub fn reset_all_to_seed(&mut self, seed: rust_decimal::Decimal) {
         for ledger in self.ledgers.values_mut() {
-            if let Err(e) = ledger.reset_to_seed(seed) {
-                tracing::error!(error = %e, "reset_all_to_seed store write failed");
-            }
+            ledger.reset_to_seed(seed);
         }
     }
 
@@ -440,7 +436,7 @@ impl AccountLedgers {
     /// and every ledger stays memory-only.
     pub(crate) fn set_store_on_all_ledgers(&mut self, store: &crate::store::SqliteStore) {
         for ledger in self.ledgers.values_mut() {
-            ledger.set_store(Box::new(store.clone()));
+            ledger.set_store(Some(Arc::new(store.clone())));
         }
     }
 
@@ -466,7 +462,7 @@ impl AccountLedgers {
         seed: rust_decimal::Decimal,
     ) -> CoreResult<bool> {
         let ledger = self.get_mut(id)?;
-        ledger.reset_account_to_seed(seed)
+        Ok(ledger.reset_account_to_seed(seed))
     }
 
     /// The process-level default account (§9.5). Session-level switches live

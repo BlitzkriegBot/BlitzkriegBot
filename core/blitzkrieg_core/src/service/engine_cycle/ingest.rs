@@ -124,13 +124,9 @@ impl Core {
                         self.stats.cashflow_rewards_usd += *amount_usd;
                     }
                 }
-                if let Err(e) = self
-                    .accounts
+                self.accounts
                     .active_ledger_mut()
-                    .credit_cashflow(*amount_usd, which.as_str())
-                {
-                    tracing::error!(error = %e, "cashflow credit store write failed");
-                }
+                    .credit_cashflow(*amount_usd, which.as_str());
                 // ponytail: the row names no account — DataEvent::Cashflow
                 // carries none (#388) and inventing one would mis-attribute.
                 // The venue wallet is a process-level funder fact; the credit

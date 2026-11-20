@@ -500,6 +500,16 @@ pub mod test_support {
             ));
             Ok(WriteOutcome::Persisted)
         }
+
+        fn save_market_plugin(&self, _plugin: Option<&str>) -> Result<(), CoreError> {
+            self.log("market_plugin:set");
+            Ok(())
+        }
+
+        fn load_market_plugin(&self) -> Result<Option<String>, CoreError> {
+            self.log("market_plugin:get");
+            Ok(None)
+        }
     }
 }
 

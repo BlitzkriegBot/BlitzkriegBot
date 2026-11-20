@@ -24,6 +24,7 @@ use std::fmt::Debug;
 use crate::account::config::CrossVenueArbConfig;
 use crate::account::{AccountId, AccountStatus, CredentialKeys};
 use crate::model::{CoreError, CoreErrorCode};
+use crate::position::OpenPosition;
 
 /// One domain write's field→value changes, in the wire audit's camelCase
 /// spelling (`maxSingleLossUsd`, `stopLossPct`, …). The store maps them to
@@ -337,6 +338,22 @@ pub trait StoreApi: Debug + Send + Sync {
             ),
         ))
     }
+
+    /// #38: 把当前开放仓位全集耐久到后端（`SqliteStore` 逐条 upsert 进
+    /// `positions` 表，`open=1`，PK `account_id + position_id`，幂等重写；
+    /// 传入的切片通常是 `Core::positions.open_positions()` 的全量快照——
+    /// 仓位少且寿命短，整表重写胜过增量补偿，且不改一 byte 现有 JSONL。
+    ///
+    /// `Err` = 后端被要求写入并拒绝/失败；`Ok(MemoryOnly { .. })` = 本轮
+    /// 内存生效、不耐久（诚实降级，绝不静默成功）。`Core::store == None`（回测器、大部分
+    /// 进程内测试）的走法由调用方缝合决定（见 `service/persistence.rs`
+    /// `persist_positions`）。
+    fn save_positions(&self, _positions: &[OpenPosition]) -> Result<WriteOutcome, CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_positions: no backend implements this yet".to_string(),
+        ))
+    }
 }
 
 // ── #1278 contract types (no callers yet) ────────────────────────────────
@@ -435,6 +452,7 @@ impl MoneyFact<'_> {
 pub mod test_support {
     use super::{AccountScope, MoneyFact, StoreApi, WriteOutcome};
     use crate::model::CoreError;
+    use crate::position::OpenPosition;
     use std::sync::Arc;
 
     /// Install an arbitrary [`StoreApi`] backend on a core (replacing any
@@ -445,10 +463,10 @@ pub mod test_support {
         core.store = Some(store);
     }
 
-    /// Test-only recording carrier: `append_money_fact`/`put_setting` record
-    /// the call and report `Persisted`; every other domain keeps the trait's
-    /// honest `Err` default. The four money-write faces' wiring tests use it
-    /// to assert the route without touching a file.
+    /// Test-only recording carrier: `append_money_fact`/`put_setting`/`save_positions`
+    /// record the call and report `Persisted`; every other domain keeps the
+    /// trait's honest `Err` default. The wiring tests use it to assert the
+    /// route without touching a file.
     #[derive(Debug)]
     pub struct RecordingStore {
         writes: Arc<std::sync::Mutex<Vec<String>>>,
@@ -487,6 +505,11 @@ pub mod test_support {
                 "setting:{}={key}={value:?}",
                 scope.account.as_str()
             ));
+            Ok(WriteOutcome::Persisted)
+        }
+
+        fn save_positions(&self, positions: &[OpenPosition]) -> Result<WriteOutcome, CoreError> {
+            self.log(&format!("positions:{}", positions.len()));
             Ok(WriteOutcome::Persisted)
         }
     }

@@ -52,6 +52,7 @@ use crate::account::config::CrossVenueArbConfig;
 use crate::account::{AccountStatus, CredentialKeys};
 use crate::db::{account_setting_remove, account_setting_set};
 use crate::model::{CoreError, CoreErrorCode};
+use crate::position::OpenPosition;
 use crate::risk::account_store::AccountRiskDb;
 use crate::risk::limits::{AccountRiskLimits, Bound, LimitSource};
 use crate::store::{AccountScope, FieldChanges, MoneyFact, WriteOutcome};
@@ -996,6 +997,57 @@ impl super::StoreApi for SqliteStore {
         self.write_settings(scope.account.as_str(), &[(key, value)])?;
         Ok(WriteOutcome::Persisted)
     }
+
+    /// #38: 把当前开放仓位全集落入 `positions` 表（PK account_id +
+    /// position_id，`open=1`，`INSERT OR REPLACE` 幂等重写）。每条位置
+    /// 用 `serde_json` 序列成 `payload_json`，`updated_at_ms` 串联写入
+    /// 时钟；整表一次性事务提交，失败回滚并返回 `Err`，绝不部分着陆。
+    /// `Ok(WriteOutcome::Persisted)` 只在事务真提交后返回。
+    fn save_positions(&self, positions: &[OpenPosition]) -> Result<WriteOutcome, CoreError> {
+        self.risk
+            .db()
+            .with_connection_mut(|conn| -> anyhow::Result<()> {
+                let tx = conn.transaction()?;
+                // #38: the `positions` table is dropped by migration v2
+                // (#1199 T-02: no historical runtime writer), so the store's
+                // own write face re-ensures it idempotently before writing —
+                // the write path must not depend on a table the migration
+                // deliberately removed from the baseline schema.
+                tx.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS positions (
+                        account_id    TEXT NOT NULL,
+                        position_id   TEXT NOT NULL,
+                        payload_json  TEXT NOT NULL,
+                        open          INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        PRIMARY KEY (account_id, position_id)
+                    )",
+                )?;
+                let now = crate::db::now_ms();
+                for position in positions {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO positions
+                                (account_id, position_id, payload_json, open, updated_at_ms)
+                         VALUES (?1, ?2, ?3, 1, ?4)",
+                        rusqlite::params![
+                            position.account_id.as_str(),
+                            position.id.as_str(),
+                            serde_json::to_string(position).map_err(|e| anyhow::anyhow!("{e}"))?,
+                            now,
+                        ],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!("save positions failed: {e}"),
+                )
+            })?;
+        Ok(WriteOutcome::Persisted)
+    }
 }
 
 #[cfg(test)]
@@ -1059,6 +1111,217 @@ mod tests {
         );
         drop(store);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #38: `save_positions` lands every position in the `positions` table
+    /// (account_id, position_id, payload_json, open = 1) inside one
+    /// transaction; a second handle on the same file still sees the rows
+    /// (durable across re-open).
+    #[test]
+    fn save_positions_persists_to_positions_table() {
+        use super::super::StoreApi;
+        use crate::exit_policy::ExitState;
+        use crate::model::{SignalDirection, default_account_id};
+        use crate::position::CashFlows;
+        use rust_decimal_macros::dec;
+        use std::sync::Arc;
+
+        let (store, dir) = temp_store();
+        let store: Arc<dyn StoreApi> = Arc::new(store);
+        let db_path = dir.join("store.sqlite");
+
+        let now = crate::db::now_ms();
+        let positions: Vec<crate::position::OpenPosition> = vec![
+            crate::position::OpenPosition {
+                id: "pos-1".into(),
+                strategy: "spread_arb".into(),
+                asset: "BTC".into(),
+                direction: SignalDirection::Up,
+                token_id: "tok-1".into(),
+                condition_id: "cond-1".into(),
+                entry_price: dec!(0.43),
+                current_price: dec!(0.45),
+                prev_price: dec!(0.44),
+                shares: dec!(10),
+                cost_usd: dec!(4.3),
+                was_maker_entry: true,
+                entry_fee_pct: dec!(0),
+                entry_role: crate::model::OrderRole::Maker,
+                exit_role: crate::model::OrderRole::Pending,
+                target_exit_price: None,
+                entered_at_ms: now,
+                expires_at_ms: now + 1000,
+                account_id: default_account_id(),
+                venue: "v".into(),
+                partner_token_id: String::new(),
+                last_book_ts: 0,
+                round_duration_sec: 0,
+                round_slot: 0,
+                state: ExitState::new(dec!(0.43), now),
+                flows: CashFlows {
+                    entry_cost_usd: dec!(4.3),
+                    opened_shares: dec!(10),
+                    ..Default::default()
+                },
+            },
+            crate::position::OpenPosition {
+                id: "pos-2".into(),
+                strategy: "spread_arb".into(),
+                asset: "ETH".into(),
+                direction: SignalDirection::Up,
+                token_id: "tok-2".into(),
+                condition_id: "cond-2".into(),
+                entry_price: dec!(2300),
+                current_price: dec!(2310),
+                prev_price: dec!(2295),
+                shares: dec!(2),
+                cost_usd: dec!(4600),
+                was_maker_entry: false,
+                entry_fee_pct: dec!(0.05),
+                entry_role: crate::model::OrderRole::Taker,
+                exit_role: crate::model::OrderRole::Pending,
+                target_exit_price: None,
+                entered_at_ms: now,
+                expires_at_ms: now + 2000,
+                account_id: default_account_id(),
+                venue: "v".into(),
+                partner_token_id: String::new(),
+                last_book_ts: 0,
+                round_duration_sec: 0,
+                round_slot: 0,
+                state: ExitState::new(dec!(2300), now),
+                flows: CashFlows {
+                    entry_cost_usd: dec!(4600),
+                    opened_shares: dec!(2),
+                    ..Default::default()
+                },
+            },
+        ];
+        assert!(
+            store.save_positions(&positions).is_ok(),
+            "save_positions must report Persisted for a durable write"
+        );
+
+        // Verify through a fresh SqliteStore handle on the same file.
+        let verifier = SqliteStore::open(&db_path).expect("verifier store opens");
+        let count = verifier
+            .risk
+            .db()
+            .with_connection(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM positions", rusqlite::params![], |r| {
+                    r.get::<_, i64>(0)
+                })
+            })
+            .unwrap();
+        assert_eq!(count, 2, "both positions must land in the positions table");
+
+        let payload: Option<String> = verifier
+            .risk
+            .db()
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT payload_json FROM positions WHERE position_id = ?1",
+                    rusqlite::params!["pos-1"],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+            })
+            .unwrap();
+        assert!(
+            payload.is_some() && payload.unwrap().contains("\"id\":\"pos-1\""),
+            "payload_json must carry the serialized position"
+        );
+
+        let open_flag: i64 = verifier
+            .risk
+            .db()
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT open FROM positions WHERE position_id = ?1",
+                    rusqlite::params!["pos-1"],
+                    |r| r.get::<_, i64>(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(open_flag, 1, "open positions land with open = 1");
+
+        drop(verifier);
+        drop(store);
+        // Re-open on the same file: the rows survived the commit.
+        let store2 = SqliteStore::open(&db_path).expect("store re-opens");
+        let count2 = store2
+            .risk
+            .db()
+            .with_connection(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM positions", rusqlite::params![], |r| {
+                    r.get::<_, i64>(0)
+                })
+            })
+            .unwrap();
+        assert_eq!(count2, 2, "positions must be durable across re-open");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #38: `RecordingStore` logs `save_positions` calls — the store seam is
+    /// observable without touching a file (the carrier decision, not the file,
+    /// is what the seam proves).
+    #[test]
+    fn save_positions_route_is_recorded_by_recording_store() {
+        use super::super::test_support::RecordingStore;
+        use crate::exit_policy::ExitState;
+        use crate::model::{SignalDirection, default_account_id};
+        use crate::position::CashFlows;
+        use rust_decimal_macros::dec;
+
+        let (store, writes) = RecordingStore::new();
+        let positions = vec![crate::position::OpenPosition {
+            id: "pos-1".into(),
+            strategy: "spread_arb".into(),
+            asset: "BTC".into(),
+            direction: SignalDirection::Up,
+            token_id: "tok".into(),
+            condition_id: "cond".into(),
+            entry_price: dec!(0.43),
+            current_price: dec!(0.45),
+            prev_price: dec!(0.44),
+            shares: dec!(10),
+            cost_usd: dec!(4.3),
+            was_maker_entry: true,
+            entry_fee_pct: dec!(0),
+            entry_role: crate::model::OrderRole::Maker,
+            exit_role: crate::model::OrderRole::Pending,
+            target_exit_price: None,
+            entered_at_ms: 1000,
+            expires_at_ms: 900_000,
+            account_id: default_account_id(),
+            venue: String::new(),
+            partner_token_id: String::new(),
+            last_book_ts: 0,
+            round_duration_sec: 0,
+            round_slot: 0,
+            state: ExitState::new(dec!(0.43), 1000),
+            flows: CashFlows {
+                entry_cost_usd: dec!(4.3),
+                opened_shares: dec!(10),
+                ..Default::default()
+            },
+        }];
+        let result = store.save_positions(&positions);
+        assert!(
+            result.is_ok(),
+            "recording carrier reports Persisted, got {:?}",
+            result
+        );
+        assert_eq!(
+            result.unwrap(),
+            WriteOutcome::Persisted,
+            "recording carrier reports Persisted"
+        );
+        let log = writes.lock().unwrap().clone();
+        assert_eq!(
+            log,
+            vec!["positions:1"],
+            "save_positions must be observable at the store seam"
+        );
     }
 
     /// The risk-bounds round-trip: a field set merges onto the stored row,

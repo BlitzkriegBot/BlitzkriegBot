@@ -222,6 +222,12 @@ impl Database {
         f(&guard)
     }
 
+    /// Run `f` against a mutable connection, for transactions and writes.
+    pub fn with_connection_mut<T>(&self, f: impl FnOnce(&mut Connection) -> T) -> T {
+        let mut guard = self.lock();
+        f(&mut guard)
+    }
+
     /// Lock the connection, recovering from a poisoned mutex.
     ///
     /// A panic while the connection was borrowed must not brick the kernel:

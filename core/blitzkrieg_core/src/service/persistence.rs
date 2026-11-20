@@ -8,6 +8,7 @@ use crate::model::AccountId;
 use crate::model::{CoreErrorCode, Side};
 use crate::schema::Event;
 use crate::service::Core;
+use crate::store::WriteOutcome;
 use rust_decimal::Decimal;
 use std::collections::VecDeque;
 
@@ -237,9 +238,38 @@ impl Core {
     /// Persist the current OPEN position set (best effort). Positions are few and
     /// short-lived, so the whole set is rewritten on every change rather than
     /// appended (a close needs no tombstone).
+    ///
+    /// #38: the set is also routed through `Core::store.save_positions`, so a
+    /// wired SQLite backend lands it in the `positions` table. The existing
+    /// JSONL write is kept byte-identical — additive abstraction, never a
+    /// removal. Store outcomes are logged honestly (`Persisted` is silent,
+    /// anything else warns) and trading continues either way, mirroring the
+    /// order_db wiring pattern.
     pub(super) fn persist_positions(&self) {
+        let positions = self.positions.open_positions();
+        if let Some(store) = self.store.as_ref() {
+            match store.save_positions(positions) {
+                Ok(WriteOutcome::Persisted) => {}
+                Ok(WriteOutcome::MemoryOnly { reason }) => {
+                    tracing::warn!(
+                        target: "store",
+                        ?reason,
+                        "persist_positions: position set not durable this session"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "store",
+                        error = %e,
+                        "persist_positions: store refused position write"
+                    );
+                }
+            }
+        }
+        // JSONL write kept byte-identical — #38 does not remove the existing
+        // position log path.
         if let Some(db) = self.position_db.as_ref() {
-            db.save(self.positions.open_positions());
+            db.save(positions);
         }
     }
 }

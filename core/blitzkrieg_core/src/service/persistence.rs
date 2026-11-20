@@ -240,9 +240,33 @@ impl Core {
     /// Persist the current OPEN position set (best effort). Positions are few and
     /// short-lived, so the whole set is rewritten on every change rather than
     /// appended (a close needs no tombstone).
+    ///
+    /// The byte-identical JSONL write stays (`position_db` owns the crash-recovery
+    /// format); the same set is additionally mirrored through `Core.store` so the
+    /// StoreApi carrier lands it too (issue #77). The store outcome is logged
+    /// honestly — refused or failed is a log line, never a silent success — and it
+    /// never aborts the round: the in-memory book stays the source of truth either
+    /// way.
     pub(super) fn persist_positions(&self) {
+        let positions = self.positions.open_positions();
         if let Some(db) = self.position_db.as_ref() {
-            db.save(self.positions.open_positions());
+            db.save(positions);
+        }
+        if let Some(store) = self.store.as_ref() {
+            match store.save_positions(positions) {
+                Ok(true) => {
+                    tracing::debug!(count = positions.len(), "open positions persisted via StoreApi");
+                }
+                Ok(false) => {
+                    tracing::warn!("open positions not persisted: no StoreApi carrier configured");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e.message,
+                        "open positions persist via StoreApi failed; the round keeps running"
+                    );
+                }
+            }
         }
     }
 }

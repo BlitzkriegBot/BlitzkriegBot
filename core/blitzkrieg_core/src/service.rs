@@ -10,7 +10,12 @@ use crate::schema::Event;
 use crate::settlement::SettlementBook;
 use crate::shadow_evolution::{ShadowEvolution, ShadowEvolutionConfig};
 use crate::sim::Book;
+use blitzkrieg_market_api::event_api::EventApi;
+use blitzkrieg_market_api::execution_api::ExecutionApi;
+use blitzkrieg_market_api::market_data_api::MarketDataApi;
 use blitzkrieg_market_api::net::now_ms;
+use blitzkrieg_market_api::risk_api::RiskApi;
+use blitzkrieg_market_api::strategy_api::StrategyApi;
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -99,6 +104,32 @@ pub struct Core {
     /// for this core (backtester, most in-process tests) — the standard
     /// "persistence is disabled" refusals read this.
     pub(crate) store: Option<Arc<dyn crate::store::StoreApi>>,
+    /// issue #82: the unified order placement/cancellation seam
+    /// ([`blitzkrieg_market_api::execution_api::ExecutionApi`]). `None` =
+    /// no backend wired — every placement/cancel fails closed with
+    /// `CoreErrorCode::Internal`; extensions fill in the venue wiring.
+    pub execution_api: Option<Box<dyn ExecutionApi>>,
+    /// issue #41: optional unified event publish/subscribe backend. `None`
+    /// = event publishing disabled; every [`EventApi`] call on a disabled
+    /// core refuses with `CoreErrorCode::Internal`. Install a `Box<dyn
+    /// EventApi>` here at assembly when a venue bus backend exists.
+    pub event_api: Option<Box<dyn EventApi>>,
+    /// Issue #36: the unified market-data READ seam. `None` = the
+    /// `MarketDataApi` backend is disabled for this core; every read then
+    /// fails loud (`"market_data_api::…: no backend implements this yet"`)
+    /// instead of fabricating prices.
+    pub market_data_api: Option<Box<dyn MarketDataApi>>,
+    /// issue #84: optional risk gate seam. `None` = the gate is disabled and
+    /// every call falls back to the trait default ("no backend implements
+    /// this yet"); no threshold values live in the core — a backend supplies
+    /// them (read-only abstraction, issue #84 / R6: nothing here changes any
+    /// risk threshold).
+    pub risk_api: Option<Box<dyn RiskApi>>,
+    /// issue #39: the strategy lifecycle seam (StoreApi-style). `None` =
+    /// disabled — no backend wired at assembly; extensions implement
+    /// `StrategyApi` and hand `Some(Box<dyn StrategyApi>)` to the
+    /// composition root. The C ABI vtable is untouched (R7): pure Rust seam.
+    pub strategy_api: Option<Box<dyn StrategyApi>>,
     /// Per-strategy consecutive-loss breakers (KI-10 / D-18 A). The daily loss
     /// cap and kill switch stay global — see [`LossBreakers`].
     breaker: LossBreakers,

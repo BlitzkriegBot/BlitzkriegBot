@@ -16,11 +16,16 @@
 
 pub use blitzkrieg_bk_contract::account;
 pub use blitzkrieg_bk_contract::decimal;
+pub use blitzkrieg_bk_contract::execution_api;
+pub use blitzkrieg_bk_contract::event_api;
 pub use blitzkrieg_bk_contract::fee;
 pub use blitzkrieg_bk_contract::kline;
 pub use blitzkrieg_bk_contract::modes;
 pub use blitzkrieg_bk_contract::net;
 pub use blitzkrieg_bk_contract::plugin;
+pub use blitzkrieg_bk_contract::market_data_api;
+pub use blitzkrieg_bk_contract::risk_api;
+pub use blitzkrieg_bk_contract::strategy_api;
 pub use blitzkrieg_bk_contract::types;
 
 pub mod unified;

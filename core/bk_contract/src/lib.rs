@@ -16,11 +16,16 @@
 
 pub mod account;
 pub mod decimal;
+pub mod execution_api;
+pub mod event_api;
 pub mod fee;
 pub mod kline;
 pub mod modes;
 pub mod net;
 pub mod plugin;
+pub mod market_data_api;
+pub mod risk_api;
+pub mod strategy_api;
 pub mod types;
 pub mod unified;
 

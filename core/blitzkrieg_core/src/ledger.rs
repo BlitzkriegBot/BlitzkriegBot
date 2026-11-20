@@ -14,10 +14,12 @@
 //! live balance. Reserve/release never touch `balance` and never journal.
 
 use crate::model::{CoreError, CoreErrorCode, CoreResult, OrderId};
+use crate::store::{MoneyFact, StoreApi};
 use blitzkrieg_market_api::net::now_ms;
 use rust_decimal::Decimal;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// The cash-movement kinds, one per place the balance actually changes.
 /// Wire/file spelling is `snake_case`.
@@ -129,6 +131,10 @@ pub struct Ledger {
     /// Deliberately not serialized and not replayed — the first venue report
     /// after a boot re-establishes it, which is the honest answer for the gap.
     venue_reported: bool,
+    /// The shared StoreApi — cash movements also land as `MoneyFact::Ledger`
+    /// money facts beside the byte-identical JSONL append (R7). `None` =
+    /// memory-only core (backtester, most in-process tests).
+    store: Option<Arc<dyn StoreApi>>,
 }
 
 impl Ledger {
@@ -140,6 +146,12 @@ impl Ledger {
     /// already holds rows keeps them (the replay path fills this itself).
     pub(crate) fn set_journal_path(&mut self, path: PathBuf) {
         self.journal_path = Some(path);
+    }
+
+    /// Wire the shared StoreApi — applied once at core assembly; every
+    /// `apply_tagged` row then also lands as a `MoneyFact::Ledger` fact.
+    pub(crate) fn set_store(&mut self, store: Option<Arc<dyn StoreApi>>) {
+        self.store = store;
     }
 
     /// Boot replay: adopt rows loaded from the durable file and restore the
@@ -225,6 +237,13 @@ impl Ledger {
                 tracing::warn!(
                     path = %path.display(),
                     "ledger journal append failed — entry kept in memory, not durable; trading continues"
+                );
+            }
+            if let Some(ref s) = self.store
+                && let Err(e) = s.append_money_fact(&MoneyFact::Ledger(&entry))
+            {
+                tracing::warn!(
+                    "ledger money_fact append refused — JSONL row kept, store write failed: {e:?}"
                 );
             }
             if self.journal.len() == JOURNAL_CAP {
@@ -788,6 +807,26 @@ mod tests {
             "",
             "venue truth needs no model label"
         );
+    }
+
+    #[test]
+    fn seed_routes_ledger_fact_through_store_and_keeps_journal() {
+        let (store, writes) = crate::store::test_support::RecordingStore::new();
+        let mut ledger = Ledger::new();
+        ledger.set_store(Some(store));
+
+        ledger.seed(dec!(100));
+
+        let log = writes.lock().unwrap().clone();
+        assert!(
+            log.iter().any(|s| s == "money:ledger"),
+            "apply_tagged must route the ledger row as a money fact: {log:?}"
+        );
+        // R7: the journal row itself is unchanged.
+        assert_eq!(ledger.balance(), dec!(100));
+        let rows = ledger.journal_snapshot();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, JournalKind::Seed);
     }
 
     /// #995 wire compat — a journal row written before `feeSource` existed

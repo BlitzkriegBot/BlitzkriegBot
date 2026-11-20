@@ -218,13 +218,17 @@ impl SystemicRiskLimits {
     /// `Bound::off()`. No TOML layer is consulted — a `[risk]` section in a
     /// config file is inert.
     ///
-    /// A key that is present but unparseable is surfaced as a `tracing::warn`
-    /// naming the key and its raw value; an absent key stays the silent
-    /// factory `Bound::off()` (§4.1). The boot layer emits a separate WARN
-    /// when `.env` itself is missing or unreadable and all five keys are
-    /// absent, so an operator bypassing the `blitzkrieg` wrapper is not left
-    /// guessing why every limit stayed off.
+    /// Issue #48: a key that is present but unparseable is a configuration
+    /// error — the boot refuses instead of degrading to the silent factory
+    /// `Bound::off()` (unlimited / fail-open). An absent key stays the silent
+    /// factory `Bound::off()` (§4.1): "not configured" is not "configured
+    /// wrong". The boot layer emits a separate WARN when `.env` itself is
+    /// missing or unreadable and all five keys are absent, so an operator
+    /// bypassing the `blitzkrieg` wrapper is not left guessing why every
+    /// limit stayed off.
     pub fn from_env() -> Self {
+        // Unparseable keys panic inside from_lookup (fail-closed boot); a
+        // missing key is the silent factory posture below.
         Self::from_lookup(|key| std::env::var(key).ok())
     }
 
@@ -235,15 +239,16 @@ impl SystemicRiskLimits {
         let one = |key: &str| match lookup(key) {
             Some(raw) => match raw.trim().parse::<Decimal>() {
                 Ok(v) => Bound::new(v, LimitSource::Env),
-                Err(_) => {
-                    tracing::warn!(
-                        key = %key,
-                        raw = %raw,
-                        "risk key value unparseable — limit stays off (factory default)"
-                    );
-                    Bound::off()
-                }
+                // Issue #48: a key the operator SET but wrote wrong must not
+                // silently become the factory off posture (unlimited /
+                // fail-open). Refuse to boot and name the key.
+                Err(_) => panic!(
+                    "risk key {key} value {raw:?} unparseable — refusing to boot \
+                     with limits silently off (fix the BK_RISK_* value and restart)"
+                ),
             },
+            // Absent key = "not configured": the silent factory posture (§4.1),
+            // never an env-sourced one.
             None => Bound::off(),
         };
         Self {
@@ -264,8 +269,9 @@ impl SystemicRiskLimits {
     /// spellings are accepted so an operator can write either
     /// `BK_RISK_MAX_POSITION_SIZE_PAPER` (suffix, the execution-policy
     /// convention) or `BK_RISK_PAPER_MAX_POSITION_SIZE` (infix). The first
-    /// one found wins; a present-but-unparseable value warns and leaves the
-    /// fallback bound standing.
+    /// one found wins; a present-but-unparseable value panics — issue #48's
+    /// fail-closed backoff: a wrongly written key never silently keeps a
+    /// fallback bound.
     pub fn from_lookup_with_accounts<I, S>(
         accounts: I,
         lookup: impl Fn(&str) -> Option<String>,
@@ -317,10 +323,12 @@ impl SystemicRiskLimits {
                         set_account_bound(&mut row, field, Bound::new(v, LimitSource::Env));
                         touched = true;
                     }
-                    Err(_) => tracing::warn!(
-                        key = %keys[0],
-                        raw = %raw,
-                        "per-account risk key value unparseable — fallback bound stays"
+                    // Issue #48: a key the operator set but wrote wrong must
+                    // not silently keep a (possibly off) fallback bound.
+                    Err(_) => panic!(
+                        "per-account risk key {account} value {raw:?} unparseable \
+                         — refusing to boot with limits silently off (fix the \
+                         BK_RISK_* value and restart)"
                     ),
                 }
             }
@@ -639,6 +647,28 @@ mod tests {
             empty.account.max_position_size.source(),
             LimitSource::Default
         );
+    }
+
+    /// Issue #48: a present-but-unparseable BK_RISK_* key refuses the boot — it
+    /// never silently degrades to the factory off posture (unlimited / fail-open).
+    /// A key that is simply absent stays the factory posture.
+    #[test]
+    #[should_panic(expected = "unparseable")]
+    fn env_lookup_unparseable_key_refuses_to_boot() {
+        let vars = std::collections::HashMap::from([(
+            "BK_RISK_MAX_POSITION_SIZE".to_string(),
+            "not-a-number".to_string(),
+        )]);
+        let _ = SystemicRiskLimits::from_lookup(|k| vars.get(k).cloned());
+    }
+
+    /// Issue #48: the same fail-closed backoff for the per-account overlay.
+    #[test]
+    #[should_panic(expected = "unparseable")]
+    fn per_account_env_lookup_unparseable_refuses_to_boot() {
+        let _ = SystemicRiskLimits::from_lookup_with_accounts(["paper"], |k| {
+            (k == "BK_RISK_MAX_POSITION_SIZE_PAPER").then(|| "oops".to_string())
+        });
     }
 
     #[test]

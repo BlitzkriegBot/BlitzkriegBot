@@ -52,6 +52,7 @@ use crate::account::config::CrossVenueArbConfig;
 use crate::account::{AccountStatus, CredentialKeys};
 use crate::db::{account_setting_remove, account_setting_set, META_RUNTIME_CONFIG_JSON};
 use crate::model::{CoreError, CoreErrorCode};
+use crate::position::OpenPosition;
 use crate::risk::account_store::AccountRiskDb;
 use crate::risk::limits::{AccountRiskLimits, Bound, LimitSource};
 use crate::store::{AccountScope, FieldChanges, MoneyFact, WriteOutcome};
@@ -629,6 +630,78 @@ impl super::StoreApi for SqliteStore {
                 )
             })?;
         Ok(())
+    }
+
+    /// #77: mirror the open-position book into SQLite — one `positions` row
+    /// per open position, upserted by id, all in one transaction. The table is
+    /// (re)ensured idempotently on every call (migration v2 dropped the
+    /// runtime tables from the baseline schema, so `CREATE TABLE IF NOT
+    /// EXISTS` here is the only guarantee its container exists). The byte-
+    /// identical JSONL write in [`crate::service::persistence::persist_positions`]
+    /// stays; this write is the additional StoreApi landing. A failure comes
+    /// back as `Err` at the call site, which logs it and keeps the round
+    /// running — the in-memory book stays the source of truth either way.
+    fn save_positions(&self, positions: &[OpenPosition]) -> Result<bool, CoreError> {
+        let payloads: Vec<(String, String, String)> = positions
+            .iter()
+            .map(|p| {
+                serde_json::to_string(p).map(|payload| {
+                    (
+                        p.id.clone(),
+                        p.account_id.as_str().to_owned(),
+                        payload,
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, serde_json::Error>>()
+            .map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!("save_positions: serialize failed ({e})"),
+                )
+            })?;
+        let mut conn = self.risk.db().lock();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS positions (
+                id           TEXT PRIMARY KEY,
+                account_id   TEXT NOT NULL,
+                payload      TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            )",
+        )
+        .map_err(|e| {
+            CoreError::new(
+                CoreErrorCode::Internal,
+                format!("save_positions: table ensure failed ({e})"),
+            )
+        })?;
+        let tx = conn.transaction().map_err(|e| {
+            CoreError::new(
+                CoreErrorCode::Internal,
+                format!("save_positions: transaction begin failed ({e})"),
+            )
+        })?;
+        for (id, account_id, payload) in &payloads {
+            tx.execute(
+                "INSERT OR REPLACE INTO positions
+                        (id, account_id, payload, updated_at_ms)
+                     VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![id, account_id, payload, crate::db::now_ms()],
+            )
+            .map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!("save_positions: upsert failed ({e})"),
+                )
+            })?;
+        }
+        tx.commit().map_err(|e| {
+            CoreError::new(
+                CoreErrorCode::Internal,
+                format!("save_positions: commit failed ({e})"),
+            )
+        })?;
+        Ok(true)
     }
 
     fn save_risk_bounds(
@@ -1350,6 +1423,106 @@ mod tests {
         let err = store.remove_account("paper").unwrap_err();
         assert_eq!(err.code, CoreErrorCode::InvalidParams);
         assert!(err.message.contains("paper"), "{err}");
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #77: save_positions mirrors the open-position book — one `positions`
+    /// row per position, upserted by id (repeat saves stay one row), account
+    /// ids isolated, payloads deserialize back to an equal OpenPosition, and
+    /// an empty set still ensures the table without touching any row.
+    #[test]
+    fn save_positions_mirrors_the_open_book() {
+        use crate::account::AccountId;
+        use crate::exit_policy::ExitState;
+        use crate::model::{OrderRole, SignalDirection};
+        use crate::position::CashFlows;
+
+        let (store, dir) = temp_store();
+        let now = crate::db::now_ms();
+        let make = |id: &str, account: &str| OpenPosition {
+            id: id.to_string(),
+            strategy: "spread_arb".into(),
+            asset: "BTC".into(),
+            token_id: "tok".into(),
+            condition_id: "cond".into(),
+            entry_price: dec!(100),
+            current_price: dec!(101),
+            prev_price: dec!(100),
+            shares: dec!(10),
+            cost_usd: dec!(1000),
+            was_maker_entry: true,
+            entry_fee_pct: dec!(5),
+            entry_role: OrderRole::Pending,
+            exit_role: OrderRole::Pending,
+            direction: SignalDirection::Up,
+            target_exit_price: None,
+            entered_at_ms: now,
+            expires_at_ms: now + 3_600_000,
+            account_id: AccountId::from(account),
+            venue: "kalshi".into(),
+            partner_token_id: "partner".into(),
+            last_book_ts: now,
+            round_duration_sec: 0,
+            round_slot: 0,
+            state: ExitState::new(dec!(100), now),
+            flows: CashFlows::default(),
+        };
+        let a = make("a1", "alice");
+        let b = make("a2", "bob");
+        assert!(store.save_positions(&[a.clone(), b.clone()]).unwrap());
+
+        let rows: Vec<(String, String)> = store
+            .risk
+            .db()
+            .with_connection(|conn| -> rusqlite::Result<Vec<(String, String)>> {
+                let mut stmt = conn.prepare("SELECT id, account_id FROM positions ORDER BY id")?;
+                let rows: Vec<(String, String)> = stmt
+                    .query_map([], |r| -> rusqlite::Result<(String, String)> {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("a1".to_string(), "alice".to_string()),
+                ("a2".to_string(), "bob".to_string())
+            ],
+            "exactly one row per position, keyed by id"
+        );
+
+        // Idempotent re-save of a1 with a changed price: still one row per id,
+        // the payload carries the new value.
+        let mut a2 = a.clone();
+        a2.current_price = dec!(150);
+        assert!(store.save_positions(&[a2.clone()]).unwrap());
+        let count: i64 = store
+            .risk
+            .db()
+            .with_connection(|conn| conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(count, 2, "upsert by id never duplicates");
+        let payload: String = store
+            .risk
+            .db()
+            .with_connection(|conn| conn.query_row("SELECT payload FROM positions WHERE id = 'a1'", [], |r| r.get(0)))
+            .unwrap();
+        let back: OpenPosition = serde_json::from_str(&payload).unwrap();
+        assert_eq!(back.current_price, dec!(150));
+        assert_eq!(back.account_id, AccountId::from("alice"));
+
+        // An empty set: the table is ensured, no row is touched.
+        assert!(store.save_positions(&[]).unwrap());
+        let count: i64 = store
+            .risk
+            .db()
+            .with_connection(|conn| conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0)))
+            .unwrap();
+        assert_eq!(count, 2, "empty save must not delete existing rows");
+
         drop(store);
         let _ = std::fs::remove_dir_all(dir);
     }

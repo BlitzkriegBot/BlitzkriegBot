@@ -24,6 +24,7 @@ use std::fmt::Debug;
 use crate::account::config::CrossVenueArbConfig;
 use crate::account::{AccountId, AccountStatus, CredentialKeys};
 use crate::model::{CoreError, CoreErrorCode};
+use crate::position::OpenPosition;
 
 /// One domain write's field→value changes, in the wire audit's camelCase
 /// spelling (`maxSingleLossUsd`, `stopLossPct`, …). The store maps them to
@@ -157,6 +158,21 @@ pub trait StoreApi: Debug + Send + Sync {
         Err(CoreError::new(
             CoreErrorCode::Internal,
             "save_account_opening_equity: no backend implements this yet".to_string(),
+        ))
+    }
+
+    // ── Open positions ───────────────────────────────────────────────────
+
+    /// `position.save`: mirror the open-position book into the carrier — one
+    /// upserted row per open position, all in one transaction. The byte-
+    /// identical JSONL write in [`crate::service::persistence::persist_positions`]
+    /// stays; this is the additional StoreApi landing (issue #77). Returns
+    /// whether the write landed — `false` = no carrier on this core (the
+    /// honest "memory only" posture).
+    fn save_positions(&self, _positions: &[OpenPosition]) -> Result<bool, CoreError> {
+        Err(CoreError::new(
+            CoreErrorCode::Internal,
+            "save_positions: no backend implements this yet".to_string(),
         ))
     }
 
@@ -510,6 +526,11 @@ pub mod test_support {
             self.log("market_plugin:get");
             Ok(None)
         }
+
+        fn save_positions(&self, positions: &[crate::position::OpenPosition]) -> Result<bool, CoreError> {
+            self.log(&format!("positions:{}", positions.len()));
+            Ok(true)
+        }
     }
 }
 
@@ -630,6 +651,11 @@ mod tests {
         ) -> Result<(), CoreError> {
             self.log(format!("equity:{account_id}={equity}@{at_ms}"));
             Ok(())
+        }
+
+        fn save_positions(&self, positions: &[OpenPosition]) -> Result<bool, CoreError> {
+            self.log(format!("positions:{}", positions.len()));
+            Ok(true)
         }
 
         fn save_risk_bounds(

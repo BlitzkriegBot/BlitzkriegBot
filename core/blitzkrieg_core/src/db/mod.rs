@@ -222,6 +222,18 @@ impl Database {
         f(&guard)
     }
 
+    /// Run `f` against the connection with a mutable borrow — for call sites
+    /// whose work is one transaction spanning several statements (a table
+    /// ensure plus a batch upsert, e.g. [`SqliteStore::save_positions`]):
+    /// exclusivity is in the signature, not a comment. Same single-writer
+    /// discipline as [`Database::with_connection`]; the guard is held for the
+    /// closure's duration, so nested calls on the same thread deadlock —
+    /// callers must not re-enter.
+    pub fn with_connection_mut<T>(&mut self, f: impl FnOnce(&mut Connection) -> T) -> T {
+        let mut guard = self.lock();
+        f(&mut guard)
+    }
+
     /// Lock the connection, recovering from a poisoned mutex.
     ///
     /// A panic while the connection was borrowed must not brick the kernel:

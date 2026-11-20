@@ -317,7 +317,7 @@ impl Core {
             .map(|o| o.order_id.clone())
             .collect();
         let report = if venue.is_empty() {
-            crate::reconcile::reconcile(&mut self.ome, &snap)?
+            crate::reconcile::reconcile(self, &snap)?
         } else {
             // Orders whose execution venue is a DIFFERENT one are not this
             // sweep's business. An order whose venue cannot be resolved today
@@ -333,7 +333,7 @@ impl Core {
                 })
                 .map(|o| o.order_id.clone())
                 .collect();
-            crate::reconcile::reconcile_scoped(&mut self.ome, &snap, &skip)?
+            crate::reconcile::reconcile_scoped(self, &snap, &skip)?
         };
         // The sweep channel just proved itself alive — a failed-sweep streak
         // only counts failures in a row (E31-b). The per-venue table clears

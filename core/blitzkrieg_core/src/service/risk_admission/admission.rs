@@ -1113,16 +1113,50 @@ impl Core {
                     // E28: the killed FOK's reservation is released in the
                     // ORDER'S OWN book.
                     if let Ok(l) = self.accounts.get_mut(&order.account_id) {
-                        l.release(&order.order_id);
+                        let released = l.release(&order.order_id);
+                        // The released notional must equal the order's
+                        // outstanding commitment; over/under release is an
+                        // accounting fault and must not be swallowed.
+                        let remaining = (order.size - order.filled_size).max(Decimal::ZERO);
+                        let expected = match order.price.checked_mul(remaining) {
+                            Some(expected) => expected,
+                            None => {
+                                let err = CoreError::new(
+                                    CoreErrorCode::InvalidParams,
+                                    format!(
+                                        "order {} reservation notional overflow (price {} x remaining {})",
+                                        order.order_id, order.price, remaining
+                                    ),
+                                );
+                                tracing::error!(order = %order.order_id, error = %err, "release notional overflow");
+                                self.emit_error_at(err.clone(), leg.report_at_ms);
+                                continue;
+                            }
+                        };
+                        if released != expected {
+                            let err = CoreError::new(
+                                CoreErrorCode::InvalidParams,
+                                format!(
+                                    "order {} release mismatch: ledger released {}, outstanding commitment {}",
+                                    order.order_id, released, expected
+                                ),
+                            );
+                            tracing::error!(order = %order.order_id, error = %err, "release mismatch");
+                            self.emit_error_at(err.clone(), leg.report_at_ms);
+                        }
                     }
                     // E-VA: the virtual hold goes with it.
                     self.virtual_release_order(&order);
                 }
-                let _ = self.ome.mark_terminal(
-                    &order.order_id,
-                    OrderStatus::Rejected,
-                    leg.report_at_ms,
-                );
+                // The terminal stamp must not be swallowed: a silent failure
+                // would leave the order live while its reservation is gone.
+                if let Err(e) =
+                    self.ome
+                        .mark_terminal(&order.order_id, OrderStatus::Rejected, leg.report_at_ms)
+                {
+                    tracing::error!(order = %order.order_id, error = %e, "mark_terminal rejected failed");
+                    self.emit_error_at(e, leg.report_at_ms);
+                }
                 // RFC 568 阶段一：死亡事实（in-flight taker 被杀）喂配对簿。
                 self.pair_on_order_event(&order.internal_key, Decimal::ZERO, true);
                 let err = CoreError::new(CoreErrorCode::WouldCross, msg);

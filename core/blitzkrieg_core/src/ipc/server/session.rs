@@ -885,16 +885,40 @@ pub async fn run(
                 tokio::time::interval(std::time::Duration::from_millis(tick_ms.max(10)));
             loop {
                 interval.tick().await;
-                let mut c = core.lock().await;
-                if let Err(e) = c.tick(now_ms()) {
-                    tracing::warn!(error = %e, "core tick failed");
+                // One tick instant for both sections: the housekeeping path
+                // and the placement path judge the same clock.
+                let now = now_ms();
+                // §1: housekeeping + disk IO (archive flush, daily-loss gate,
+                // exit tuning). The lock is released BEFORE engine_evaluate so
+                // a slow fsync can never block venue fills, IPC reads, or
+                // market ingest — all of which serialize on this same lock
+                // (#13).
+                let tick_start = std::time::Instant::now();
+                {
+                    let mut c = core.lock().await;
+                    if let Err(e) = c.tick(now) {
+                        tracing::warn!(error = %e, "core tick failed");
+                    }
                 }
+                tracing::debug!(
+                    elapsed_ms = tick_start.elapsed().as_millis(),
+                    "maintenance tick housekeeping (lock released before placement)"
+                );
+                // §2: strategy decision + placement stays atomic under one
+                // lock acquisition — nothing interleaves between deciding
+                // and placing (#13).
+                let eval_start = std::time::Instant::now();
+                let mut c = core.lock().await;
                 if c.has_engine() {
-                    let n = c.engine_evaluate(now_ms());
+                    let n = c.engine_evaluate(now);
                     if n > 0 {
                         tracing::info!(placed = n, "engine placed entries");
                     }
                 }
+                tracing::debug!(
+                    elapsed_ms = eval_start.elapsed().as_millis(),
+                    "engine evaluate (decide + place, single lock acquisition)"
+                );
             }
         });
     }

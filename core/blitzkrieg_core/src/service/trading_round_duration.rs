@@ -119,9 +119,13 @@ impl Core {
         // reset: clear the account's override from memory (already removed above).
         if patch.reset {
             self.config.account_round_durations.remove(account_id);
-            // 不需要动引擎：池记录的是「本部署跑哪些网格」，不是「当前选中
-            // 哪一个」。该账户回落到进程默认族，而默认族在启动回填时就已入池，
-            // 所以清掉覆盖之后它的入场判定自动回到默认族。
+            // Scanner grid pool is unchanged (it records which families this
+            // deployment runs, not the account's current pick). The engine's
+            // account-anchor table MUST be re-pushed so evaluation un-scopes
+            // this account immediately and falls back to the process default.
+            if let Some(engine) = self.engine.as_mut() {
+                engine.set_account_round_durations(self.config.account_round_durations.clone());
+            }
             tracing::info!(
                 target: "risk",
                 actor = %actor,
@@ -151,6 +155,10 @@ impl Core {
             .insert(account_id.clone(), sec);
         if let Some(engine) = self.engine.as_mut() {
             engine.anchor_scanner_grid(&account_venue, sec);
+            // Re-scope this account's hosted strategies onto the new family
+            // immediately — otherwise they keep seeing sibling-duration
+            // markets and trip the admission conflict check.
+            engine.set_account_round_durations(self.config.account_round_durations.clone());
         }
         tracing::info!(
             target: "risk",

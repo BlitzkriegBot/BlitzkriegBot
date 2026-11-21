@@ -462,6 +462,12 @@ pub struct Engine {
     /// host re-pushing. Empty = every instance unbound (the historic
     /// whole-table dispatch).
     strategy_families: HashMap<String, i64>,
+    /// Per-account duration anchors from `round_duration.set` (panel 5m/15m
+    /// switch). An account with an explicit anchor must only be fed THAT
+    /// family's markets and clock — otherwise an unbound strategy sees the
+    /// whole table (including a sibling 15m row) and the admission gate
+    /// correctly refuses the entry as a round-duration conflict.
+    account_round_durations: HashMap<String, i64>,
     /// RFC 568 阶段一：本周期的配对簿视图快照（`set_pair_views_snapshot`
     /// 的 host push，形状同 `positions_view`）。一条平铺所有策略的列表：
     /// `evaluate` 按 owner 策略切片进各自的 ctx，跨策略/跨账户不可见已由
@@ -586,6 +592,31 @@ impl Engine {
                 .get(&strategy_env_fold(s.strategy.name()))
                 .copied();
         }
+    }
+
+    /// Replace the account→duration anchor table the evaluation dispatch
+    /// reads. Called at engine install from `CoreConfig::account_round_durations`
+    /// and again on every `round_duration.set` / reset so a live switch
+    /// immediately re-scopes each account's hosted strategies.
+    pub fn set_account_round_durations(&mut self, durations: HashMap<String, i64>) {
+        self.account_round_durations = durations;
+    }
+
+    /// The family an instance should trade: the account's explicit duration
+    /// anchor outranks the optional `STRATEGY_<NAME>_ROUND_DURATION_SEC`
+    /// binding. `None` keeps the historic unbound whole-table dispatch.
+    /// Takes the map by field (not `&self`) so evaluate can look it up
+    /// while mutably iterating `strategies` — a method on `self` would
+    /// collide with that borrow.
+    fn instance_round_family_sec(
+        account_round_durations: &HashMap<String, i64>,
+        s: &HostedStrategy,
+    ) -> Option<i64> {
+        account_round_durations
+            .get(&s.account_id)
+            .copied()
+            .filter(|d| *d > 0)
+            .or(s.round_family_sec)
     }
 
     /// The family binding in force for one strategy name (folded lookup), for
@@ -1433,5 +1464,9 @@ mod tests {
     // #1170 family-binding tests — split out of round_rollover_tests by the
     // #780 file-size ratchet (that file's binding block pushed it past 1500).
     mod round_family_binding_tests;
+    // Account-anchor (panel round switch) re-scopes the same ctx surface
+    // the family binding covers — own file so the direction cases stay
+    // next to that contract without growing the #1170 file.
+    mod account_round_anchor_tests;
     mod sizing_tests;
 }

@@ -37,7 +37,7 @@ pub use blitzkrieg_bk_contract::modes::{
     MarketCapabilities, MarketMode, MarketStructure, ModeError,
 };
 pub use blitzkrieg_bk_contract::plugin::{
-    BoxFuture, DataFeed, MarketDiscovery, MarketHost, MarketPlugin, OrderExecutor,
+    BoxFuture, DataFamilyPlan, DataFeed, MarketDiscovery, MarketHost, MarketPlugin, OrderExecutor,
     SubscriptionControl,
 };
 pub use blitzkrieg_bk_contract::types::*;

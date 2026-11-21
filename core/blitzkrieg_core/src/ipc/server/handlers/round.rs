@@ -150,6 +150,8 @@ async fn ensure_round_family_mounted(
             data_plane.mark_mounted(&venue);
         }
         replay_dropped_family(host, data_plane, &venue, family).await;
+        let c = core.lock().await;
+        c.publish_family_feed_subscriptions(&venue).await;
     }
 }
 

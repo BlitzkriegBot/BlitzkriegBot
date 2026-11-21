@@ -36,7 +36,7 @@ pub use fee::{FeeModel, FeeRole};
 pub use kline::{Kline, KlineInterval};
 pub use modes::{MarketCapabilities, MarketMode, MarketStructure, ModeError};
 pub use plugin::{
-    BoxFuture, DataFeed, MarketDiscovery, MarketHost, MarketPlugin, OrderExecutor,
+    BoxFuture, DataFamilyPlan, DataFeed, MarketDiscovery, MarketHost, MarketPlugin, OrderExecutor,
     SubscriptionControl,
 };
 pub use types::*;

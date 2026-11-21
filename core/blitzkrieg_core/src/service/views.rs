@@ -124,6 +124,13 @@ pub struct CurrentRoundPriceView {
     pub down_token_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub condition_id: String,
+    /// `snapshot` (placeholder REST) or `live` (high-freq subscription).
+    /// Empty when the kernel has not stamped this card — never invent `live`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// Venue-or-kernel time the mid was fetched. 0 when unknown; omitted.
+    #[serde(default, skip_serializing_if = "crate::service::views::is_zero_i64")]
+    pub fetched_at_ms: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -131,4 +138,8 @@ pub struct CurrentRoundPriceView {
 pub struct BookLevelView {
     pub price: Decimal,
     pub size: Decimal,
+}
+
+pub(crate) fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
 }

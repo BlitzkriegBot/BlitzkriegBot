@@ -1011,31 +1011,40 @@ impl Core {
                 .iter()
                 .any(|m| scanner.can_trade_reason_for(m, now).is_ok());
 
-            let prices: Vec<CurrentRoundPriceView> = family
-                .iter()
-                .map(|m| {
-                    let up = engine
-                        .book_snapshot(&m.up_token_id)
-                        .map(|b| b.mid_price)
-                        .filter(|p| *p > rust_decimal::Decimal::ZERO)
-                        .unwrap_or(m.up_price);
-                    let down = engine
-                        .book_snapshot(&m.down_token_id)
-                        .map(|b| b.mid_price)
-                        .filter(|p| *p > rust_decimal::Decimal::ZERO)
-                        .unwrap_or(m.down_price);
-                    CurrentRoundPriceView {
-                        asset: m.asset.clone(),
-                        venue: m.venue.clone(),
-                        duration_sec,
-                        up,
-                        down,
-                        up_token_id: m.up_token_id.clone(),
-                        down_token_id: m.down_token_id.clone(),
-                        condition_id: m.condition_id.clone(),
-                    }
-                })
-                .collect();
+            let prices: Vec<CurrentRoundPriceView> = {
+                let plane = self.family_feed();
+                family
+                    .iter()
+                    .map(|m| {
+                        let up = engine
+                            .book_snapshot(&m.up_token_id)
+                            .map(|b| b.mid_price)
+                            .filter(|p| *p > rust_decimal::Decimal::ZERO)
+                            .unwrap_or(m.up_price);
+                        let down = engine
+                            .book_snapshot(&m.down_token_id)
+                            .map(|b| b.mid_price)
+                            .filter(|p| *p > rust_decimal::Decimal::ZERO)
+                            .unwrap_or(m.down_price);
+                        let (source, fetched_at_ms) = card_freshness(
+                            plane.freshness(&m.up_token_id),
+                            plane.freshness(&m.down_token_id),
+                        );
+                        CurrentRoundPriceView {
+                            asset: m.asset.clone(),
+                            venue: m.venue.clone(),
+                            duration_sec,
+                            up,
+                            down,
+                            up_token_id: m.up_token_id.clone(),
+                            down_token_id: m.down_token_id.clone(),
+                            condition_id: m.condition_id.clone(),
+                            source,
+                            fetched_at_ms,
+                        }
+                    })
+                    .collect()
+            };
 
             let books: Vec<crate::service::AssetBooksView> = family
                 .iter()
@@ -1226,4 +1235,27 @@ fn family_window(duration_sec: i64, now: i64, observed_end_ms: i64, slot: i64) -
         };
         (start_ms, end_ms, round_id)
     }
+}
+
+/// A card is `live` only when every stamped leg is live. Mixed or
+/// snapshot legs stay `snapshot` so a placeholder mid is never passed
+/// off as a live quote (L1–L6). Missing stamps stay empty, not invented.
+fn card_freshness(
+    up: Option<&crate::market::family_feed::PriceFreshness>,
+    down: Option<&crate::market::family_feed::PriceFreshness>,
+) -> (String, i64) {
+    use crate::market::family_feed::PriceSource;
+    let legs: Vec<&crate::market::family_feed::PriceFreshness> =
+        [up, down].into_iter().flatten().collect();
+    if legs.is_empty() {
+        return (String::new(), 0);
+    }
+    let all_live = legs.iter().all(|f| f.source == PriceSource::Live);
+    let source = if all_live {
+        PriceSource::Live
+    } else {
+        PriceSource::Snapshot
+    };
+    let fetched = legs.iter().map(|f| f.fetched_at_ms).min().unwrap_or(0);
+    (source.as_str().to_string(), fetched)
 }

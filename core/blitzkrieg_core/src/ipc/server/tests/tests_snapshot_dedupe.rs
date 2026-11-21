@@ -1115,6 +1115,25 @@ async fn current_rounds_prices_are_warm_on_first_snapshot_after_switch() {
     assert_eq!(cur1h.prices[0].duration_sec, 3600);
     assert_eq!(cur1h.round_id, start_1h);
     assert_eq!(cur1h.prices[0].up, Decimal::new(63, 2));
+    assert_eq!(
+        cur1h.prices[0].source, "snapshot",
+        "first snapshot after switch must keep the placeholder mid, never invent live"
+    );
+    assert!(cur1h.prices[0].fetched_at_ms > 0);
+    {
+        let c = core.lock().await;
+        let econ = c.family_feed_inspect();
+        assert_eq!(econ.live_families.len(), 1, "one shared live family");
+        assert_eq!(econ.live_families[0].duration_sec, 3600);
+        assert_eq!(econ.live_families[0].refs, 1);
+        assert!(
+            econ.placeholder_families
+                .iter()
+                .any(|f| f.duration_sec == 900),
+            "demoted 15m must stay a placeholder, not a second subscription: {econ:?}"
+        );
+        assert!(!econ.venues_with_accounts.iter().any(|v| v == "kalshi"));
+    }
 
     set_dur(&core, &registry, &peer, 3, 86400).await;
     let view_d = {

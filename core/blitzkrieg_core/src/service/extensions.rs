@@ -24,10 +24,30 @@ impl Core {
     /// Only that plugin's control sees the set — replacement semantics stay
     /// per-venue. Unknown name or empty token list: no-op.
     pub async fn subscribe_feed_tokens(&self, plugin: &str, tokens: Vec<String>) {
-        if let Some(feed) = self.feeds.get(plugin)
-            && !tokens.is_empty()
-        {
+        // An empty set is a real unsubscribe (the last account left this
+        // family's high-freq subscription). Skipping empty would leave the
+        // previous tokens polling forever.
+        if let Some(feed) = self.feeds.get(plugin) {
             feed.set_tokens(tokens);
         }
+    }
+
+    pub async fn subscribe_placeholder_tokens(&self, plugin: &str, tokens: Vec<String>) {
+        if let Some(feed) = self.feeds.get(plugin) {
+            feed.set_placeholder_tokens(tokens);
+        }
+    }
+
+    /// Push the plane's live / placeholder token sets to the named plugin.
+    pub async fn publish_family_feed_subscriptions(&self, plugin: &str) {
+        let (live, placeholder) = {
+            let plane = self.family_feed();
+            (
+                plane.live_tokens_for(plugin),
+                plane.placeholder_tokens_for(plugin),
+            )
+        };
+        self.subscribe_feed_tokens(plugin, live).await;
+        self.subscribe_placeholder_tokens(plugin, placeholder).await;
     }
 }

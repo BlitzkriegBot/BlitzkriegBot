@@ -44,6 +44,11 @@ use tokio::sync::mpsc;
 /// leak on a round rollover. Interval is `POLYMARKET_POLL_MS`.
 const DEFAULT_POLL_MS: u64 = 1_000;
 
+/// Inactive-family snapshot poll. Matches the kernel family-feed plane
+/// (`PLACEHOLDER_REFRESH_MS`): 5 minutes, plus an immediate poll whenever
+/// the placeholder token set changes (a roll).
+const PLACEHOLDER_POLL_MS: u64 = 300_000;
+
 /// Floor on the poll interval. A typo (or an over-eager setting) otherwise turns
 /// straight back into the bandwidth problem this replaced, so the knob has a
 /// bottom: even at the floor the feed costs ~5x less than the WebSocket did.
@@ -267,6 +272,17 @@ pub async fn spawn_feed(host: Arc<dyn MarketHost>, token_ids: Vec<String>) -> Fe
         });
     }
 
+    let (ph_tx, ph_rx) = mpsc::channel::<Vec<String>>(16);
+    {
+        let ev_tx = ev_tx.clone();
+        let rest_url = rest_url.clone();
+        tokio::spawn(async move {
+            // Starts empty: waits for the first placeholder set, polls it
+            // immediately, then every PLACEHOLDER_POLL_MS.
+            poly_rest_loop(Vec::new(), ev_tx, ph_rx, rest_url, PLACEHOLDER_POLL_MS).await;
+        });
+    }
+
     let _ = ev_tx
         .send(FeedEvent::Info(format!(
             "poly rest feed polling every {poll_ms}ms"
@@ -278,6 +294,7 @@ pub async fn spawn_feed(host: Arc<dyn MarketHost>, token_ids: Vec<String>) -> Fe
 
     FeedHandle {
         tx: ctl_tx,
+        placeholder_tx: ph_tx,
         _ev: ev_tx,
     }
 }
@@ -286,6 +303,7 @@ pub async fn spawn_feed(host: Arc<dyn MarketHost>, token_ids: Vec<String>) -> Fe
 #[derive(Debug, Clone)]
 pub struct FeedHandle {
     tx: mpsc::Sender<Vec<String>>,
+    placeholder_tx: mpsc::Sender<Vec<String>>,
     _ev: mpsc::Sender<FeedEvent>,
 }
 
@@ -301,6 +319,9 @@ impl blitzkrieg_bk_contract::SubscriptionControl for FeedHandle {
         // Non-async control surface: `try_send` avoids blocking the host's tick.
         // The channel has capacity 16 and is only written on round rollovers.
         let _ = self.tx.try_send(tokens);
+    }
+    fn set_placeholder_tokens(&self, tokens: Vec<String>) {
+        let _ = self.placeholder_tx.try_send(tokens);
     }
 }
 

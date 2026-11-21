@@ -240,6 +240,14 @@ export interface MarketPrice {
    * 永不假设字段在场，缺省降回 venue-only 过滤，不崩。
    */
   durationSec?: number
+  /**
+   * Freshness of this card's mid. `snapshot` = placeholder REST (not the
+   * high-freq feed). `live` = the account's currently subscribed family.
+   * Absent on older kernels — treat as unknown, never invent `live`.
+   */
+  source?: 'snapshot' | 'live'
+  /** When the mid was fetched, milliseconds. Absent when unknown. */
+  fetchedAtMs?: number
 }
 
 /** One price level of the live book (`engine.books`, E8-c 盘口深度). */

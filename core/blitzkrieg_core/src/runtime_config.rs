@@ -169,9 +169,9 @@ mod tests {
     use super::*;
     use crate::store::SqliteStore;
 
-    /// The historical kernel whitelist, now spelled as the plugins' declared
-    /// union (polymarket's five families ∪ kalshi's 900). Test-fixture only:
-    /// the assertion semantics stay exactly what they were.
+    /// A five-family historical whitelist used as a test fixture (wider
+    /// than the current Polymarket declaration of 5m/15m). Test-fixture
+    /// only: the assertion semantics stay exactly what they were.
     const TEST_ALLOWED: &[i64] = &[300, 900, 3600, 14400, 86400];
 
     fn tmpdir(name: &str) -> PathBuf {

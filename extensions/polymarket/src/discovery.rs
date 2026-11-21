@@ -74,7 +74,7 @@ fn tokens_by_venue(all_markets: &[MarketDescriptor], now_ms: i64) -> HashMap<Str
 
 /// Spawn the discovery loop. `assets` are e.g. ["BTC","ETH"]; `families` is
 /// the declared round-family table in seconds (the plugin's
-/// `supported_round_secs` — e.g. [300, 900, 3600, 14400, 86400]). Returns
+/// `supported_round_secs` — e.g. [300, 900]). Returns
 /// immediately.
 pub fn spawn(
     host: Arc<dyn MarketHost>,
@@ -354,7 +354,7 @@ pub fn spawn(
             // End of this tick: subscribe the per-venue UNION of every family's
             // live tokens, exactly once. Each family's on_round_markets above
             // only registers the round and opens its family clock — it no
-            // longer touches the feed. Without this union, five families'
+            // longer touches the feed. Without this union, multiple families'
             // per-family set_tokens(REPLACE) kept evicting each other's slot
             // and each family's book was re-polled only once per
             // poll_sec × family_count, which strategies read as a stalled

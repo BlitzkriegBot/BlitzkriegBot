@@ -159,6 +159,13 @@ pub(crate) async fn handle_engine(
                 })
                 .unwrap_or_default();
             doc["venueRounds"] = serde_json::json!(venue_rounds);
+            // Per-account current round (the panel market-section SSOT).
+            // Forwarded as a first-class key so the gateway can copy the
+            // array as-is; duration / start / end / prices / books for
+            // that account's family live on each element, never inferred
+            // from the process-default `round` scalar.
+            doc["currentRounds"] = serde_json::to_value(c.current_rounds_view(now))
+                .unwrap_or_else(|_| serde_json::json!([]));
             Ok(doc)
         }
         method::ENGINE_BOOKS => {

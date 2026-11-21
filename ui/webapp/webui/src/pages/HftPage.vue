@@ -25,9 +25,11 @@ import {
   num, money, signedMoney, winRateOf, winRateValue, pct, signedPct, cents, mmss, duration,
 } from '@/lib/format'
 import { useAccountBalance } from '@/lib/account-balance'
-import { filterByAccount, filterByVenue, filterByVenueDur } from '@/lib/account-filter'
+import { filterByAccount, filterByVenue } from '@/lib/account-filter'
 import { newestFirst, positionExpired, isKnownPnl } from '@/lib/trades'
-import { venueRoundId, roundEndSec, exchangeUpdownUrl } from '@/lib/round-id'
+import { roundEndSec, exchangeUpdownUrl } from '@/lib/round-id'
+import { selectCurrentRound, currentRoundBarFraction, currentRoundSpanSec, currentRoundLeftSec } from '@/lib/current-round'
+import { stepCountdownSelfHeal, emptyHealState } from '@/lib/countdown-self-heal'
 import { feedStaleness } from '@/lib/feed'
 import { useRoundDuration } from '@/lib/round-duration'
 import { useTradeBook } from '@/composables/useTradeBook'
@@ -54,6 +56,14 @@ const store = usePanelStore()
 const settings = useSettingsStore()
 const { sound, toggleSound } = useTheme()
 const snap = computed(() => store.snapshot)
+/** Market-section SSOT: one kernel-published object per account. */
+const currentRound = computed(() =>
+  selectCurrentRound(snap.value, store.activeAccount ?? 'default'),
+)
+const healState = ref(emptyHealState())
+const healMsg = ref('')
+const lastHealRoundId = ref<number | undefined>(undefined)
+
 
 // issue 1294：成交面降级信号（raw 快照字段，旧内核缺失 → undefined = 健康）。
 // 任何 history/曲线/统计视图在它非空时都不能把空行读成「没有成交」。
@@ -165,6 +175,7 @@ const countForVenue = ref('')
 // 否则倒计时在 deliberate 切换后仍沿用旧家族的插值值。
 // dur 可为 undefined（roundSwitch.doc 尚未落地前），所以带 undefined 联合。
 const countForDur = ref<number | undefined>(0)
+const countForRound = ref<number | undefined>(undefined)
 // 渲染值必须与插值锚点同区声明：immediate watch 的回调在 setup 同步段执行，
 // 它会触碰 leftSec —— 声明落在 watch 之后时，带着在场快照挂载（重挂载路径）
 // 会直接 ReferenceError（TDZ），整页挂载失败，只有刷新能救。这也是「行情页
@@ -228,6 +239,7 @@ const venueRound = computed(() => {
 watch(engineUp, (up, was) => {
   if (up && !was) {
     countForVenue.value = ''
+    countForRound.value = undefined
     serverLeft.value = 0
     serverAt.value = 0
     leftSec.value = 0
@@ -240,46 +252,38 @@ watch(snap, (s) => {
   // server 值自然重新校准。换 venue 的 key 清链照走（识别残值属 venue，不属
   // 冻结）。
   if (frozenClock.value) return
-  const vr = venueRound.value
-  const acct = store.activeAccount ?? 'default'
-  const dur =
-    roundSwitch.doc.value?.perAccount?.[acct]
-    ?? roundSwitch.doc.value?.engineActiveSec
-    ?? roundSwitch.doc.value?.effectiveSec
-  if (vr) {
-    // The identity venue has its own clock row: bind to it. The venue key
-    // guards re-binding — a row for a DIFFERENT venue never refreshes this
-    // countdown (the issue 550 residual-value leak). The duration key guards
-    // re-binding when the same venue runs multiple families and the account
-    // switches between them (5m ↔ 15m) — without it the countdown would keep
-    // the old family's interpolated value after a deliberate switch.
-    if (countForVenue.value !== identityVenue.value || countForDur.value !== dur) {
-      countForVenue.value = identityVenue.value
-      countForDur.value = dur
-      serverLeft.value = 0
-      serverAt.value = 0
-      leftSec.value = 0
-    }
-    const interpolated = Math.max(0, Math.round(serverLeft.value - (Date.now() - serverAt.value) / 1000))
-    const justBound = serverAt.value === 0
-    if (vr.timeLeftSec >= 0 && (justBound || vr.timeLeftSec <= interpolated)) {
-      // 服务端在正常推进（或刚落在插值点上）：重新锚定，与服务端同步；
-      // 端侧 declared end 向后跳（vr.timeLeftSec 比插值更大）时不跟着跳，
-      // 否则倒计时会出现「12:20 → 12:18 → 12:20」的回弹。首次绑定（justBound）
-      // 无条件喂入该行真实值，避免清零后整段卡在 00:00。
-      serverLeft.value = vr.timeLeftSec
-      serverAt.value = Date.now()
-      leftSec.value = vr.timeLeftSec
-    }
+  const cur = currentRound.value
+  if (!cur) {
+    // No kernel currentRound yet: leave the market clock blank. Never fall
+    // back to the process-default 15m `round` scalar (that is what made a
+    // 5m account's bar walk a 15m length).
     return
   }
-  // No venue row (old core, or no observed clock for this venue): the global
-  // scalar block, but only while the venue key is unset — after a switch the
-  // countdown stays blank until the NEW venue's own row arrives, never
-  // re-arming on the old venue's scalar.
-  if (!countForVenue.value && s?.round && s.round.timeLeftSec >= 0) {
-    serverLeft.value = s.round.timeLeftSec
-    serverAt.value = Date.now()
+  const dur = cur.durationSec
+  const roundKey = cur.roundId > 0 ? cur.roundId : cur.slot
+  if (countForVenue.value !== identityVenue.value || countForDur.value !== dur || countForRound.value !== roundKey) {
+    // Rebind when the account, family, or venue round id changes — including
+    // a same-family roll (5m → next 5m). The old anti-bounce gate rejected
+    // the new window's ~300s left after local interpolation had hit 00:00,
+    // so the card stuck until a full remount.
+    countForVenue.value = identityVenue.value
+    countForDur.value = dur
+    countForRound.value = roundKey
+    serverLeft.value = 0
+    serverAt.value = 0
+    leftSec.value = 0
+    healState.value = emptyHealState()
+    healMsg.value = ''
+    lastHealRoundId.value = roundKey
+  }
+  const nowMs = Date.now()
+  const publishedLeft = currentRoundLeftSec(cur, nowMs)
+  const interpolated = Math.max(0, Math.round(serverLeft.value - (nowMs - serverAt.value) / 1000))
+  const justBound = serverAt.value === 0
+  if (justBound || publishedLeft <= interpolated) {
+    serverLeft.value = publishedLeft
+    serverAt.value = nowMs
+    leftSec.value = publishedLeft
   }
 }, { immediate: true })
 
@@ -287,8 +291,34 @@ const { pause: stopTick } = useIntervalFn(() => {
   // issue 943：冻结期间本地插值不再前进 —— 挂钟上倒数的读数会把「没在交易」
   // 读成「一切正常」。leftSec 钉在冻结瞬间的残值；解锁后从场值续走，等下一
   // 帧 server 值重新校准（场值泄漏 ≤1 tick）。
-  if (frozenClock.value) return
-  leftSec.value = Math.max(0, Math.round(serverLeft.value - (Date.now() - serverAt.value) / 1000))
+  const nowMs = Date.now()
+  if (!frozenClock.value) {
+    leftSec.value = Math.max(0, Math.round(serverLeft.value - (nowMs - serverAt.value) / 1000))
+  }
+  const rid = currentRound.value?.roundId
+  if (rid && rid !== lastHealRoundId.value) {
+    lastHealRoundId.value = rid
+    healState.value = emptyHealState()
+    healMsg.value = ''
+  }
+  const step = stepCountdownSelfHeal({
+    leftSec: leftSec.value,
+    frozen: !!frozenClock.value,
+    nowMs,
+    state: healState.value,
+  })
+  healState.value = step.state
+  if (step.action === 'heal') {
+    healMsg.value = step.message ?? ''
+    void store.refresh()
+    store.reconnectLive()
+  } else if (step.action === 'give-up') {
+    healMsg.value = step.message ?? ''
+  } else if (step.action === 'idle') {
+    healMsg.value = ''
+  } else if (step.message) {
+    healMsg.value = step.message
+  }
 }, 500)
 onUnmounted(() => { stopTick() })
 
@@ -301,20 +331,16 @@ const round = computed(() => snap.value?.round ?? null)
  * 旧所的 slot。
  */
 const roundDisplay = computed(() => {
-  const vr = venueRound.value
-  if (vr) return { slot: vr.slot, ageSec: vr.ageSec }
-  return round.value
+  const cur = currentRound.value
+  if (!cur) return null
+  const span = currentRoundSpanSec(cur)
+  const age = span > 0 ? Math.max(0, span - leftSec.value) : cur.ageSec
+  return { slot: cur.slot, ageSec: age }
 })
 const leftText = computed(() => mmss(leftSec.value))
 /** Fraction of the round still to run — drives the progress ring/bar. */
-const leftFraction = computed(() => {
-  const total = (round.value?.ageSec ?? 0) + (round.value?.timeLeftSec ?? 0)
-  if (!total) return 0
-  return Math.max(0, Math.min(1, leftSec.value / total))
-})
+const leftFraction = computed(() => currentRoundBarFraction(currentRound.value, leftSec.value))
 const urgent = computed(() => leftSec.value > 0 && leftSec.value <= 60)
-
-const prices = computed<MarketPrice[]>(() => round.value?.prices ?? [])
 
 // ── 盘口深度 (E8-c, engine.books) ───────────────────────────────────────────
 const books = computed<AssetBook[]>(() => snap.value?.books ?? [])
@@ -367,6 +393,7 @@ watch(identityVenue, (nv, ov) => {
   // `countForVenue.value !== identityVenue.value` 的选行键卫兵保持原样 ——
   // 本处只动清键窗口这一处。
   countForVenue.value = nv
+  countForRound.value = undefined
   serverLeft.value = 0
   serverAt.value = 0
   leftSec.value = 0
@@ -429,6 +456,8 @@ const roundDurHintSec = computed<number | null>(() => {
 /** 身份所轮长：venueRound 行有 durationSec 就用它，缺席回落 roundDurHintSec，
  * 再缺省（读数未到）回落 900（orderExpired 逐单当拍取值，无需重绑）。 */
 const identityDurSec = computed<number | null>(() => {
+  const fromCurrent = currentRound.value?.durationSec
+  if (typeof fromCurrent === 'number' && fromCurrent > 0) return fromCurrent
   const d = venueRound.value?.durationSec
   if (typeof d === 'number' && d > 0) return d
   return roundDurHintSec.value
@@ -437,26 +466,17 @@ const identityDurSec = computed<number | null>(() => {
 /** 行情卡的可见行：Loading 门开着 = 清空（绝不残留旧所盘口）。 */
 const visiblePrices = computed<MarketPrice[]>(() => {
   if (venueLoading.value) return []
-  return filterByVenueDur(prices.value, activeVenue.value, identityDurSec.value).rows
+  return currentRound.value?.prices ?? []
 })
 
 /** Exchange start-ts shown in the round header (and used as the event link). */
 const roundIdDisplay = computed(() => {
-  const vr = venueRound.value
-  const src = vr ?? round.value
-  if (!src) return null
-  if (vr?.roundId && vr.roundId > 0) return vr.roundId
-  const dur = (vr?.durationSec && vr.durationSec > 0)
-    ? vr.durationSec
-    : (identityDurSec.value ?? 0)
-  const id = venueRoundId(src.slot ?? 0, dur)
-  return id > 0 ? id : null
+  const id = currentRound.value?.roundId
+  return (typeof id === 'number' && id > 0) ? id : null
 })
 const roundHref = computed(() => {
   const id = roundIdDisplay.value
-  const dur = (venueRound.value?.durationSec && venueRound.value.durationSec > 0)
-    ? venueRound.value.durationSec
-    : (identityDurSec.value ?? 0)
+  const dur = currentRound.value?.durationSec ?? 0
   const asset = visiblePrices.value[0]?.asset
   if (!id || !dur || !asset) return null
   return exchangeUpdownUrl(asset, dur, id)
@@ -466,7 +486,7 @@ const roundHref = computed(() => {
 /** 盘口深度卡的可见行：同一 Loading 门。 */
 const visibleBooks = computed<AssetBook[]>(() => {
   if (venueLoading.value) return []
-  return filterByVenueDur(books.value, activeVenue.value, identityDurSec.value).rows
+  return currentRound.value?.books ?? []
 })
 
 /** 未绑定态（''/undefined）：显示「该账户未绑定交易所」空态，不显示任何
@@ -1106,8 +1126,8 @@ const journalOpen = ref(false)
               class="font-semibold text-down"
               title="该账户已被风控冻结（设置 · 风控可解锁）：倒计时暂停，新单被拒绝"
             >FROZEN</span>
-            <span v-else :class="round?.canTrade ? 'text-up font-semibold' : 'text-primary'">
-              {{ round?.canTrade ? 'TRADING' : 'WAITING' }}
+            <span v-else :class="currentRound?.canTrade ? 'text-up font-semibold' : 'text-primary'">
+              {{ currentRound?.canTrade ? 'TRADING' : 'WAITING' }}
             </span>
           </div>
         </div>
@@ -1125,6 +1145,11 @@ const journalOpen = ref(false)
             :class="urgent ? 'text-down' : 'grad-gold'"
           />
           <div class="label-micro mt-1">剩余时间</div>
+          <div
+            v-if="healMsg"
+            class="label-micro mt-1 max-w-[28ch] text-balance text-down"
+            role="status"
+          >{{ healMsg }}</div>
         </div>
 
         <div class="ml-auto flex flex-wrap items-center justify-end gap-2">

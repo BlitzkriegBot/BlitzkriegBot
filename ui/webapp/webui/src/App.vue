@@ -213,6 +213,31 @@ onUnmounted(() => { stopPoll() })
  * re-login must feed the NEXT reconnect, not a captured stale token.
  */
 const sseRunning = ref(false)
+let sseAbort: AbortController | null = null
+function startSseLoop(): void {
+  if (sseRunning.value) return
+  sseRunning.value = true
+  void (async () => {
+    while (sseRunning.value && hasToken()) {
+      const gen = store.liveGeneration
+      sseAbort = new AbortController()
+      const delivered = await readEventStream(
+        getToken(),
+        (frame) => {
+          if (frame.kind === 'snapshot') store.applySseSnapshot(frame.doc)
+        },
+        sseAbort.signal,
+      )
+      if (!sseRunning.value || !hasToken()) break
+      // Self-heal bumped the generation and aborted this fetch: reconnect
+      // immediately, do not treat a mid-flight abort as "never delivered".
+      if (store.liveGeneration !== gen) continue
+      if (!delivered) break // never delivered: polling owns this session
+      await new Promise((r) => setTimeout(r, 3000)) // brief, bounded backoff
+    }
+    sseRunning.value = false
+  })()
+}
 // issue 1199 P1-12（无井号前缀：design-language 门禁把井号+1199 误判为 hex 色值）：
 // 有存量 token 时 authed 出生即 true，watch 不加 immediate
 // 则首屏 SSE 永不启动，面板退化为纯轮询。immediate 让首屏有 token 时立刻
@@ -220,23 +245,16 @@ const sseRunning = ref(false)
 watch(
   authed,
   (on) => {
-    if (!on) { sseRunning.value = false; return }
-    if (sseRunning.value) return
-    sseRunning.value = true
-    void (async () => {
-      while (sseRunning.value && hasToken()) {
-        const delivered = await readEventStream(getToken(), (frame) => {
-          if (frame.kind === 'snapshot') store.applySseSnapshot(frame.doc)
-        })
-        if (!delivered) break // never delivered: polling owns this session
-        await new Promise((r) => setTimeout(r, 3000)) // brief, bounded backoff
-      }
-      sseRunning.value = false
-    })()
+    if (!on) { sseRunning.value = false; sseAbort?.abort(); return }
+    startSseLoop()
   },
   { immediate: true }
 )
-onUnmounted(() => { sseRunning.value = false })
+watch(() => store.liveGeneration, () => {
+  sseAbort?.abort()
+  if (authed.value && hasToken() && !sseRunning.value) startSseLoop()
+})
+onUnmounted(() => { sseRunning.value = false; sseAbort?.abort() })
 
 onMounted(() => {
   if (!authed.value) return

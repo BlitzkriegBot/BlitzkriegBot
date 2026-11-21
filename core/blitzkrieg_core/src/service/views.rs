@@ -84,6 +84,48 @@ impl BookSideView {
     }
 }
 
+/// One account's current venue round — the single source of truth the
+/// panel's market section (countdown, round id, elapsed, progress bar,
+/// price cards, order book) must render. Duration is the account's
+/// anchored family, never a reconstructed expires/slot or the process
+/// default grid. `start_ms`/`end_ms` are the real window (a daily
+/// America/New_York noon-to-noon can be 23h or 25h on DST days).
+/// `round_id` is the venue slug start Unix timestamp.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentRoundView {
+    pub account_id: String,
+    pub venue: String,
+    /// The account's anchored family duration (300 / 900 / 3600 / 86400).
+    pub duration_sec: i64,
+    pub slot: i64,
+    /// Venue start-Unix-ts identifier (the exchange slug's start).
+    pub round_id: i64,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub age_sec: i64,
+    pub time_left_sec: i64,
+    pub can_trade: bool,
+    pub prices: Vec<CurrentRoundPriceView>,
+    pub books: Vec<AssetBooksView>,
+}
+
+/// One live market in the account's current family, including the token
+/// ids the depth / k-line cards share with the price cards.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentRoundPriceView {
+    pub asset: String,
+    pub venue: String,
+    pub duration_sec: i64,
+    pub up: Decimal,
+    pub down: Decimal,
+    pub up_token_id: String,
+    pub down_token_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub condition_id: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BookLevelView {

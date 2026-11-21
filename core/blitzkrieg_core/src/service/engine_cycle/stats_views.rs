@@ -916,6 +916,183 @@ impl Core {
         rows
     }
 
+    /// Per-account current venue round — the single source of truth for the
+    /// panel market section. Duration is the account's own anchor (per-account
+    /// override, else the process default grid the kernel actually runs).
+    /// Prices and books are that family's live rows only. `start_ms`/`end_ms`
+    /// come from the venue window (slug start + observed end), so a daily
+    /// DST 23h/25h span is published honestly and the panel never divides
+    /// a 5m countdown by the process-default 15m scalar.
+    pub fn current_rounds_view(&self, now: i64) -> Vec<crate::service::CurrentRoundView> {
+        use crate::round_id::{VENUE_TS_FLOOR, venue_round_id};
+        use crate::service::{CurrentRoundPriceView, CurrentRoundView};
+
+        let Some(engine) = self.engine.as_ref() else {
+            return Vec::new();
+        };
+        let scanner = engine.scanner();
+        let process_default = self.config.round_duration_sec;
+
+        let mut out = Vec::new();
+        for acct in self.accounts.account_list() {
+            let account_id = acct.id.as_str().to_string();
+            let venue = acct.venue.clone();
+            let duration_sec = self
+                .config
+                .account_round_durations
+                .get(&account_id)
+                .copied()
+                .unwrap_or(process_default);
+            if duration_sec <= 0 {
+                continue;
+            }
+            let clock_venue = if venue.is_empty() {
+                crate::scanner::DEFAULT_VENUE
+            } else {
+                venue.as_str()
+            };
+            let t = scanner.round_timing_for(clock_venue, duration_sec, now);
+            // Prefer the venue's observed close (a daily ET-noon end is not
+            // the UTC 86400 grid). The window start is that close minus the
+            // family length for 5m/15m/1h and for daily on non-DST days;
+            // when the observed close is missing, fall back to the slot
+            // grid. Never a sibling family's span.
+            let end_ms = if t.expires_at_ms > now {
+                t.expires_at_ms
+            } else if t.expires_at_ms > 0 {
+                t.expires_at_ms
+            } else {
+                0
+            };
+            let start_ms = if end_ms > 0 && duration_sec > 0 {
+                end_ms.saturating_sub(duration_sec.saturating_mul(1000))
+            } else {
+                let grid_id = venue_round_id(t.slot, duration_sec);
+                if grid_id >= VENUE_TS_FLOOR {
+                    grid_id.saturating_mul(1000)
+                } else {
+                    0
+                }
+            };
+            let end_ms = if end_ms > start_ms {
+                end_ms
+            } else if start_ms > 0 {
+                start_ms.saturating_add(duration_sec.saturating_mul(1000))
+            } else {
+                t.expires_at_ms
+            };
+            let round_id = if start_ms / 1000 >= VENUE_TS_FLOOR {
+                start_ms / 1000
+            } else {
+                venue_round_id(t.slot, duration_sec)
+            };
+            let time_left_sec = if end_ms > now {
+                (end_ms - now) / 1000
+            } else {
+                0
+            };
+            let age_sec = if start_ms > 0 && now > start_ms {
+                (now - start_ms) / 1000
+            } else {
+                0
+            };
+
+            // Prefer the soonest still-open expiry in this family, not the
+            // UTC `slot + 1` live-row predicate. A Polymarket daily close at
+            // America/New_York noon sets a venue clock offset that makes
+            // `round_slot == t.slot + 1` miss the trading row, which would
+            // leave currentRound with a correct clock but empty prices.
+            // Next-tier rows expire later, so "soonest future end per asset"
+            // keeps the window being traded. The 2× family-length cap matches
+            // discovery's "this is a round, not a strike ladder" guard.
+            let mut candidates: Vec<&crate::model::CryptoMarket> = scanner
+                .markets()
+                .iter()
+                .filter(|m| {
+                    let d = if m.round_duration_sec > 0 {
+                        m.round_duration_sec
+                    } else {
+                        scanner.round_duration_sec()
+                    };
+                    if d != duration_sec {
+                        return false;
+                    }
+                    if !venue.is_empty() && m.venue != venue {
+                        return false;
+                    }
+                    let left = m.expires_at_ms - now;
+                    left > 0 && left <= 2 * duration_sec * 1000
+                })
+                .collect();
+            candidates.sort_by_key(|m| m.expires_at_ms);
+            let mut seen_assets = std::collections::HashSet::new();
+            let family: Vec<crate::model::CryptoMarket> = candidates
+                .into_iter()
+                .filter(|m| seen_assets.insert(m.asset.clone()))
+                .cloned()
+                .collect();
+
+            let can_trade = family
+                .iter()
+                .any(|m| scanner.can_trade_reason_for(m, now).is_ok());
+
+            let prices: Vec<CurrentRoundPriceView> = family
+                .iter()
+                .map(|m| {
+                    let up = engine
+                        .book_snapshot(&m.up_token_id)
+                        .map(|b| b.mid_price)
+                        .filter(|p| *p > rust_decimal::Decimal::ZERO)
+                        .unwrap_or(m.up_price);
+                    let down = engine
+                        .book_snapshot(&m.down_token_id)
+                        .map(|b| b.mid_price)
+                        .filter(|p| *p > rust_decimal::Decimal::ZERO)
+                        .unwrap_or(m.down_price);
+                    CurrentRoundPriceView {
+                        asset: m.asset.clone(),
+                        venue: m.venue.clone(),
+                        duration_sec,
+                        up,
+                        down,
+                        up_token_id: m.up_token_id.clone(),
+                        down_token_id: m.down_token_id.clone(),
+                        condition_id: m.condition_id.clone(),
+                    }
+                })
+                .collect();
+
+            let books: Vec<crate::service::AssetBooksView> = family
+                .iter()
+                .map(|m| crate::service::AssetBooksView {
+                    venue: m.venue.clone(),
+                    asset: m.asset.clone(),
+                    duration_sec,
+                    up_token_id: m.up_token_id.clone(),
+                    down_token_id: m.down_token_id.clone(),
+                    up: Self::book_side_view(&self.books, &m.up_token_id, 15),
+                    down: Self::book_side_view(&self.books, &m.down_token_id, 15),
+                })
+                .collect();
+
+            out.push(CurrentRoundView {
+                account_id,
+                venue,
+                duration_sec,
+                slot: t.slot,
+                round_id,
+                start_ms,
+                end_ms,
+                age_sec,
+                time_left_sec,
+                can_trade,
+                prices,
+                books,
+            });
+        }
+        out
+    }
+
     pub(super) fn book_side_view(
         books: &HashMap<TokenId, Book>,
         token_id: &str,

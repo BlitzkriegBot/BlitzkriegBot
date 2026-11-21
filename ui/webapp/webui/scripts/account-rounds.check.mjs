@@ -190,8 +190,10 @@ check('SegmentedControl 真正禁用内部按钮（disabled 不能只落到根 d
 })
 
 check('行情卡与盘口都按账户锚定档位过滤（durationSec）', () => {
-  assert.match(hft, /filterByVenueDur\(prices\.value, activeVenue\.value, identityDurSec\.value\)/, 'visiblePrices 必须按 identityDurSec 过滤，不能只按 venue')
-  assert.match(hft, /filterByVenueDur\(books\.value, activeVenue\.value, identityDurSec\.value\)/, 'visibleBooks 必须同样按 identityDurSec 过滤，否则盘口停在默认 15m')
+  assert.match(hft, /currentRound\.value\?\.prices/, 'visiblePrices 必须读账户当前轮 currentRound.prices，不再在页面上按档位自行过滤')
+  assert.match(hft, /currentRound\.value\?\.books/, 'visibleBooks 必须读同一 currentRound.books')
+  assert.doesNotMatch(hft, /filterByVenueDur\(prices\.value/, '行情卡不得再走 filterByVenueDur(prices) 自行选档')
+  assert.doesNotMatch(hft, /filterByVenueDur\(books\.value/, '盘口不得再走 filterByVenueDur(books) 自行选档')
 })
 
 check('行情卡与盘口按 BTC-5m / BTC-15m 识别，5m 锚定只渲染一套资产卡', () => {

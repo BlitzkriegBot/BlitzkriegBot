@@ -427,7 +427,14 @@ pub fn render_json_full(
             "venueRounds": r.venue_rounds.iter().map(|v| serde_json::json!({
                 "venue": v.venue, "durationSec": v.duration_sec, "slot": v.slot,
                 "ageSec": v.age_sec, "timeLeftSec": v.time_left_sec }))
-                .collect::<Vec<_>>() })),
+                .collect::<Vec<_>>(),
+            // Also nest a copy under `round` so older readers of that block
+            // can find it; the top-level key below is the panel SSOT.
+            "currentRounds": r.current_rounds.clone() })),
+        // Per-account current round, forwarded as-is from the kernel.
+        // The Vue market section (countdown, round id, elapsed, progress
+        // bar, price cards, order book) reads only this object.
+        "currentRounds": s.round.as_ref().map(|r| serde_json::Value::Array(r.current_rounds.clone())).unwrap_or(serde_json::json!([])),
         "positions": s.positions.iter().map(|p| serde_json::json!({
             // The stable position id (hft-N) — the 持仓 card's per-row 强平
             // button flattens by it (`flatten <id>`); without it the panel

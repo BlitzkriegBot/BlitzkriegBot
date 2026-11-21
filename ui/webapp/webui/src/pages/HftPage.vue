@@ -27,6 +27,7 @@ import {
 import { useAccountBalance } from '@/lib/account-balance'
 import { filterByAccount, filterByVenue, filterByVenueDur } from '@/lib/account-filter'
 import { newestFirst, positionExpired, isKnownPnl } from '@/lib/trades'
+import { venueRoundId, roundEndSec, exchangeUpdownUrl } from '@/lib/round-id'
 import { feedStaleness } from '@/lib/feed'
 import { useRoundDuration } from '@/lib/round-duration'
 import { useTradeBook } from '@/composables/useTradeBook'
@@ -430,6 +431,29 @@ const visiblePrices = computed<MarketPrice[]>(() => {
   if (venueLoading.value) return []
   return filterByVenueDur(prices.value, activeVenue.value, identityDurSec.value).rows
 })
+
+/** Exchange start-ts shown in the round header (and used as the event link). */
+const roundIdDisplay = computed(() => {
+  const vr = venueRound.value
+  const src = vr ?? round.value
+  if (!src) return null
+  if (vr?.roundId && vr.roundId > 0) return vr.roundId
+  const dur = (vr?.durationSec && vr.durationSec > 0)
+    ? vr.durationSec
+    : (identityDurSec.value ?? 0)
+  const id = venueRoundId(src.slot ?? 0, dur)
+  return id > 0 ? id : null
+})
+const roundHref = computed(() => {
+  const id = roundIdDisplay.value
+  const dur = (venueRound.value?.durationSec && venueRound.value.durationSec > 0)
+    ? venueRound.value.durationSec
+    : (identityDurSec.value ?? 0)
+  const asset = visiblePrices.value[0]?.asset
+  if (!id || !dur || !asset) return null
+  return exchangeUpdownUrl(asset, dur, id)
+})
+
 
 /** 盘口深度卡的可见行：同一 Loading 门。 */
 const visibleBooks = computed<AssetBook[]>(() => {
@@ -948,8 +972,9 @@ const positions = computed(() =>
 )
 
 // ── issue 456: 挂单簿 + 强平 ────────────────────────────────────────────────
-// 轮次是否已过期：round_slot N 覆盖 [N·dur, (N+1)·dur)，与内核过期扫描同一
-// 公式；slot 0（无轮次）不参与（内核同样豁免它）。过期与否只决定按钮
+// 轮次是否已过期：与内核 `round_id::round_end_sec` 同一公式（遗留槽位
+// N 覆盖 [N·dur, (N+1)·dur)，交易所开始时间戳 S 覆盖 [S, S+dur)）；
+// slot 0（无轮次）不参与（内核同样豁免它）。过期与否只决定按钮
 // 可用性 —— 真判定在内核，按钮点了也过不了活轮拒绝。
 //
 // 轮长不再写死：轮次多族（issue 550/559）下每 venue 自己的族长在快照
@@ -960,7 +985,7 @@ const positions = computed(() =>
 // 取值 —— venue 变化后下一拍即按新族长算，无需重绑。
 function orderExpired(o: OrderRow): boolean {
   const dur = identityDurSec.value ?? 900
-  return o.roundSlot > 0 && Date.now() / 1000 >= (o.roundSlot + 1) * dur
+  return o.roundSlot > 0 && Date.now() / 1000 >= roundEndSec(o.roundSlot, dur)
 }
 
 /**
@@ -1033,7 +1058,14 @@ const journalOpen = ref(false)
           <div class="flex items-center gap-2">
             <Badge variant="gold">{{ marketTypeText || '市场' }}</Badge>
             <span class="truncate text-[13px] font-semibold">{{ marketName ?? '等待行情接入' }}</span>
-            <span class="label-micro">#{{ roundDisplay?.slot ?? '—' }}</span>
+            <a
+              v-if="roundHref"
+              class="label-micro"
+              :href="roundHref"
+              target="_blank"
+              rel="noopener noreferrer"
+            >#{{ roundIdDisplay ?? '—' }}</a>
+            <span v-else class="label-micro">#{{ roundIdDisplay ?? '—' }}</span>
           </div>
           <div class="mt-1.5 flex items-center gap-2 text-[11.5px] text-faint-fg">
             <Clock class="size-3.5" />

@@ -726,7 +726,9 @@ impl Ome {
             filled_size: Decimal::ZERO,
             avg_fill_price: None,
             status: OrderStatus::Pending,
-            round_slot: r.round_slot,
+            // Ledger identifier is the venue start ts (idempotent if the
+            // caller already converted). Duration 0 leaves the input alone.
+            round_slot: crate::round_id::venue_round_id(r.round_slot, p.round_duration_sec),
             submitted_at_ms: p.submitted_at_ms,
             updated_at_ms: p.submitted_at_ms,
             decision_at_ms: if p.decision_at_ms > 0 {

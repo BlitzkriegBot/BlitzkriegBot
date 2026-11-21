@@ -477,6 +477,28 @@ impl Core {
         if let Some(v) = config.max_positions_per_asset {
             positions.max_positions_per_asset = v;
         }
+        // Venue-round-id unification: rewrite persisted scanner indices to
+        // the exchange start-ts before any ledger is opened. Idempotent;
+        // money fields are fingerprint-checked; originals stay in
+        // `*.pre-venue-round-id` on the first rewrite.
+        match crate::round_id_migrate::migrate_configured_ledgers(
+            config.order_log_path.as_deref(),
+            config.position_log_path.as_deref(),
+            config.trade_log_path.as_deref(),
+        ) {
+            Ok(report) => {
+                if report.remapped() > 0 {
+                    tracing::info!(
+                        remapped = report.remapped(),
+                        files = report.files.len(),
+                        "venue-round-id ledger migration remapped scanner indices to start timestamps; money fingerprints unchanged"
+                    );
+                }
+            }
+            Err(e) => panic!(
+                "refusing to boot: venue-round-id ledger migration failed ({e}) —                  restore the *.pre-venue-round-id backup if one was written,                  fix the file, and restart; a kernel must not trade against a                  half-migrated ledger"
+            ),
+        }
         let trade_db = config
             .trade_log_path
             .as_ref()

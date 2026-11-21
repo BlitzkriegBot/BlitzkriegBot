@@ -144,6 +144,7 @@ pub(crate) async fn handle_engine(
                                 "venue": venue,
                                 "durationSec": duration,
                                 "slot": t.slot,
+                                "roundId": crate::round_id::venue_round_id(t.slot, duration),
                                 "ageSec": t.age_sec,
                                 "timeLeftSec": t.time_left_sec,
                             })

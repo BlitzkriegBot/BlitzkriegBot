@@ -75,6 +75,23 @@ check('a legacy row without a slot falls back to the countdown sign', () => {
   assert.equal(positionExpired({}, 900), false, 'no facts = not expired')
 })
 
+check('a venue start-ts expires at start+duration, not (id+1)*duration', () => {
+  const id = 1_795_230_000
+  const dur = 300
+  const real = Date.now
+  try {
+    Date.now = () => (id + dur - 1) * 1000
+    assert.equal(positionExpired({ roundSlot: id, roundDurationSec: dur }, 900), false)
+    Date.now = () => (id + dur) * 1000
+    assert.equal(positionExpired({ roundSlot: id, roundDurationSec: dur }, 900), true)
+    // The wrong (id+1)*dur clock would still see this as live by ~570 years.
+    Date.now = () => (id + dur + 1) * 1000
+    assert.equal(positionExpired({ roundSlot: id, roundDurationSec: dur }, 900), true)
+  } finally {
+    Date.now = real
+  }
+})
+
 check('the button and the verb routing share the one predicate', () => {
   // TradesTables button state calls the local `expired(p)` wrapper...
   assert.match(tables, /function expired\(p: Position\): boolean \{/)

@@ -946,7 +946,7 @@ impl Core {
                         // expires at the END of the slot. (Using N*dur would place
                         // expiry in the past and force-exit immediately.)
                         let expires_at_ms = if d.round_slot > 0 {
-                            (d.round_slot + 1) * eff_sec * 1000
+                            crate::round_id::round_end_ms(d.round_slot, eff_sec)
                         } else {
                             now_ms + eff_sec * 1000
                         };

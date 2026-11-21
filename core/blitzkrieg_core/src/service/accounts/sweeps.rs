@@ -32,7 +32,7 @@ impl Core {
                 continue;
             }
             let eff = self.order_eff_round_sec(o.account_id.as_str(), o);
-            if eff > 0 && now_ms >= (o.round_slot + 1) * eff * 1000 {
+            if eff > 0 && now_ms >= crate::round_id::round_end_ms(o.round_slot, eff) {
                 expired.push((o.order_id.clone(), eff));
             }
         }
@@ -525,8 +525,7 @@ impl Core {
             // A `0` family folds to the global grid — the pre-B1b value —
             // and the resolution just made is the lazy idempotent stamp.
             let eff = self.order_eff_round_sec(order.account_id.as_str(), &order);
-            let dur_ms = eff * 1000;
-            let expires_at = (order.round_slot + 1) * dur_ms;
+            let expires_at = crate::round_id::round_end_ms(order.round_slot, eff);
             self.ome.backfill_round_duration(id, eff);
             if now_ms < expires_at {
                 return Err(CoreError::new(

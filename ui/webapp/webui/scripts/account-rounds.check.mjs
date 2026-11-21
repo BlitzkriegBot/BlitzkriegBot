@@ -169,6 +169,8 @@ check('轮次周期切换入口在行情页倒计时卡（共享 composable 单�
   assert.match(hft, /@update:model-value="onPickRound"/, '档位点选必须走 onPickRound —— 只改 pending、再等「保存」会让切换按钮形同虚设')
   assert.match(hft, /async function onPickRound\(/, '缺 onPickRound：点选档位即进入写入路径（有仓确认、无仓秒切）')
   assert.match(hft, /onPickRound[\s\S]*?confirmThenWrite\('set'\)/, 'onPickRound 必须调用 confirmThenWrite —— 选档不能停在本地 pending')
+  assert.doesNotMatch(hft, /<Check[\s\S]*?保存/, '轮次切换不得再留保存按钮 —— 点选即写入，失败靠错误横幅+再点档位重试')
+  assert.match(hft, /再点档位可重试/, '写入失败必须提示再点档位可重试')
   assert.match(hft, /switcherLocked/, '倒计时卡缺声明唯一档锁定分支 —— 交易所只声明一档时切换器必须退化为静态标签（venue 是数据不是逻辑）')
   assert.match(hft, /roundSwitch\.flagLocked\.value/, '倒计时卡未消费 flagLocked —— 显式启动参数在管时必须禁用切换')
 	  assert.match(hft, /roundSwitch\.save\((accountId|store\.activeAccount \?\? 'default')/, '倒计时卡写入必须钉当前账户 —— per-account 写路径不许静默丢 accountId')

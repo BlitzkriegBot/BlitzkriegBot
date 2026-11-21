@@ -758,7 +758,11 @@ impl PluginKind {
 }
 
 fn state_mark(on: bool) -> &'static str {
-    if on { "[on ]" } else { "[off]" }
+    if on {
+        "[on ]"
+    } else {
+        "[off]"
+    }
 }
 
 fn status_json(disp: &Dispatcher, s: &UiSnapshot) -> serde_json::Value {

@@ -140,12 +140,10 @@ fn render_json_reports_gateway_capabilities() {
         serde_json::json!("crash")
     );
     assert_eq!(doc["gateway"]["lastExit"]["signal"], serde_json::json!(9));
-    assert!(
-        doc["gateway"]["lastExit"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("CRASHED")
-    );
+    assert!(doc["gateway"]["lastExit"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("CRASHED"));
 
     // Read-only gateway: `enabled` false even though a dispatcher exists.
     let readonly = LifecycleView {

@@ -596,7 +596,7 @@ mod tests {
             record_btc(&mut p, 300, "5m");
             p
         };
-        let end = 1795251900_000;
+        let end = 1_795_251_900_000;
         assert!(!p.placeholder_roll_due("polymarket", 300, end, end - 1));
         assert!(p.placeholder_roll_due("polymarket", 300, end, end));
         assert!(p.placeholder_roll_due("polymarket", 300, end, end + 1));

@@ -21,6 +21,9 @@ use super::*;
 /// stay per-venue (the feed is venue-anchored, tokens arrive later via
 /// `subscribe_tokens`); `venue_mounted` (venue alone) keeps its meaning
 /// for the FEED idempotence the venue.set/create guards rely on.
+type DroppedBatchMap =
+    std::collections::BTreeMap<(String, i64), Vec<blitzkrieg_market_api::MarketDescriptor>>;
+
 #[derive(Clone)]
 pub(super) struct DataPlaneRuntime {
     pub(super) feed_ws_enabled: bool,
@@ -75,11 +78,7 @@ pub(super) struct DataPlaneRuntime {
     /// re-activates the family, replays this cache through the same host
     /// path so prices and the venue clock appear without waiting for the
     /// next slot.
-    pub(super) last_dropped_batches: std::sync::Arc<
-        std::sync::Mutex<
-            std::collections::BTreeMap<(String, i64), Vec<blitzkrieg_market_api::MarketDescriptor>>,
-        >,
-    >,
+    pub(super) last_dropped_batches: std::sync::Arc<std::sync::Mutex<DroppedBatchMap>>,
 }
 
 impl DataPlaneRuntime {

@@ -198,7 +198,11 @@ const venueRound = computed(() => {
     typeof dur === 'number' && dur > 0
       ? rows.find((r) => r.venue === v && r.durationSec === dur)
       : null
-  return exact ?? (rows.find((r) => r.venue === v) ?? null)
+  // 缺读数（doc 尚未落地）时才退回 venue-only；档位已知但该族钟行还没到
+  // 时必须返回 null，绝不能退回同 venue 的另一族（否则 5m↔15m 切换后
+  // 倒计时和行情卡仍钉在先进池的那一族，切换控件看起来形同虚设）。
+  if (typeof dur === 'number' && dur > 0) return exact ?? null
+  return rows.find((r) => r.venue === v) ?? null
 })
 
 /**
@@ -405,14 +409,13 @@ const venueLoading = computed(() => {
  * 在逐单当拍取值，无需重绑。声明必须置于 visiblePrices 与立即
  * watch([..., visiblePrices, ...]) 之前，否则 setup 同步段读 identityDurSec
  * 会命中 TDZ（ReferenceError 'tt'）。 */
-const roundDurHintSec = ref<number | null>(null)
-void api
-  .roundDuration()
-  .then((d) => {
-    const acct = store.activeAccount ?? 'default'
-    roundDurHintSec.value = d.perAccount?.[acct] ?? d.effectiveSec
-  })
-  .catch(() => {})
+// 身份所轮长回落源：跟 useRoundDuration 同一份 round_duration.get 读数，
+// 随账户与写入后的 load() 一起更新。此前是一次性 then 赋值的 ref，保存
+// 成功后行情卡/倒计时仍按旧档过滤，切换看起来没有生效。
+const roundDurHintSec = computed<number | null>(() => {
+  const acct = store.activeAccount ?? 'default'
+  return roundSwitch.doc.value?.perAccount?.[acct] ?? roundSwitch.doc.value?.effectiveSec ?? null
+})
 
 /** 身份所轮长：venueRound 行有 durationSec 就用它，缺席回落 roundDurHintSec，
  * 再缺省（读数未到）回落 900（orderExpired 逐单当拍取值，无需重绑）。 */
@@ -784,10 +787,8 @@ const roundDurLabel = computed(() => {
 /**
  * 轮次时间周期切换卡（2026-10-24 操作者指令：切换入口从设置 · 通用 挪到
  * 本卡 —— 盯盘时切周期不离开监视语境；设置页保留同源的第二卡面，共享
- * lib/round-duration.ts 一份读数与写路径）。语义与设置卡逐字一致：
- * next_session 写入持久格、本会话网格不动、重启（10s 自动倒计时）生效；
- * cli_or_env 显式参数在场时写入不赢，提示条如实说明。倒计时期间挂单
- * 过期链照旧走本会话网格 —— 重启会把一切坐标系重建。
+ * lib/round-duration.ts 一份读数与写路径）。点选档位即撤单/强平并切网格；
+ * cli_or_env 显式参数在场时写入不赢，提示条如实说明。
  */
 
 // 本单（立即生效，保存与清除同一确认门）：先查当前账户在途仓位，有则必弹
@@ -832,6 +833,19 @@ async function writeRound(kind: 'set' | 'reset', accountId: string): Promise<voi
   } else {
     await roundSwitch.reset(accountId)
   }
+}
+
+/**
+ * 倒计时卡档位是切换按钮本身：点选即进入写入路径（有仓先确认、无仓直接
+ * 秒切）。此前 SegmentedControl 只改 pending，必须再点「保存」才写内核，
+ * 选中档位与倒计时/行情卡脱节，控件看起来形同虚设。
+ * 点回当前档或 flagLocked 时不写；写入失败留下 dirty，保存按钮仍可重试。
+ */
+async function onPickRound(sec: string): Promise<void> {
+  if (roundSwitch.flagLocked.value || roundSwitch.busy.value) return
+  roundSwitch.value.value = sec
+  if (!roundSwitch.dirty.value) return
+  await confirmThenWrite('set')
 }
 
 // 清除该账户的轮次设置，回落到启动参数解析（issue 1155：设置页轮次卡删除后，
@@ -1077,12 +1091,9 @@ const journalOpen = ref(false)
         <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
           <!-- 轮次时间周期切换（2026-10-24 操作者指令：入口从设置 · 通用 挪到
                倒计时卡 —— 盯盘时切周期不离开监视语境；与设置卡共享
-               lib/round-duration.ts 同一份读数与写路径）。next_session 语义
-               不变：写入持久格、本会话网格不动、重启生效；显式启动参数在管
+               lib/round-duration.ts 同一份读数与写路径）。点选档位即写入
+               （有仓先确认、无仓直接秒切秒换）；显式启动参数在管
                （flagLocked）时写入不赢，title 里如实说明。 -->
-          <!-- 复盘坐标系（不是账户的交易周期！）：账户各跑各的周期族在
-               账户卡配置（account.rounds.set，热生效）；这个单值只服务复盘
-               坐标系与未配置账户的回落 —— 语义剥离防「切换交易周期」误用。 -->
           <!-- 2026-10-26：档位集合按当前账户 venue 的插件声明筛（与账户卡
                同一 supportedRoundSecs 声明面）。声明唯一档的交易所无档可切，
                切换器退化为静态档位标签（switcherLocked）。 -->
@@ -1095,10 +1106,11 @@ const journalOpen = ref(false)
             <div class="flex items-center gap-1.5">
               <Timer class="size-3.5 text-faint-fg" />
               <SegmentedControl
-                v-model="roundSwitch.value.value"
+                :model-value="roundSwitch.value.value"
                 :segments="switcherSegments"
                 size="sm"
                 :disabled="roundSwitch.busy.value || roundSwitch.flagLocked.value"
+                @update:model-value="onPickRound"
               />
             </div>
           </Tooltip>

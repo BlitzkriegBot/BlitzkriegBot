@@ -18,8 +18,11 @@ const props = withDefaults(
     segments: Segment[]
     size?: 'sm' | 'default'
     class?: string
+    /** When true, inner tab buttons do not emit. A fallthrough `disabled` on
+     *  the root div would be a no-op — the 轮次切换档位靠这个门挡住写入. */
+    disabled?: boolean
   }>(),
-  { size: 'default' },
+  { size: 'default', disabled: false },
 )
 const emit = defineEmits<{ 'update:modelValue': [string] }>()
 
@@ -31,6 +34,7 @@ const count = computed(() => Math.max(1, props.segments.length))
   <div
     :class="cn(
       'relative inline-grid items-center gap-0.5 rounded-full border border-line bg-panel-2 p-1 backdrop-blur-md min-w-0',
+      props.disabled && 'pointer-events-none opacity-60',
       props.class,
     )"
     :style="{ gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` }"
@@ -50,13 +54,14 @@ const count = computed(() => Math.max(1, props.segments.length))
       type="button"
       role="tab"
       :aria-selected="s.id === props.modelValue"
+      :disabled="props.disabled"
       :class="cn(
         'relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full font-semibold whitespace-nowrap',
         'transition-colors duration-200 focus-visible:outline-none',
         props.size === 'sm' ? 'h-6.5 px-3 text-[11.5px]' : 'h-7.5 px-4 text-[12.5px]',
         s.id === props.modelValue ? 'text-primary-ink' : 'text-muted-fg hover:text-fg',
       )"
-      @click="emit('update:modelValue', s.id)"
+      @click="!props.disabled && emit('update:modelValue', s.id)"
     >
       {{ s.label }}
       <span

@@ -957,9 +957,7 @@ impl Core {
             // family length for 5m/15m/1h and for daily on non-DST days;
             // when the observed close is missing, fall back to the slot
             // grid. Never a sibling family's span.
-            let end_ms = if t.expires_at_ms > now {
-                t.expires_at_ms
-            } else if t.expires_at_ms > 0 {
+            let end_ms = if t.expires_at_ms > 0 {
                 t.expires_at_ms
             } else {
                 0

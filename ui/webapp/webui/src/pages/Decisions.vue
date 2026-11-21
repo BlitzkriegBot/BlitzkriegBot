@@ -5,10 +5,10 @@
  * shape is fixed by the design (时间/策略/结果/关卡/详情) and the detail column
  * is the kernel's own words — this page never re-writes a rejection.
  */
-import { computed, onMounted, ref } from 'vue'
-import { useIntervalFn } from '@vueuse/core'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { Gavel } from 'lucide-vue-next'
-import { api, type IntentAuditRecordView } from '@/api/client'
+import { useIntentAuditStore } from '@/stores/intent-audit'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
 import SegmentedControl from '@/components/ui/segmented/SegmentedControl.vue'
@@ -16,8 +16,9 @@ import DecisionTable from '@/components/DecisionTable.vue'
 
 type FilterId = 'all' | 'approved' | 'modified' | 'rejected'
 
-const records = ref<IntentAuditRecordView[]>([])
-const error = ref('')
+/** Records, error and loaded come from the store — one fetch, one timer. */
+const audit = useIntentAuditStore()
+const { records, error, loaded } = storeToRefs(audit)
 const filter = ref<FilterId>('all')
 
 const segments: { id: FilterId; label: string }[] = [
@@ -27,24 +28,6 @@ const segments: { id: FilterId; label: string }[] = [
   { id: 'rejected', label: '已拒绝' },
 ]
 
-async function refresh() {
-  try {
-    const doc = await api.intentAuditTail({ limit: 200 })
-    if (doc.error) {
-      error.value = doc.error
-      return
-    }
-    error.value = ''
-    loaded.value = true
-    records.value = doc.records ?? []
-  } catch (e) {
-    error.value = String((e as Error)?.message ?? e)
-  }
-}
-
-/** 首次装载完成 —— 空态与「还在加载」由此区分（E11 产品化）。 */
-const loaded = ref(false)
-
 /** Server-side vocabulary is uppercase; the filter passes it straight through. */
 const filtered = computed(() =>
   filter.value === 'all'
@@ -52,8 +35,8 @@ const filtered = computed(() =>
     : records.value.filter((r) => r.decision.status === filter.value.toUpperCase()),
 )
 
-onMounted(refresh)
-useIntervalFn(refresh, 4000)
+onMounted(() => { audit.startWatching() })
+onUnmounted(() => { audit.stopWatching() })
 </script>
 
 <template>

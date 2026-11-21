@@ -415,6 +415,23 @@ export interface Round {
   venueRounds?: VenueRound[]
 }
 
+export interface CurrentRound {
+  accountId: string
+  venue: string
+  /** Account-anchored family duration (300 / 900 / 3600 / 86400). */
+  durationSec: number
+  slot: number
+  /** Venue slug start Unix timestamp. */
+  roundId: number
+  startMs: number
+  endMs: number
+  ageSec: number
+  timeLeftSec: number
+  canTrade: boolean
+  prices: MarketPrice[]
+  books: AssetBook[]
+}
+
 export interface Snapshot {
   connected: boolean
   mode?: string
@@ -445,6 +462,8 @@ export interface Snapshot {
     cumulativeNetPnl?: number | null
   } | null
   round?: Round | null
+  /** Per-account current venue round (market-section SSOT). Older cores omit. */
+  currentRounds?: CurrentRound[]
   positions?: Position[]
   /** E8-c 盘口深度: per-asset L2 depth (older cores omit → undefined). */
   books?: AssetBook[]

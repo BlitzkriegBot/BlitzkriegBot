@@ -150,8 +150,8 @@ check('Loading 期间 visiblePrices / visibleBooks 清空（旧所盘口零残�
     )
     assert.match(
       body[0],
-      /filterByVenue/,
-      `${name} 未走 filterByVenue —— venue 过滤链断了`,
+      /currentRound/,
+      `${name} 必须读账户当前轮 currentRound（内核已按账户 venue+档位过滤），不得再自行选行`,
     )
   }
 })
@@ -219,13 +219,10 @@ check('倒计时优先读身份 venue 自己的钟行（round.venueRounds，#550
     /venueRounds\?: VenueRound\[\]/,
     'Round 合同缺 venueRounds 字段 —— 老内核降级路径无从判定',
   )
-  // The page binds the countdown to the identity venue's row, keyed by venue.
-  const vr = page.match(/const venueRound = computed\(\(\) => \{[\s\S]*?\n\}\)/)
-  assert.ok(vr, '缺 venueRound computed —— 倒计时没有 per-venue 选行逻辑')
-  assert.match(vr[0], /venueRounds/, '选行逻辑没读 venueRounds')
-  assert.match(vr[0], /identityVenue\.value/, '选行逻辑没按身份 venue 过滤')
-  // The snap watcher must consume the venue row BEFORE falling back to the
-  // global scalar block, and the fallback must be gated on the venue key.
+  // The market-section countdown reads the kernel's per-account currentRound
+  // (already scoped to the account's venue + family). It must not fall back
+  // to the process-default 15m `round` scalar.
+  assert.match(page, /selectCurrentRound/, '倒计时必须读 selectCurrentRound / currentRound')
   const snapWatch = page.match(/watch\(snap, \(s\) => \{[\s\S]*?\n\}, \{ immediate: true \}\)/)
   assert.ok(snapWatch, '缺 watch(snap) 倒计时喂入')
   assert.match(
@@ -233,10 +230,11 @@ check('倒计时优先读身份 venue 自己的钟行（round.venueRounds，#550
     /countForVenue\.value !== identityVenue\.value/,
     '倒计时没有 venue 键卫兵 —— 不同 venue 的钟行会刷新同一个倒计时（残值泄漏）',
   )
-  assert.match(
+  assert.match(snapWatch[0], /currentRound/, 'watch(snap) 必须绑定 currentRound，不得自行拼钟')
+  assert.doesNotMatch(
     snapWatch[0],
-    /if \(!countForVenue\.value && s\?\.round/,
-    '全局标量块回退没有按 venue 键门控 —— 切换后旧钟仍会续跳',
+    /s\?\.round && s\.round\.timeLeftSec/,
+    '不得再回退到全局 15m 标量块 —— 切换后旧钟会续跳，进度条也会按 15m 走',
   )
 })
 

@@ -632,6 +632,14 @@ export const usePanelStore = defineStore('panel', () => {
     lastUpdated.value = Date.now()
   }
 
+  /** Bump the live-stream generation so App.vue aborts a stale SSE
+   *  fetch and reconnects. Used by the 00:00 countdown self-heal.
+   *  Does not invent snapshot fields (L1–L6). */
+  const liveGeneration = ref(0)
+  function reconnectLive(): void {
+    liveGeneration.value += 1
+  }
+
   return {
     snapshot, plugins, error, loading, lastUpdated,
     connected, cumulativeNetPnl, strategyRows, tradeRows, fullHistoryRows, feedAt, sessionExpired,
@@ -639,7 +647,7 @@ export const usePanelStore = defineStore('panel', () => {
     activeAccount, accounts, setAccounts, setDisplayAccount, clearAccountScoped, refreshAccounts, activeAccountVenue, activeAccountRow, setAccountRounds,
     displayAccount, displayVenue,
     accountTradeSummary, accountStrategyStats,
-    refresh, acknowledgeSessionReset, applySseSnapshot,
+    refresh, acknowledgeSessionReset, applySseSnapshot, liveGeneration, reconnectLive,
     requestNav, clearNavRequest, requestBlueprintPreload, takeBlueprintPreload,
   }
 })

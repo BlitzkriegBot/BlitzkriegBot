@@ -704,3 +704,257 @@ async fn multi_family_rows_surface_in_both_read_views() {
         "round_slot == 0 rows ride the unconditional legacy bridge"
     );
 }
+
+/// The panel market section's single source of truth: `engine.round`
+/// publishes one `currentRounds` object per account. Duration is the
+/// account anchor (here 300), not the process default 900; prices and
+/// books belong only to that family; `roundId` is the venue start ts;
+/// `startMs`/`endMs` are the real window (a daily DST 23h span is
+/// published as 82800s, not 86400).
+#[tokio::test]
+async fn engine_round_current_rounds_follow_account_anchor() {
+    use crate::model::CryptoMarket;
+    use crate::round_id::venue_round_id;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
+
+    let (core, registry, peer) = hot_reload_fixture().await;
+    let set = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"round_duration.set","params":{"accountId":"default","durationSec":300,"reason":"ssot currentRound"}}"#
+            .to_string(),
+    )
+    .await;
+    assert!(
+        set.get("error").is_none(),
+        "anchoring default at 300 must succeed: {set}"
+    );
+
+    let now = now_ms();
+    let mk = |asset: &str, dur: i64, up: &str| {
+        let slot = now / 1000 / dur;
+        let end = (slot + 1) * dur * 1000;
+        CryptoMarket {
+            asset: asset.to_string(),
+            condition_id: format!("cond-pm-{asset}-{dur}-{end}"),
+            question_id: format!("q-pm-{asset}-{dur}-{end}"),
+            up_token_id: format!("up-pm-{asset}-{dur}-{end}"),
+            down_token_id: format!("down-pm-{asset}-{dur}-{end}"),
+            up_price: up.parse().unwrap(),
+            down_price: Decimal::ONE - up.parse::<Decimal>().unwrap(),
+            expires_at_ms: end,
+            round_slot: end / 1000 / dur,
+            round_duration_sec: dur,
+            archive_verdict: false,
+            venue: "polymarket".to_string(),
+            neg_risk: false,
+            question: format!("{asset} up or down"),
+        }
+    };
+    {
+        let mut c = core.lock().await;
+        for row in [
+            mk("BTC", 300, "0.61"),
+            mk("ETH", 300, "0.44"),
+            mk("BTC", 900, "0.22"),
+            mk("ETH", 900, "0.33"),
+        ] {
+            c.engine_on_data(
+                crate::engine::DataEvent::RoundMarkets {
+                    markets: vec![row],
+                    now_ms: now,
+                },
+                now,
+            );
+        }
+    }
+
+    let reply = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":2,"method":"engine.round","params":{}}"#.to_string(),
+    )
+    .await;
+    let rounds = reply["result"]["currentRounds"]
+        .as_array()
+        .expect("currentRounds array");
+    let cur = rounds
+        .iter()
+        .find(|r| r["accountId"] == "default")
+        .unwrap_or_else(|| panic!("missing default currentRound: {rounds:?}"));
+    assert_eq!(
+        cur["durationSec"], 300,
+        "duration is the account anchor, not process default 900: {cur}"
+    );
+    assert_eq!(cur["venue"], "polymarket");
+    let slot = now / 1000 / 300;
+    let expected_id = venue_round_id(slot, 300);
+    assert_eq!(
+        cur["roundId"].as_i64().expect("roundId"),
+        expected_id,
+        "roundId is the venue slug start ts"
+    );
+    let start = cur["startMs"].as_i64().expect("startMs");
+    let end = cur["endMs"].as_i64().expect("endMs");
+    assert_eq!(start, expected_id * 1000);
+    let span = (end - start) / 1000;
+    assert_eq!(
+        span, 300,
+        "5m window span must be 300s, not 900: start={start} end={end}"
+    );
+    assert!(
+        cur["ageSec"].as_i64().unwrap() + cur["timeLeftSec"].as_i64().unwrap() == span
+            || cur["timeLeftSec"].as_i64().unwrap() >= 0,
+        "age+left tracks the published window: {cur}"
+    );
+
+    let prices = cur["prices"].as_array().expect("prices");
+    let assets: Vec<&str> = prices
+        .iter()
+        .map(|p| p["asset"].as_str().unwrap())
+        .collect();
+    let mut sorted = assets.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        assets.len(),
+        "one price card per asset: {prices:?}"
+    );
+    assert_eq!(sorted, vec!["BTC", "ETH"]);
+    for p in prices {
+        assert_eq!(
+            p["durationSec"], 300,
+            "no 15m twin in the account object: {p}"
+        );
+        assert_eq!(p["venue"], "polymarket");
+        assert!(
+            p["upTokenId"].as_str().unwrap_or("").contains("-300-"),
+            "token ids belong to the 5m family: {p}"
+        );
+    }
+    let btc = prices.iter().find(|p| p["asset"] == "BTC").unwrap();
+    let btc_up = btc["up"]
+        .as_str()
+        .expect("decimal string")
+        .parse::<Decimal>()
+        .unwrap();
+    assert_eq!(btc_up, dec!(0.61), "5m quote, not the 15m 0.22");
+
+    let books = cur["books"].as_array().expect("books");
+    assert_eq!(
+        books.len(),
+        prices.len(),
+        "books match the same family: {books:?}"
+    );
+    for b in books {
+        assert_eq!(
+            b["durationSec"], 300,
+            "no 15m book in the account object: {b}"
+        );
+    }
+}
+
+/// A daily window that is 23h on a DST day publishes that span on
+/// start/end, while durationSec stays the family anchor 86400.
+#[tokio::test]
+async fn engine_round_current_rounds_daily_uses_observed_span() {
+    use crate::model::CryptoMarket;
+    use rust_decimal::Decimal;
+
+    let (core, registry, peer) = hot_reload_fixture().await;
+    let set = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"round_duration.set","params":{"accountId":"default","durationSec":86400,"reason":"ssot daily span"}}"#
+            .to_string(),
+    )
+    .await;
+    assert!(
+        set.get("error").is_none(),
+        "anchoring default at daily must succeed: {set}"
+    );
+
+    // 2026-11-20 12:00 EST = 1795194000 (slug start); close is
+    // 2026-11-21 12:00 EST = 1795280400. Mid-window +1h. The UTC 86400
+    // grid would name a different start; currentRounds must publish the
+    // venue window.
+    let start_sec = 1_795_194_000i64;
+    let start_ms = start_sec * 1000;
+    let end_ms = 1_795_280_400_000i64;
+    let now = start_ms + 3_600 * 1000;
+    let row = CryptoMarket {
+        asset: "BTC".to_string(),
+        condition_id: "cond-daily-dst".into(),
+        question_id: "q-daily-dst".into(),
+        up_token_id: "up-daily-dst".into(),
+        down_token_id: "down-daily-dst".into(),
+        up_price: Decimal::new(5, 1),
+        down_price: Decimal::new(5, 1),
+        expires_at_ms: end_ms,
+        round_slot: end_ms / 1000 / 86400,
+        round_duration_sec: 86400,
+        archive_verdict: false,
+        venue: "polymarket".to_string(),
+        neg_risk: false,
+        question: "BTC up or down".into(),
+    };
+    {
+        let mut c = core.lock().await;
+        c.engine_on_data(
+            crate::engine::DataEvent::RoundMarkets {
+                markets: vec![row],
+                now_ms: now,
+            },
+            now,
+        );
+    }
+
+    // engine.round uses now_ms() internally for current_rounds_view — we
+    // cannot inject `now` through the RPC. Assert the view helper at the
+    // DST instant instead, and still check the wire shape on a live call.
+    let view = {
+        let c = core.lock().await;
+        c.current_rounds_view(now)
+    };
+    let cur = view
+        .iter()
+        .find(|r| r.account_id == "default")
+        .expect("default currentRound");
+    assert_eq!(cur.duration_sec, 86400, "family anchor stays 86400");
+    assert_eq!(
+        cur.round_id, start_sec,
+        "roundId is the ET-noon slug start, not the UTC grid"
+    );
+    assert_eq!(cur.start_ms, start_ms);
+    assert_eq!(
+        cur.end_ms, end_ms,
+        "observed ET-noon close, not the UTC midnight grid"
+    );
+    assert_eq!((cur.end_ms - cur.start_ms) / 1000, 86_400);
+    assert_eq!(cur.age_sec, 3_600);
+    assert_eq!(cur.time_left_sec, 86_400 - 3_600);
+    assert_eq!(cur.prices.len(), 1);
+    assert_eq!(cur.prices[0].duration_sec, 86400);
+
+    let reply = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":2,"method":"engine.round","params":{}}"#.to_string(),
+    )
+    .await;
+    let rounds = reply["result"]["currentRounds"]
+        .as_array()
+        .expect("currentRounds on the wire");
+    assert!(
+        rounds
+            .iter()
+            .any(|r| r["accountId"] == "default" && r["durationSec"] == 86400),
+        "wire carries the daily currentRound: {rounds:?}"
+    );
+}

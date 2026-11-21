@@ -716,7 +716,7 @@ impl Dispatcher {
                 return CommandOutcome::err(
                     raw,
                     "market plugins cannot be toggled via UI; edit the core's market config",
-                )
+                );
             }
         };
         match result {
@@ -806,6 +806,7 @@ fn status_json(disp: &Dispatcher, s: &UiSnapshot) -> serde_json::Value {
                 "venue": v.venue, "durationSec": v.duration_sec, "slot": v.slot,
                 "ageSec": v.age_sec, "timeLeftSec": v.time_left_sec }))
                 .collect::<Vec<_>>(),
+            "currentRounds": r.current_rounds,
         })),
         "balance": s.balance.as_ref().map(|b| serde_json::json!({
             "balance": b.balance, "reserved": b.reserved, "available": b.available,

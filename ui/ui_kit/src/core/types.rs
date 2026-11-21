@@ -202,6 +202,12 @@ pub struct RoundView {
     /// 空表，面板走现行为（全局 `round` 标量块），永不因缺字段卡死。
     #[serde(default)]
     pub venue_rounds: Vec<VenueRoundView>,
+    /// Per-account current venue round — the market-section SSOT.
+    /// Stored as raw JSON so the gateway can forward every field (roundId,
+    /// startMs, endMs, prices, books) as-is and never strip a new key the
+    /// way typed re-assembly previously dropped `durationSec` / `roundId`.
+    #[serde(default)]
+    pub current_rounds: Vec<serde_json::Value>,
 }
 
 /// One venue's own round clock, for the panel's countdown re-binding

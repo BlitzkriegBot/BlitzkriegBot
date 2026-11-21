@@ -400,6 +400,7 @@ fn the_snapshot_carries_the_venue_tag_on_quote_rows() {
                     time_left_sec: 295,
                 },
             ],
+            current_rounds: vec![],
         }),
         books: vec![AssetBooksView {
             asset: "BTC".into(),
@@ -632,4 +633,70 @@ fn a_give_up_alert_reaches_the_panel_with_its_reason() {
     };
     let html = render_html_full(&snap, true, Some(&healthy), None);
     assert!(!html.contains("已放弃重启"), "no alert → no banner");
+}
+
+/// The market-section SSOT must survive gateway render without field
+/// stripping: roundId, startMs, endMs, durationSec, prices and books
+/// all stay on the wire.
+#[test]
+fn current_rounds_are_forwarded_as_is() {
+    use crate::core::types::RoundView;
+    let current = serde_json::json!([{
+        "accountId": "default",
+        "venue": "polymarket",
+        "durationSec": 300,
+        "slot": 5_984_146,
+        "roundId": 1_795_243_800,
+        "startMs": 1_795_243_800_000i64,
+        "endMs": 1_795_244_100_000i64,
+        "ageSec": 60,
+        "timeLeftSec": 240,
+        "canTrade": true,
+        "prices": [{
+            "asset": "BTC",
+            "venue": "polymarket",
+            "durationSec": 300,
+            "up": "0.61",
+            "down": "0.39",
+            "upTokenId": "up-btc-5m",
+            "downTokenId": "down-btc-5m"
+        }],
+        "books": [{
+            "asset": "BTC",
+            "venue": "polymarket",
+            "durationSec": 300,
+            "upTokenId": "up-btc-5m",
+            "downTokenId": "down-btc-5m"
+        }]
+    }]);
+    let snap = UiSnapshot {
+        connected: true,
+        round: Some(RoundView {
+            current_rounds: current.as_array().cloned().unwrap_or_default(),
+            ..RoundView::default()
+        }),
+        ..UiSnapshot::default()
+    };
+    let doc: serde_json::Value = serde_json::from_str(&render_json(&snap, None)).unwrap();
+    // Top-level key is the panel SSOT.
+    let rows = doc["currentRounds"]
+        .as_array()
+        .expect("top-level currentRounds");
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!(r["accountId"], "default");
+    assert_eq!(r["durationSec"], 300);
+    assert_eq!(r["roundId"], 1_795_243_800);
+    assert_eq!(r["startMs"], 1_795_243_800_000i64);
+    assert_eq!(r["endMs"], 1_795_244_100_000i64);
+    assert_eq!(
+        (r["endMs"].as_i64().unwrap() - r["startMs"].as_i64().unwrap()) / 1000,
+        300
+    );
+    assert_eq!(r["prices"][0]["asset"], "BTC");
+    assert_eq!(r["prices"][0]["durationSec"], 300);
+    assert_eq!(r["prices"][0]["upTokenId"], "up-btc-5m");
+    assert_eq!(r["books"][0]["durationSec"], 300);
+    // Nested copy under `round` is the same object.
+    assert_eq!(doc["round"]["currentRounds"], doc["currentRounds"]);
 }

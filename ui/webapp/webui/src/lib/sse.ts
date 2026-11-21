@@ -33,11 +33,13 @@ export type SseFrame =
 export async function readEventStream(
   token: string,
   onFrame: (frame: SseFrame) => void,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   let res: Response
   try {
     res = await fetch('/api/events', {
       headers: { 'X-Auth-Token': token, Accept: 'text/event-stream' },
+      signal,
     })
   } catch {
     return false // gateway unreachable; polling handles the alert

@@ -17,6 +17,7 @@ import EmptyState from '@/components/ui/empty/EmptyState.vue'
 import BookDepth from '@/components/charts/BookDepth.vue'
 import RollingNumber from '@/components/ui/roll/RollingNumber.vue'
 import { cents, signedPct } from '@/lib/format'
+import { priceCardId } from '@/lib/round-id'
 
 const props = defineProps<{
   /** Gate-cleared, venue-filtered book rows. */
@@ -59,7 +60,7 @@ const depthMetrics = computed(() => {
       <template #action>
         <div class="flex items-center gap-2">
           <select v-model="depthAsset" class="filter-select">
-            <option v-for="b in visibleBooks" :key="`${b.venue ?? ''}:${b.asset}`" :value="b.asset">{{ b.asset }}</option>
+            <option v-for="b in visibleBooks" :key="priceCardId(b.asset, b.durationSec)" :value="b.asset">{{ priceCardId(b.asset, b.durationSec) }}</option>
           </select>
           <SegmentedControl
             v-model="depthToken"

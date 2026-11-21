@@ -16,6 +16,7 @@ import Badge from '@/components/ui/badge/Badge.vue'
 import EmptyState from '@/components/ui/empty/EmptyState.vue'
 import RollingNumber from '@/components/ui/roll/RollingNumber.vue'
 import { cents } from '@/lib/format'
+import { priceCardId } from '@/lib/round-id'
 
 defineProps<{
   /** Gate-cleared, venue-filtered rows (empty while the Loading gate is open). */
@@ -64,12 +65,12 @@ function spreadCents(m: MarketPrice): number {
   <div v-else-if="visiblePrices.length" class="mt-3.5 grid gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
     <div
       v-for="m in visiblePrices"
-      :key="`${m.venue ?? ''}:${m.asset}:${m.durationSec ?? ''}`"
+      :key="priceCardId(m.asset, m.durationSec)"
       class="glass card-pad transition-transform duration-200 hover:-translate-y-0.5"
     >
       <div class="flex items-center justify-between">
         <span class="flex min-w-0 items-center gap-1.5">
-          <span class="truncate text-[13px] font-bold tracking-wide">{{ m.asset }}</span>
+          <span class="truncate text-[13px] font-bold tracking-wide">{{ priceCardId(m.asset, m.durationSec) }}</span>
         </span>
         <Badge class="figures" :variant="spreadCents(m) <= 1 ? 'up' : 'gold'">
           {{ spreadCents(m).toFixed(1) }}¢

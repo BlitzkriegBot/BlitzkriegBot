@@ -17,7 +17,9 @@ const RESOLUTION_SUM_TOLERANCE: Decimal = rust_decimal_macros::dec!(0.01);
 const DECISIVE_LOW: Decimal = rust_decimal_macros::dec!(0.01);
 const DECISIVE_HIGH: Decimal = rust_decimal_macros::dec!(0.99);
 
-/// Duration label used in Gamma slugs (5m/15m/1h/4h/daily).
+/// UI / declaration label for a round family (5m/15m/1h/4h/daily).
+/// The daily *slug token* is `1d`, not this string — see [`slug_epoch_daily`].
+/// 5m/15m/1h/4h slug tokens match these labels.
 pub fn duration_label(round_duration_sec: i64) -> Option<&'static str> {
     match round_duration_sec {
         300 => Some("5m"),
@@ -32,25 +34,38 @@ pub fn duration_label(round_duration_sec: i64) -> Option<&'static str> {
 /// Gamma slug for a round. `now_sec` must already include any clock offset
 /// applied by the caller.
 ///
-/// Two naming families exist on the venue (both pinned to live Gamma samples —
-/// see the PR notes):
-/// - **epoch family** (5m/15m/4h): `btc-updown-5m-1792756200` — slot start as a
-///   raw Unix timestamp. Handled by [`slug_epoch`].
-/// - **ET family** (1h/daily): the slug names an America/New_York clock wall
-///   time, e.g. `bitcoin-up-or-down-october-23-2026-7am-et` (1h) and
-///   `bitcoin-up-or-down-on-october-23-2026` (daily). Handled by
-///   [`slug_et_hour`] / [`slug_et_daily`].
+/// Live naming on the venue (verified against Gamma on 2026-11-21):
+/// - **epoch family** (5m/15m/1h/4h): `{asset}-updown-{5m|15m|1h|4h}-{slotStart}`
+///   where `slotStart` is the Unix timestamp of the UTC-aligned slot that
+///   contains `now_sec`. 1h used to be an ET wall-clock name
+///   (`bitcoin-up-or-down-october-23-2026-7am-et`); it now uses the same
+///   epoch form as 5m/15m, e.g. `btc-updown-1h-1795230000`. NY's offset is
+///   always a whole number of hours, so a UTC-hour slot is also an ET-hour
+///   slot. Handled by [`slug_epoch`].
+/// - **daily epoch** (`86400`): `{asset}-updown-1d-{etNoonStart}`. The
+///   window is America/New_York noon-to-noon; the slug names the window
+///   START, not UTC midnight. The slug token is `1d`, not the UI label
+///   `"daily"` from [`duration_label`]. Handled by [`slug_epoch_daily`].
+///
+/// [`slug_et_hour`] / [`slug_et_daily`] keep the retired ET wall-clock
+/// spellings for tests and historical fixtures; `slug_for` no longer
+/// routes to them.
 pub fn slug_for(asset: &str, round_duration_sec: i64, now_sec: i64) -> Option<String> {
     match round_duration_sec {
-        3600 => slug_et_hour(asset, now_sec),
-        86400 => slug_et_daily(asset, now_sec),
+        86400 => slug_epoch_daily(asset, now_sec),
         _ => slug_epoch(asset, round_duration_sec, now_sec),
     }
 }
 
-/// Epoch-family slug (5m/15m/4h), e.g. `btc-updown-4h-1792742400`.
+/// Epoch-family slug (5m/15m/1h/4h), e.g. `btc-updown-1h-1795230000`.
+/// The duration token is [`duration_label`] (`5m`/`15m`/`1h`/`4h`).
 fn slug_epoch(asset: &str, round_duration_sec: i64, now_sec: i64) -> Option<String> {
     let label = duration_label(round_duration_sec)?;
+    if round_duration_sec == 86400 {
+        // Daily uses the `1d` token and an ET-noon anchor, not a 86400 UTC
+        // modulus and not the UI label "daily".
+        return None;
+    }
     let slot_start = (now_sec / round_duration_sec) * round_duration_sec;
     Some(format!(
         "{}-updown-{}-{}",
@@ -58,6 +73,40 @@ fn slug_epoch(asset: &str, round_duration_sec: i64, now_sec: i64) -> Option<Stri
         label,
         slot_start
     ))
+}
+
+/// Daily epoch slug, e.g. `btc-updown-1d-1795194000`.
+///
+/// Anchor (pinned to live Gamma on 2026-11-21, and to several neighbouring
+/// days): the most recent America/New_York *noon* that is `<= now_sec`.
+/// `btc-updown-1d-1795194000` is "Bitcoin Up or Down on November 21?",
+/// endDate 2026-11-21T17:00:00Z (12:00 EST). UTC midnight, ET midnight,
+/// and UTC noon for the same calendar day all miss. A fixed UTC-5 offset
+/// would coincide while EST lasts, then break at the next DST start;
+/// the noon is taken from tzdata (chrono-tz), never from a written table.
+/// Noon itself is never the NY DST fold or gap (those are at 02:00).
+pub fn slug_epoch_daily(asset: &str, now_sec: i64) -> Option<String> {
+    let start = et_noon_start_sec(now_sec)?;
+    Some(format!("{}-updown-1d-{}", asset.to_lowercase(), start))
+}
+
+/// Unix timestamp of the ET-noon that opens the daily window containing
+/// `now_sec`. Before 12:00 ET that is yesterday's noon; from 12:00 ET on
+/// it is today's noon.
+fn et_noon_start_sec(now_sec: i64) -> Option<i64> {
+    use chrono::TimeZone;
+    let et = DateTime::from_timestamp(now_sec, 0)?.with_timezone(&chrono_tz::America::New_York);
+    let mut noon_date = et.date_naive();
+    if et.hour() < 12 {
+        noon_date -= chrono::Duration::days(1);
+    }
+    let naive = noon_date.and_hms_opt(12, 0, 0)?;
+    match chrono_tz::America::New_York.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => Some(dt.timestamp()),
+        // Fail closed: noon is never ambiguous or missing in
+        // America/New_York, so any other result is a programming surprise.
+        _ => None,
+    }
 }
 
 /// Ticker → the full asset name the ET-named slugs spell out. Verified live
@@ -365,17 +414,17 @@ mod tests {
         // 2026-10-23T10:59:59Z = 06:59:59 EDT —— 6am 轮的最后一秒
         let six_am = 1_792_753_199i64;
         assert_eq!(
-            slug_for("BTC", 3600, six_am).as_deref(),
+            slug_et_hour("BTC", six_am).as_deref(),
             Some("bitcoin-up-or-down-october-23-2026-6am-et")
         );
         // 2026-10-23T11:00:00Z = 07:00:00 EDT —— 翻到 7am 轮（真线当前轮）
         let seven_am = 1_792_753_200i64;
         assert_eq!(
-            slug_for("BTC", 3600, seven_am).as_deref(),
+            slug_et_hour("BTC", seven_am).as_deref(),
             Some("bitcoin-up-or-down-october-23-2026-7am-et")
         );
         assert_eq!(
-            slug_for("btc", 3600, seven_am).as_deref(),
+            slug_et_hour("btc", seven_am).as_deref(),
             Some("bitcoin-up-or-down-october-23-2026-7am-et")
         );
     }
@@ -386,15 +435,15 @@ mod tests {
     fn et_hour_slug_asset_names_match_live_samples() {
         let now = 1_792_754_891i64; // 2026-10-23T11:28:11Z = 07:28 EDT（抓取时刻）
         assert_eq!(
-            slug_for("ETH", 3600, now).as_deref(),
+            slug_et_hour("ETH", now).as_deref(),
             Some("ethereum-up-or-down-october-23-2026-7am-et")
         );
         assert_eq!(
-            slug_for("SOL", 3600, now).as_deref(),
+            slug_et_hour("SOL", now).as_deref(),
             Some("solana-up-or-down-october-23-2026-7am-et")
         );
         assert_eq!(
-            slug_for("XRP", 3600, now).as_deref(),
+            slug_et_hour("XRP", now).as_deref(),
             Some("xrp-up-or-down-october-23-2026-7am-et")
         );
     }
@@ -459,7 +508,7 @@ mod tests {
         // 7am 轮才是当前轮。
         let now = 1_792_754_891i64;
         assert_eq!(
-            slug_for("BTC", 3600, now).as_deref(),
+            slug_et_hour("BTC", now).as_deref(),
             Some("bitcoin-up-or-down-october-23-2026-7am-et")
         );
     }
@@ -471,24 +520,24 @@ mod tests {
     fn et_daily_slug_matches_live_sample_oct23() {
         // 2026-10-23T11:28:11Z = 07:28 EDT（抓取时刻）
         assert_eq!(
-            slug_for("BTC", 86400, 1_792_754_891).as_deref(),
+            slug_et_daily("BTC", 1_792_754_891).as_deref(),
             Some("bitcoin-up-or-down-on-october-23-2026")
         );
         assert_eq!(
-            slug_for("ETH", 86400, 1_792_754_891).as_deref(),
+            slug_et_daily("ETH", 1_792_754_891).as_deref(),
             Some("ethereum-up-or-down-on-october-23-2026")
         );
         assert_eq!(
-            slug_for("SOL", 86400, 1_792_754_891).as_deref(),
+            slug_et_daily("SOL", 1_792_754_891).as_deref(),
             Some("solana-up-or-down-on-october-23-2026")
         );
         assert_eq!(
-            slug_for("XRP", 86400, 1_792_754_891).as_deref(),
+            slug_et_daily("XRP", 1_792_754_891).as_deref(),
             Some("xrp-up-or-down-on-october-23-2026")
         );
         // ET 午夜后（2026-10-23T04:30:00Z = 00:30 EDT）仍是 10-23 的轮。
         assert_eq!(
-            slug_for("BTC", 86400, 1_792_729_800).as_deref(),
+            slug_et_daily("BTC", 1_792_729_800).as_deref(),
             Some("bitcoin-up-or-down-on-october-23-2026")
         );
     }
@@ -548,14 +597,17 @@ mod tests {
         );
     }
 
-    /// 未知 ticker 在 ET 族必须拿不到 slug（宁缺勿猜）；epoch 族不受影响。
+    /// 未知 ticker 在已退役的 ET 族必须拿不到 slug（宁缺勿猜）；epoch 族
+    /// （含现役 1h / daily）按 ticker 小写拼进去，不拦。
     #[test]
     fn et_family_rejects_unknown_tickers_but_epoch_family_keeps_them() {
-        assert_eq!(slug_for("DOGE", 3600, 1_792_754_891), None);
-        assert_eq!(slug_for("DOGE", 86400, 1_792_754_891), None);
+        assert_eq!(slug_et_hour("DOGE", 1_792_754_891), None);
+        assert_eq!(slug_et_daily("DOGE", 1_792_754_891), None);
         assert!(slug_for("doge", 300, 1_792_754_891).is_some());
         assert!(slug_for("doge", 900, 1_792_754_891).is_some());
+        assert!(slug_for("doge", 3600, 1_792_754_891).is_some());
         assert!(slug_for("doge", 14400, 1_792_754_891).is_some());
+        assert!(slug_for("doge", 86400, 1_792_754_891).is_some());
     }
 
     /// DST 边界（America/New_York 2026-11-01 02:00 EDT → 01:00 EST，UTC 切换
@@ -658,5 +710,173 @@ mod tests {
             Some("btc-updown-15m-1792755900")
         );
         assert_eq!(slug_for("BTC", 1234, 0), None);
+    }
+
+    // ── 现役 epoch 族（1h / daily，2026-11-21 Gamma 真线）──────────────────
+    // 期望值逐字取自 GET /markets?slug=... 命中；测试本身不访问网络。
+
+    /// 真线当前 1h：`btc-updown-1h-1795230000`（Bitcoin Up or Down -
+    /// November 20, 10:00PM-11:00PM ET，endDate 2026-11-21T04:00:00Z）。
+    /// 槽起点是包含 now 的 UTC 整点（也是 ET 整点）。四资产全部命中。
+    #[test]
+    fn hour_epoch_slug_matches_live_nov20() {
+        // 2026-11-21T03:00:00Z = 2026-11-20 22:00 EST
+        let start = 1_795_230_000i64;
+        assert_eq!(
+            slug_for("BTC", 3600, start).as_deref(),
+            Some("btc-updown-1h-1795230000")
+        );
+        // 轮内最后一秒仍是同一槽。
+        assert_eq!(
+            slug_for("BTC", 3600, start + 3_599).as_deref(),
+            Some("btc-updown-1h-1795230000")
+        );
+        assert_eq!(
+            slug_for("btc", 3600, start).as_deref(),
+            Some("btc-updown-1h-1795230000")
+        );
+        assert_eq!(
+            slug_for("ETH", 3600, start).as_deref(),
+            Some("eth-updown-1h-1795230000")
+        );
+        assert_eq!(
+            slug_for("SOL", 3600, start).as_deref(),
+            Some("sol-updown-1h-1795230000")
+        );
+        assert_eq!(
+            slug_for("XRP", 3600, start).as_deref(),
+            Some("xrp-updown-1h-1795230000")
+        );
+        // 下一整点翻槽（真线已预挂 11:00PM–12:00AM ET）。
+        assert_eq!(
+            slug_for("BTC", 3600, start + 3_600).as_deref(),
+            Some("btc-updown-1h-1795233600")
+        );
+    }
+
+    /// 1h 槽按 UTC 整点对齐。NY 偏移永远是整小时，所以 DST 回拨日的两个
+    /// 01:xx ET 分别落在两个 UTC 整点上（05:00Z EDT / 06:00Z EST），不会
+    /// 像旧 ET 墙钟拼写那样叠成同一个 slug。
+    #[test]
+    fn hour_epoch_slug_aligns_to_utc_hour_across_dst_fall_back() {
+        // 2026-11-01T05:30:00Z = 01:30 EDT（回拨前）→ 05:00Z 槽
+        assert_eq!(
+            slug_for("BTC", 3600, 1_793_511_000).as_deref(),
+            Some("btc-updown-1h-1793509200")
+        );
+        // 2026-11-01T06:30:00Z = 01:30 EST（回拨后）→ 06:00Z 槽
+        assert_eq!(
+            slug_for("BTC", 3600, 1_793_514_600).as_deref(),
+            Some("btc-updown-1h-1793512800")
+        );
+    }
+
+    /// 真线当前 daily：`btc-updown-1d-1795194000`（Bitcoin Up or Down on
+    /// November 21?，endDate 2026-11-21T17:00:00Z = 12:00 EST）。锚点是
+    /// 窗口 START（ET 正午），不是 UTC 零点。四资产全部命中。
+    #[test]
+    fn daily_epoch_slug_matches_live_nov20() {
+        // 2026-11-20T17:00:00Z = 12:00 EST —— 窗口打开
+        let start = 1_795_194_000i64;
+        assert_eq!(
+            slug_for("BTC", 86400, start).as_deref(),
+            Some("btc-updown-1d-1795194000")
+        );
+        // 正午前最后一秒仍属上一窗（11-19 12:00 EST）。
+        assert_eq!(
+            slug_for("BTC", 86400, start - 1).as_deref(),
+            Some("btc-updown-1d-1795107600")
+        );
+        // 窗口内（22:33 EST 量级）与窗口末秒仍是同一 slug。
+        assert_eq!(
+            slug_for("BTC", 86400, 1_795_230_000).as_deref(),
+            Some("btc-updown-1d-1795194000")
+        );
+        let next = 1_795_280_400i64; // 2026-11-21T17:00:00Z = 12:00 EST
+        assert_eq!(
+            slug_for("BTC", 86400, next - 1).as_deref(),
+            Some("btc-updown-1d-1795194000")
+        );
+        // 正午整翻到下一窗（真线已预挂 on November 22）。
+        assert_eq!(
+            slug_for("BTC", 86400, next).as_deref(),
+            Some("btc-updown-1d-1795280400")
+        );
+        assert_eq!(
+            slug_for("ETH", 86400, start).as_deref(),
+            Some("eth-updown-1d-1795194000")
+        );
+        assert_eq!(
+            slug_for("SOL", 86400, start).as_deref(),
+            Some("sol-updown-1d-1795194000")
+        );
+        assert_eq!(
+            slug_for("XRP", 86400, start).as_deref(),
+            Some("xrp-updown-1d-1795194000")
+        );
+        assert_eq!(
+            slug_for("btc", 86400, start).as_deref(),
+            Some("btc-updown-1d-1795194000")
+        );
+    }
+
+    /// daily 锚点是 ET 正午，不是 UTC 零点 / ET 零点 / UTC 正午。同一天这
+    /// 三个错误锚点在 2026-11-20 的 Gamma 上都未命中。
+    #[test]
+    fn daily_epoch_slug_rejects_midnight_and_utc_noon_anchors() {
+        // 2026-11-20 22:33 EST 落在 11-20 12:00 EST 开始的窗口。
+        let now = 1_795_230_000i64;
+        assert_eq!(
+            slug_for("BTC", 86400, now).as_deref(),
+            Some("btc-updown-1d-1795194000")
+        );
+        let slug = slug_for("BTC", 86400, now).unwrap();
+        assert!(
+            !slug.ends_with("1795132800"),
+            "must not be UTC midnight Nov 20"
+        );
+        assert!(
+            !slug.ends_with("1795219200"),
+            "must not be UTC midnight Nov 21"
+        );
+        assert!(
+            !slug.ends_with("1795150800"),
+            "must not be ET midnight Nov 20"
+        );
+        assert!(!slug.ends_with("1795176000"), "must not be UTC noon Nov 20");
+    }
+
+    /// DST 下 noon-to-noon 不是 86400 秒：回拨日 25 小时，拨快日 23 小时。
+    /// 时间戳由 tzdata 算出，不手写偏移。这些历史窗口在新 slug 格式下
+    /// 未必仍挂在 Gamma 上；本测试只钉生成规则。
+    #[test]
+    fn daily_epoch_slug_noon_to_noon_length_follows_dst() {
+        // 2026-11-01 00:30 EDT（回拨前）→ 窗口起点 10-31 12:00 EDT
+        assert_eq!(
+            slug_for("BTC", 86400, 1_793_507_400).as_deref(),
+            Some("btc-updown-1d-1793462400")
+        );
+        // 2026-11-01 11:59:59 EST 仍是同一窗；12:00 EST 翻到 11-01 正午
+        assert_eq!(
+            slug_for("BTC", 86400, 1_793_552_399).as_deref(),
+            Some("btc-updown-1d-1793462400")
+        );
+        assert_eq!(
+            slug_for("BTC", 86400, 1_793_552_400).as_deref(),
+            Some("btc-updown-1d-1793552400")
+        );
+        // 回拨日正午到正午 = 25 小时
+        assert_eq!(1_793_552_400 - 1_793_462_400, 90_000);
+        // 2026-03-08 拨快日：03-07 12:00 EST → 03-08 12:00 EDT = 23 小时
+        let spring_before_noon = 1_772_985_600i64 - 1; // 03-08 12:00 EDT 前一秒
+        assert_eq!(
+            slug_for("BTC", 86400, spring_before_noon).as_deref(),
+            Some("btc-updown-1d-1772902800")
+        );
+        assert_eq!(
+            slug_for("BTC", 86400, 1_772_985_600).as_deref(),
+            Some("btc-updown-1d-1772985600")
+        );
+        assert_eq!(1_772_985_600 - 1_772_902_800, 82_800);
     }
 }

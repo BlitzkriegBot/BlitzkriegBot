@@ -165,7 +165,10 @@ check('轮次周期切换入口在行情页倒计时卡（共享 composable 单�
   assert.match(lib, /onMounted\(load\)/, 'composable 缺装载 —— 卡面挂着就要读数')
   // 行情页：入口在场 + 消费 composable + 语义钉死。
   assert.match(hft, /useRoundDuration\(\)/, 'HftPage 缺 useRoundDuration —— 周期切换入口没进倒计时卡')
-  assert.match(hft, /v-model="roundSwitch\.value\.value"[\s\S]*?:segments="switcherSegments"/, '倒计时卡缺 SegmentedControl 切换控件（档位绑定必须走声明筛 switcherSegments）')
+  assert.match(hft, /:model-value="roundSwitch\.value\.value"[\s\S]*?:segments="switcherSegments"/, '倒计时卡缺 SegmentedControl 切换控件（档位绑定必须走声明筛 switcherSegments）')
+  assert.match(hft, /@update:model-value="onPickRound"/, '档位点选必须走 onPickRound —— 只改 pending、再等「保存」会让切换按钮形同虚设')
+  assert.match(hft, /async function onPickRound\(/, '缺 onPickRound：点选档位即进入写入路径（有仓确认、无仓秒切）')
+  assert.match(hft, /onPickRound[\s\S]*?confirmThenWrite\('set'\)/, 'onPickRound 必须调用 confirmThenWrite —— 选档不能停在本地 pending')
   assert.match(hft, /switcherLocked/, '倒计时卡缺声明唯一档锁定分支 —— 交易所只声明一档时切换器必须退化为静态标签（venue 是数据不是逻辑）')
   assert.match(hft, /roundSwitch\.flagLocked\.value/, '倒计时卡未消费 flagLocked —— 显式启动参数在管时必须禁用切换')
 	  assert.match(hft, /roundSwitch\.save\((accountId|store\.activeAccount \?\? 'default')/, '倒计时卡写入必须钉当前账户 —— per-account 写路径不许静默丢 accountId')
@@ -178,6 +181,30 @@ check('轮次周期切换入口在行情页倒计时卡（共享 composable 单�
 })
 
 // ── 4b. 插件自声明筛档（supported_round_secs，市场插件周期声明面）────────────
+check('SegmentedControl 真正禁用内部按钮（disabled 不能只落到根 div 上）', () => {
+  const src = read('src', 'components', 'ui', 'segmented', 'SegmentedControl.vue')
+  assert.match(src, /disabled\?: boolean/, 'SegmentedControl 缺 disabled prop —— 落在根 div 上的 fallthrough 挡不住内部 tab 按钮')
+  assert.match(src, /:disabled="props\.disabled"/, '内部 tab 按钮必须绑定 disabled，否则 flagLocked / busy 时档位仍可点')
+})
+
+check('档位已知时 venueRound 不得回退到同 venue 另一族（切换后行情/倒计时串族）', () => {
+  const vr = hft.match(/const venueRound = computed\(\(\) => \{[\s\S]*?\n\}\)/)
+  assert.ok(vr, '缺 venueRound computed')
+  assert.match(vr[0], /durationSec === dur/, '选行必须按账户锚定档位精确匹配，不能只按 venue')
+  assert.match(
+    vr[0],
+    /if \(typeof dur === 'number' && dur > 0\) return exact \?\? null/,
+    '档位已知但该族钟行未到时必须返回 null，禁止 exact ?? find(venue-only) 把 15m 钟标到 5m 账户头上',
+  )
+})
+
+check('身份轮长回落源跟随 roundSwitch.doc，不是一次性 then 赋值', () => {
+  const hint = hft.match(/const roundDurHintSec = computed<number \| null>\(\(\) => \{[\s\S]*?\n\}\)/)
+  assert.ok(hint, 'roundDurHintSec 必须是 computed（一次性 ref.then 赋值会在保存后继续按旧档过滤行情）')
+  assert.match(hint[0], /roundSwitch\.doc\.value\?\.perAccount/, '回落必须读 per-account 覆盖')
+  assert.doesNotMatch(hft, /void api\s*\.\s*roundDuration\(\)/, '禁止再走一次性 api.roundDuration().then 赋值 —— 与 composable 读数分叉')
+})
+
 check('client PluginRow 带 supportedRoundSecs（插件自声明，undefined = 不筛）', () => {
   assert.match(
     pluginClient,

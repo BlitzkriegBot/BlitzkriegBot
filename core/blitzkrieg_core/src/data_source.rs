@@ -56,6 +56,7 @@ use crate::engine::DataEvent;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 // #648 C / #840 PR3 (replay 家址): the whole read side of the stream contract
 // moved verbatim to `blitzkrieg_data_model` — the leaf the offline
@@ -129,6 +130,15 @@ pub struct EventArchive {
     stopped_reason: Option<String>,
     /// Caller clock (ms) of the last periodic flush, for `flush_if_due`.
     last_flush_ms: i64,
+    /// Last measured free bytes on the archive volume. `status()` (panel
+    /// `stats.archive`) reads only this cache — it must never call `statvfs`
+    /// itself, because `Core::tick` at `--tick-ms 10` and `engine.stats` both
+    /// sat on that path and a 10s `sample` of a long-running dry kernel showed
+    /// `EventArchive::status` -> `free_bytes_at` -> `statvfs` as the hottest
+    /// user stack (~20% CPU on an external volume).
+    cached_free_bytes: AtomicU64,
+    /// Caller clock of the last `statvfs`, for the <=1s refresh cadence.
+    last_free_bytes_ms: AtomicI64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -148,8 +158,9 @@ pub struct ArchiveStatus {
     /// How many rotated segments were deleted to restore the disk floor
     /// (`0` when `min_free_bytes` is 0 or never breached).
     pub segments_deleted: u64,
-    /// Free bytes on the archive's filesystem, re-read after each rotation and
-    /// whenever the guard trips (`0` = not measured, e.g. non-unix).
+    /// Free bytes on the archive's filesystem. Cached: refreshed on open,
+    /// rotation, disk-guard checks, and at most once a second from the tick
+    /// flush cadence. `0` = not yet measured (or a non-unix / stat failure).
     pub free_bytes: u64,
     /// Why recording stopped, if it did: `"cap"` | `"disk"` | `"io"`.
     pub stopped_reason: Option<String>,
@@ -219,7 +230,10 @@ impl EventArchive {
             last_flush_ms: i64::MIN / 2,
             rotated_segments: Self::rotated_siblings(path),
             segments_deleted: 0,
+            cached_free_bytes: AtomicU64::new(0),
+            last_free_bytes_ms: AtomicI64::new(i64::MIN / 2),
         };
+        archive.measure_free_bytes();
         if !owned {
             archive.stop(
                 "locked",
@@ -235,20 +249,45 @@ impl EventArchive {
         Ok(archive)
     }
 
+    /// Whether this archive is still accepting events. Cheap: no `statvfs`,
+    /// no allocation. `Core::tick` uses this for the #669 stop-edge alert.
+    pub fn recording(&self) -> bool {
+        !self.stopped
+    }
+
     pub fn status(&self) -> ArchiveStatus {
         ArchiveStatus {
             path: self.path.display().to_string(),
             events: self.events,
             bytes: self.bytes,
             dropped: self.dropped,
-            recording: !self.stopped,
+            recording: self.recording(),
             rotate_bytes: self.rotate_bytes,
             segment_bytes: self.segment_bytes,
             segments: self.segments,
             segments_deleted: self.segments_deleted,
-            free_bytes: free_bytes_at(&self.path).unwrap_or(0),
+            free_bytes: self.cached_free_bytes.load(Ordering::Relaxed),
             stopped_reason: self.stopped_reason.clone(),
         }
+    }
+
+    /// One `statvfs` of the archive volume; stores the result for `status()`.
+    fn measure_free_bytes(&self) -> Option<u64> {
+        let free = free_bytes_at(&self.path)?;
+        self.cached_free_bytes.store(free, Ordering::Relaxed);
+        Some(free)
+    }
+
+    /// Refresh the cached free-space reading at most once per `interval_ms`
+    /// of the caller's clock. Safe to call from the 10ms tick path.
+    pub fn refresh_free_bytes_if_due(&self, now_ms: i64, interval_ms: i64) {
+        if now_ms.saturating_sub(self.last_free_bytes_ms.load(Ordering::Relaxed))
+            < interval_ms.max(0)
+        {
+            return;
+        }
+        self.last_free_bytes_ms.store(now_ms, Ordering::Relaxed);
+        let _ = self.measure_free_bytes();
     }
 
     /// Stop recording and remember why (surfaced in `engine.stats.archive`).
@@ -318,7 +357,7 @@ impl EventArchive {
         if self.min_free_bytes == 0 {
             return true;
         }
-        match free_bytes_at(&self.path) {
+        match self.measure_free_bytes() {
             Some(free) => free > self.min_free_bytes,
             None => true,
         }
@@ -335,7 +374,7 @@ impl EventArchive {
         }
         let mut removed = 0u64;
         while !self.rotated_segments.is_empty() {
-            let free = match free_bytes_at(&self.path) {
+            let free = match self.measure_free_bytes() {
                 Some(free) => free,
                 None => return removed,
             };

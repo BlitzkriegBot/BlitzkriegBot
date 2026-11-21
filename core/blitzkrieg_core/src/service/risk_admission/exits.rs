@@ -510,6 +510,10 @@ impl Core {
         // (P-1.3).
         if let Some(a) = self.event_archive.as_mut() {
             a.flush_if_due(now_ms, 1000);
+            // Refresh cached volume free-space at the same 1s cadence. status()
+            // and the panel banner read that cache; they must not `statvfs`
+            // on the 10ms tick path (DRE-6).
+            a.refresh_free_bytes_if_due(now_ms, 1000);
         }
         // Issue #669: the archive's stop (disk floor / lock / io / session cap)
         // is otherwise a single journal warn line — the external operator who
@@ -521,7 +525,9 @@ impl Core {
         // `stats.archive` continuously. `false → true` cannot happen (a stopped
         // archive never restarts) but resets the slot defensively.
         if let Some(a) = self.event_archive.as_ref() {
-            let recording = a.status().recording;
+            // Read recording() — not status() — here. status() used to call
+            // statvfs on every 10ms tick against the archive volume.
+            let recording = a.recording();
             if self.archive_recording_last && !recording {
                 let message = "事件归档停录——回测语料不再记录；请清理磁盘或调整归档上限后重启会话"
                     .to_string();

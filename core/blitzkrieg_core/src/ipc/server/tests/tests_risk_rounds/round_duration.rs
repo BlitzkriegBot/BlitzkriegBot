@@ -147,6 +147,16 @@ async fn round_duration_set_writes_the_cell_and_get_reads_it_back() {
         serde_json::json!(900),
         "default effective stays 900 (the account override is separate): {read2}"
     );
+    assert_eq!(
+        read2["result"]["engineActiveSec"],
+        serde_json::json!(300),
+        "the running default-account grid is the override: {read2}"
+    );
+    assert_eq!(
+        read2["result"]["nextSessionSec"],
+        serde_json::json!(300),
+        "nextSessionSec is what the default account will run, not the factory 900: {read2}"
+    );
 
     // An off-whitelist value is refused.
     let bad = rpc(

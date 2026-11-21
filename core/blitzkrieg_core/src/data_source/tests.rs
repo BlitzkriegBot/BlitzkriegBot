@@ -771,3 +771,31 @@ fn a_second_writer_cannot_share_the_archive() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn recording_accessor_matches_status_without_depending_on_a_fresh_statvfs() {
+    let dir = std::env::temp_dir().join(format!(
+        "bk-archive-recording-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("events.jsonl");
+    let mut a = EventArchive::open(&path, 0).unwrap();
+    assert!(a.recording(), "a freshly opened archive is recording");
+    assert_eq!(a.recording(), a.status().recording);
+    // Open already measured the volume; status() must report that cache,
+    // not leave free_bytes at the "never measured" zero on a real filesystem.
+    assert!(
+        a.status().free_bytes > 0,
+        "open must cache a real free-bytes reading: {}",
+        a.status().free_bytes
+    );
+    a.stop("cap", "unit-test stop");
+    assert!(!a.recording());
+    assert!(!a.status().recording);
+    let _ = std::fs::remove_dir_all(&dir);
+}

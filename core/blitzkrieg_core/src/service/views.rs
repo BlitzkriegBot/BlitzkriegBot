@@ -38,6 +38,10 @@ pub struct AssetBooksView {
     #[serde(rename = "venue")]
     pub venue: String,
     pub asset: String,
+    /// The row's own family duration in seconds (0 = legacy / undeclared).
+    /// The panel filters depth the same way it filters price cards.
+    #[serde(rename = "durationSec", default)]
+    pub duration_sec: i64,
     /// E29 (§12.2): the aggregator keys prediction-token bars by TOKEN id, so
     /// the panel needs the same key `feed_klines` was fed to ask
     /// `kline.history` for the right series.

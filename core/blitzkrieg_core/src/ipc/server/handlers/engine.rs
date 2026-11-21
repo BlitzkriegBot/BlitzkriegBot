@@ -111,11 +111,17 @@ pub(crate) async fn handle_engine(
                                 .map(|b| b.mid_price)
                                 .filter(|p| *p > Decimal::ZERO)
                                 .unwrap_or(m.down_price);
+                            let duration_sec = if m.round_duration_sec > 0 {
+                                m.round_duration_sec
+                            } else {
+                                scanner.round_duration_sec()
+                            };
                             serde_json::json!({
                                 "asset": m.asset,
                                 "up": up,
                                 "down": down,
                                 "venue": m.venue,
+                                "durationSec": duration_sec,
                             })
                         })
                         .collect();

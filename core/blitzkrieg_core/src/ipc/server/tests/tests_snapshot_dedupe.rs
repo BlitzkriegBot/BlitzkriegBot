@@ -442,21 +442,33 @@ async fn the_active_grid_family_wins_the_price_row_whatever_the_arrival_order() 
             .collect();
         assert_eq!(
             pm.len(),
-            1,
-            "(venue,asset) stays unique across families (sibling_first={sibling_first}): {prices:?}"
+            2,
+            "each live family keeps its own (venue,asset,duration) price row              (sibling_first={sibling_first}): {prices:?}"
         );
-        let up: Decimal = pm[0]["up"]
-            .as_str()
-            .expect("decimal renders as a string")
-            .parse()
-            .expect("decimal");
+        let by_dur = |d: i64| {
+            pm.iter()
+                .find(|p| p["durationSec"] == d)
+                .unwrap_or_else(|| panic!("missing durationSec={d}: {prices:?}"))
+        };
+        let parse_up = |p: &Value| -> Decimal {
+            p["up"]
+                .as_str()
+                .expect("decimal renders as a string")
+                .parse()
+                .expect("decimal")
+        };
         assert_eq!(
-            up, active_row.up_price,
-            "the ACTIVE grid family ({active}s) must own the card's quote, not the \
-             sibling ({sibling}s) that merely arrived first (sibling_first={sibling_first})"
+            parse_up(by_dur(active)),
+            active_row.up_price,
+            "the {active}s row must keep its own quote (sibling_first={sibling_first})"
         );
-        // 同一页的另一个读面（盘口深度）必须指向同一族、同一批 token ——
-        // 否则「盘口在刷、行情卡不动」就是两个族各画一半的假象。
+        assert_eq!(
+            parse_up(by_dur(sibling)),
+            sibling_row.up_price,
+            "the {sibling}s row must keep its own quote (sibling_first={sibling_first})"
+        );
+        // Depth view carries the same two families, tagged so the panel can
+        // filter by the account's anchored duration.
         let depth = {
             let c = core.lock().await;
             c.books_view(5, now)
@@ -467,13 +479,24 @@ async fn the_active_grid_family_wins_the_price_row_whatever_the_arrival_order() 
             .collect();
         assert_eq!(
             pm_depth.len(),
-            1,
-            "the depth view keeps one (venue,asset) row too: {depth:?}"
+            2,
+            "the depth view keeps one row per live family: {depth:?}"
+        );
+        let depth_of = |d: i64| {
+            pm_depth
+                .iter()
+                .find(|r| r.duration_sec == d)
+                .unwrap_or_else(|| panic!("missing depth duration_sec={d}: {depth:?}"))
+        };
+        assert_eq!(
+            depth_of(active).up_token_id,
+            active_row.up_token_id,
+            "the {active}s depth row must carry that family's tokens              (sibling_first={sibling_first})"
         );
         assert_eq!(
-            pm_depth[0].up_token_id, active_row.up_token_id,
-            "the depth row must carry the ACTIVE family ({active}s) tokens — the card \
-             above reads the same family's books (sibling_first={sibling_first})"
+            depth_of(sibling).up_token_id,
+            sibling_row.up_token_id,
+            "the {sibling}s depth row must carry that family's tokens              (sibling_first={sibling_first})"
         );
     }
 }

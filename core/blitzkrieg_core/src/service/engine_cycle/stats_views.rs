@@ -902,6 +902,11 @@ impl Core {
             .map(|m| AssetBooksView {
                 venue: m.venue.clone(),
                 asset: m.asset.clone(),
+                duration_sec: if m.round_duration_sec > 0 {
+                    m.round_duration_sec
+                } else {
+                    scanner.round_duration_sec()
+                },
                 up_token_id: m.up_token_id.clone(),
                 down_token_id: m.down_token_id.clone(),
                 up: Self::book_side_view(&self.books, &m.up_token_id, max_levels),

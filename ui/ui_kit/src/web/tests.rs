@@ -140,10 +140,12 @@ fn render_json_reports_gateway_capabilities() {
         serde_json::json!("crash")
     );
     assert_eq!(doc["gateway"]["lastExit"]["signal"], serde_json::json!(9));
-    assert!(doc["gateway"]["lastExit"]["description"]
-        .as_str()
-        .unwrap()
-        .contains("CRASHED"));
+    assert!(
+        doc["gateway"]["lastExit"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("CRASHED")
+    );
 
     // Read-only gateway: `enabled` false even though a dispatcher exists.
     let readonly = LifecycleView {
@@ -370,12 +372,14 @@ fn the_snapshot_carries_the_venue_tag_on_quote_rows() {
                     up: 0.61,
                     down: 0.39,
                     venue: "polymarket".into(),
+                    duration_sec: 900,
                 },
                 MarketPriceView {
                     asset: "BTC".into(),
                     up: 0.60,
                     down: 0.40,
                     venue: "kalshi".into(),
+                    duration_sec: 3600,
                 },
             ],
             // #550（症状②）：the per-venue round clock rows travel the
@@ -404,6 +408,7 @@ fn the_snapshot_carries_the_venue_tag_on_quote_rows() {
             up_token_id: "tok-up".into(),
             down_token_id: "tok-down".into(),
             venue: "kalshi".into(),
+            duration_sec: 3600,
             up: BookSideView::default(),
             down: BookSideView::default(),
         }],
@@ -414,7 +419,10 @@ fn the_snapshot_carries_the_venue_tag_on_quote_rows() {
     assert_eq!(prices.len(), 2, "same asset, two venues → two rows");
     assert_eq!(prices[0]["venue"], serde_json::json!("polymarket"));
     assert_eq!(prices[1]["venue"], serde_json::json!("kalshi"));
+    assert_eq!(prices[0]["durationSec"], serde_json::json!(900));
+    assert_eq!(prices[1]["durationSec"], serde_json::json!(3600));
     assert_eq!(doc["books"][0]["venue"], serde_json::json!("kalshi"));
+    assert_eq!(doc["books"][0]["durationSec"], serde_json::json!(3600));
     // The per-venue clock rows reach the panel verbatim (the countdown
     // re-binds to the active venue's own row).
     let vr = doc["round"]["venueRounds"]

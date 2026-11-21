@@ -163,20 +163,25 @@ pub fn round_duration_readout(core: &Core) -> crate::schema::RoundDurationResult
     // is the durable home). When `per_account` is empty, no override was
     // persisted (either never set, or reset cleared it).
     let persisted = !per_account.is_empty();
+    // DEFAULT 账户解析后的族：它自己的 per-account 覆盖，没有覆盖就是进程
+    // 默认网格。与 effective_sec 分离是 #1151 的「无 split-brain」契约；
+    // 重启后它从库里读回同一个值（#1272）。
+    //
+    // `next_session_sec` 的合同（schema）是「下一会话 DEFAULT 账户会跑的
+    // 网格」。切换已是秒切秒换，该值与 `engine_active_sec` 相同；切不可再
+    // 填 `effective`（出厂/进程默认，常为 900），否则 get 会在
+    // perAccount.default=300 且倒计时已在 300 时仍报告 nextSessionSec=900。
+    let engine_active_sec = per_account
+        .get(blitzkrieg_market_api::DEFAULT_ACCOUNT_ID)
+        .copied()
+        .unwrap_or(effective);
     RoundDurationResult {
         effective_sec: effective,
-        // 倒计时钟真实跑的网格：DEFAULT 账户解析后的族（它自己的 per-account
-        // 覆盖，没有覆盖就是进程默认网格）。与 effective_sec 分离是 #1151 的
-        // 「无 split-brain」契约；重启后它从库里读回同一个值（#1272：per-account
-        // 覆盖不再靠一次全局写入存活，所以启动回填必须让它读得出来）。
-        engine_active_sec: per_account
-            .get(blitzkrieg_market_api::DEFAULT_ACCOUNT_ID)
-            .copied()
-            .unwrap_or(effective),
+        engine_active_sec,
         source: core.config().round_duration_source,
         per_account,
         allowed,
-        next_session_sec: effective,
+        next_session_sec: engine_active_sec,
         persisted,
     }
 }

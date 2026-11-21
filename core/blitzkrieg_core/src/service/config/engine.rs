@@ -122,6 +122,7 @@ impl CoreConfig {
         // from the engine's table, so every load/reload/rebuild inherits the
         // binding without another push.
         core.apply_strategy_round_families(&self.strategy_round_families);
+        core.apply_account_round_durations(&self.account_round_durations);
         self.load_strategy_dir(core);
         self.load_lua_strategy_dir(core);
         for name in &self.enabled_strategies {

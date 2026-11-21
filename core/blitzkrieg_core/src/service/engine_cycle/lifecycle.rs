@@ -163,6 +163,20 @@ impl Core {
         }
     }
 
+    /// Push the account→duration anchors (panel `round_duration.set`) into
+    /// the driving engine so evaluation feeds each account only that family's
+    /// markets and clock. A no-op without an engine. Called at install and
+    /// again on every live set/reset so a mid-session switch re-scopes
+    /// immediately.
+    pub fn apply_account_round_durations(
+        &mut self,
+        durations: &std::collections::HashMap<String, i64>,
+    ) {
+        if let Some(engine) = self.engine.as_mut() {
+            engine.set_account_round_durations(durations.clone());
+        }
+    }
+
     /// Read view of the driving engine for readers OUTSIDE `service` (the IPC
     /// view assembly, market-host diagnostics). The field itself is private
     /// (#780 boundary hygiene): every mutation goes through

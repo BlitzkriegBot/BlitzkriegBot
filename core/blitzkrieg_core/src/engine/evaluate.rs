@@ -32,6 +32,7 @@ impl Engine {
             strategy_exits: Vec::new(),
             positions_view: Vec::new(),
             strategy_families: HashMap::new(),
+            account_round_durations: HashMap::new(),
             pair_views_snapshot: Vec::new(),
             cfg,
             equity_usd: Decimal::ZERO,
@@ -843,7 +844,9 @@ impl Engine {
                     // cache mid-round (the lua_momentum poisoning). Unbound
                     // instances keep the historic every-rollover dispatch,
                     // byte-identical.
-                    if s.round_family_sec.is_some_and(|f| f != feed_duration) {
+                    if Engine::instance_round_family_sec(&self.account_round_durations, s)
+                        .is_some_and(|f| f != feed_duration)
+                    {
                         continue;
                     }
                     s.strategy.on_round(slot, time_left_sec, now_ms);
@@ -1184,12 +1187,14 @@ impl Engine {
             let global = self.cfg.scanner.round_duration_sec;
             let mut family_views: HashMap<i64, (RoundTiming, Vec<crate::model::CryptoMarket>)> =
                 HashMap::new();
-            for f in self
-                .strategy_families
-                .values()
-                .copied()
-                .collect::<HashSet<_>>()
-            {
+            let mut needed: HashSet<i64> = self.strategy_families.values().copied().collect();
+            needed.extend(
+                self.account_round_durations
+                    .values()
+                    .copied()
+                    .filter(|d| *d > 0),
+            );
+            for f in needed {
                 let markets: Vec<crate::model::CryptoMarket> = self
                     .scanner
                     .markets()
@@ -1240,13 +1245,21 @@ impl Engine {
                     // #1170: the bound instance's clock and markets come from
                     // ITS family's precomputed view; the unbound instance keeps
                     // the table-wide read (`round` above).
-                    let (slot, tleft, markets_ref) = match s
-                        .round_family_sec
-                        .and_then(|f| family_views.get(&f))
-                    {
-                        Some((clock, markets)) => (clock.slot, clock.time_left_sec, &markets[..]),
-                        None => (round.slot, round.time_left_sec, self.scanner.markets()),
-                    };
+                    // Account anchor (panel round switch) outranks the
+                    // strategy-level family binding. When the family is
+                    // known, use that view even if it has zero rows — never
+                    // fall back to the whole table, or a 5m-anchored
+                    // account would still see 15m markets and trip the
+                    // admission conflict check.
+                    let (slot, tleft, markets_ref) =
+                        match Engine::instance_round_family_sec(&self.account_round_durations, s)
+                            .and_then(|f| family_views.get(&f))
+                        {
+                            Some((clock, markets)) => {
+                                (clock.slot, clock.time_left_sec, &markets[..])
+                            }
+                            None => (round.slot, round.time_left_sec, self.scanner.markets()),
+                        };
                     let ctx = StrategyCtx::new(markets_ref, slot, tleft, now_ms, &fresh)
                         .with_positions(&held)
                         .with_unified_events(&unified_snapshot)

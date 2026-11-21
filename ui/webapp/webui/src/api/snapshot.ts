@@ -243,9 +243,12 @@ export interface MarketPrice {
   /**
    * Freshness of this card's mid. `snapshot` = placeholder REST (not the
    * high-freq feed). `live` = the account's currently subscribed family.
+   * `unreliable` = a book is present but the mid is not a tradeable
+   * reference (near-expiry stub quote, mid 0.505 vs a 0.995/0.005 venue
+   * midpoint) — never display that mid as a live price (L1).
    * Absent on older kernels — treat as unknown, never invent `live`.
    */
-  source?: 'snapshot' | 'live'
+  source?: 'snapshot' | 'live' | 'unreliable'
   /** When the mid was fetched, milliseconds. Absent when unknown. */
   fetchedAtMs?: number
 }

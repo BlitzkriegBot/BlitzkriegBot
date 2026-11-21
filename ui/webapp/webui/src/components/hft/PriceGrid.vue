@@ -47,6 +47,24 @@ function snapshotTitle(fetchedAtMs?: number): string {
   }
   return '占位快照，尚未高频同步'
 }
+
+function quoteUnreliable(m: MarketPrice): boolean {
+  return m.source === 'unreliable'
+}
+
+function priceText(m: MarketPrice, side: 'up' | 'down'): string {
+  if (quoteUnreliable(m)) return '—'
+  return Number(side === 'up' ? m.up : m.down).toFixed(3)
+}
+
+function centsText(m: MarketPrice, side: 'up' | 'down'): string {
+  if (quoteUnreliable(m)) return '—'
+  return cents(side === 'up' ? m.up : m.down)
+}
+
+function unreliableTitle(): string {
+  return '盘口价差过宽，中间价不可用作价（常见于临近到期的占位盘口），不会当作实时价显示'
+}
 </script>
 
 <template>
@@ -83,8 +101,13 @@ function snapshotTitle(fetchedAtMs?: number): string {
             class="shrink-0 rounded border border-gold/40 px-1 py-px text-[10px] font-medium text-gold"
             :title="snapshotTitle(m.fetchedAtMs)"
           >快照</span>
+          <span
+            v-else-if="quoteUnreliable(m)"
+            class="shrink-0 rounded border border-gold/40 px-1 py-px text-[10px] font-medium text-gold"
+            :title="unreliableTitle()"
+          >不可用作价</span>
         </span>
-        <Badge class="figures" :variant="spreadCents(m) <= 1 ? 'up' : 'gold'">
+        <Badge v-if="!quoteUnreliable(m)" class="figures" :variant="spreadCents(m) <= 1 ? 'up' : 'gold'">
           {{ spreadCents(m).toFixed(1) }}¢
         </Badge>
       </div>
@@ -94,10 +117,12 @@ function snapshotTitle(fetchedAtMs?: number): string {
             <TrendingUp class="size-3" />UP
           </div>
           <div class="stat-num mt-1 text-[21px] leading-none text-up">
-            <RollingNumber :value="Number(m.up).toFixed(3)" />
+            <RollingNumber v-if="!quoteUnreliable(m)" :value="priceText(m, 'up')" />
+            <span v-else>—</span>
           </div>
           <div class="mt-0.5 text-[10px] text-faint-fg num">
-            <RollingNumber :value="cents(m.up)" />
+            <RollingNumber v-if="!quoteUnreliable(m)" :value="centsText(m, 'up')" />
+            <span v-else>—</span>
           </div>
         </div>
         <div class="rounded-md border border-down/25 bg-down/8 px-2.5 py-2">
@@ -105,10 +130,12 @@ function snapshotTitle(fetchedAtMs?: number): string {
             <TrendingDown class="size-3" />DOWN
           </div>
           <div class="stat-num mt-1 text-[21px] leading-none text-down">
-            <RollingNumber :value="Number(m.down).toFixed(3)" />
+            <RollingNumber v-if="!quoteUnreliable(m)" :value="priceText(m, 'down')" />
+            <span v-else>—</span>
           </div>
           <div class="mt-0.5 text-[10px] text-faint-fg num">
-            <RollingNumber :value="cents(m.down)" />
+            <RollingNumber v-if="!quoteUnreliable(m)" :value="centsText(m, 'down')" />
+            <span v-else>—</span>
           </div>
         </div>
       </div>

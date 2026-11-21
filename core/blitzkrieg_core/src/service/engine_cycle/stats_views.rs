@@ -1016,20 +1016,34 @@ impl Core {
                 family
                     .iter()
                     .map(|m| {
-                        let up = engine
-                            .book_snapshot(&m.up_token_id)
-                            .map(|b| b.mid_price)
-                            .filter(|p| *p > rust_decimal::Decimal::ZERO)
-                            .unwrap_or(m.up_price);
-                        let down = engine
-                            .book_snapshot(&m.down_token_id)
-                            .map(|b| b.mid_price)
-                            .filter(|p| *p > rust_decimal::Decimal::ZERO)
-                            .unwrap_or(m.down_price);
-                        let (source, fetched_at_ms) = card_freshness(
+                        let up_book = engine.book_snapshot(&m.up_token_id);
+                        let down_book = engine.book_snapshot(&m.down_token_id);
+                        let up_mid = up_book.as_ref().and_then(|b| b.reliable_mid());
+                        let down_mid = down_book.as_ref().and_then(|b| b.reliable_mid());
+                        // A book that exists but has no reliable mid (wide
+                        // stub quote, mid 0.505) must not fall back to the
+                        // market metadata price — that would still pass a
+                        // non-quote off as a card mid (L1).
+                        let up_unusable = up_book.is_some() && up_mid.is_none();
+                        let down_unusable = down_book.is_some() && down_mid.is_none();
+                        let up = up_mid.unwrap_or(if up_unusable {
+                            rust_decimal::Decimal::ZERO
+                        } else {
+                            m.up_price
+                        });
+                        let down = down_mid.unwrap_or(if down_unusable {
+                            rust_decimal::Decimal::ZERO
+                        } else {
+                            m.down_price
+                        });
+                        let (mut source, fetched_at_ms) = card_freshness(
                             plane.freshness(&m.up_token_id),
                             plane.freshness(&m.down_token_id),
                         );
+                        if up_unusable || down_unusable {
+                            // Never label a phantom mid `live`.
+                            source = "unreliable".to_string();
+                        }
                         CurrentRoundPriceView {
                             asset: m.asset.clone(),
                             venue: m.venue.clone(),
@@ -1103,7 +1117,7 @@ impl Core {
             asks: s.asks.iter().take(max_levels).map(level).collect(),
             best_bid: Some(s.best_bid).filter(|p| *p > Decimal::ZERO),
             best_ask: Some(s.best_ask).filter(|p| *p < Decimal::ONE),
-            mid_price: Some(s.mid_price).filter(|p| *p > Decimal::ZERO),
+            mid_price: s.reliable_mid(),
             obi: Some(s.obi),
             spread: Some(s.spread),
             spread_pct: Some(s.spread_pct),
@@ -1240,6 +1254,8 @@ fn family_window(duration_sec: i64, now: i64, observed_end_ms: i64, slot: i64) -
 /// A card is `live` only when every stamped leg is live. Mixed or
 /// snapshot legs stay `snapshot` so a placeholder mid is never passed
 /// off as a live quote (L1–L6). Missing stamps stay empty, not invented.
+/// Quote quality (a wide stub mid) is applied by the caller, which
+/// may override the source to `unreliable`.
 fn card_freshness(
     up: Option<&crate::market::family_feed::PriceFreshness>,
     down: Option<&crate::market::family_feed::PriceFreshness>,

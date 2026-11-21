@@ -74,7 +74,7 @@ fn tokens_by_venue(all_markets: &[MarketDescriptor], now_ms: i64) -> HashMap<Str
 
 /// Spawn the discovery loop. `assets` are e.g. ["BTC","ETH"]; `families` is
 /// the declared round-family table in seconds (the plugin's
-/// `supported_round_secs` — e.g. [300, 900]). Returns
+/// `supported_round_secs` — e.g. [300, 900, 3600, 86400]). Returns
 /// immediately.
 pub fn spawn(
     host: Arc<dyn MarketHost>,

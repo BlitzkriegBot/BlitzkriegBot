@@ -61,21 +61,21 @@ impl MarketPlugin for PolymarketPlugin {
                 | MarketCapabilities::POST_ONLY,
         }]
     }
-    /// The Gamma families this plugin currently routes (`300`/`900`: the
-    /// epoch slugs in `crate::gamma`). Declared here so the panel's rounds
-    /// editor and the discovery loop offer only durations that still
-    /// resolve. 1h / 4h / daily stay in `duration_label` and the slug
-    /// helpers for tests and a possible later restore, but are not
-    /// advertised — the historical ET wall-clock slugs no longer resolve,
-    /// and 4h epoch slugs currently miss.
+    /// The Gamma families this plugin currently routes. 5m/15m/1h use
+    /// epoch slugs (`btc-updown-{5m|15m|1h}-{slotStart}`); daily uses
+    /// `{asset}-updown-1d-{etNoonStart}`. Declared here so the panel's
+    /// rounds editor and the discovery loop offer only durations that
+    /// still resolve. 4h stays undeclared: its epoch slugs currently miss
+    /// on Gamma. The UI label for 86400 remains `"daily"` (see
+    /// `duration_label`); the slug token is `1d`.
     fn supported_round_secs(&self) -> Option<Vec<i64>> {
-        Some(vec![300, 900])
+        Some(vec![300, 900, 3600, 86_400])
     }
     /// Labels for the declared families. Same vocabulary as
     /// `crate::gamma::duration_label` for these seconds; the readout of
     /// `round_duration.get` renders these strings.
     fn round_labels(&self) -> &[(i64, &'static str)] {
-        &[(300, "5m"), (900, "15m")]
+        &[(300, "5m"), (900, "15m"), (3600, "1h"), (86400, "daily")]
     }
     fn data_feed(&self) -> Option<&dyn DataFeed> {
         Some(&POLY_DATA_FEED)
@@ -193,21 +193,23 @@ mod round_labels_tests {
     use super::*;
 
     /// Anti-drift pin (issue 648, updated 2026-11-21): the declaration
-    /// face lists only the families this plugin currently routes (5m/15m).
-    /// A drift here is a UI-visible change to the rounds editor and the
-    /// discovery loop. `crate::gamma::duration_label` must agree with
-    /// every declared row — the two faces spell one venue vocabulary.
-    /// The slug helpers still know 1h/4h/daily; those rows are
-    /// intentionally not declared.
+    /// face lists the families this plugin currently routes (5m/15m/1h/
+    /// daily). 4h is intentionally absent. A drift here is a UI-visible
+    /// change to the rounds editor and the discovery loop.
+    /// `crate::gamma::duration_label` must agree with every declared
+    /// row — the two faces spell one venue vocabulary.
     #[test]
     fn declared_round_labels_match_the_routed_families() {
         let plugin = PolymarketPlugin;
-        assert_eq!(plugin.supported_round_secs(), Some(vec![300, 900]));
+        assert_eq!(
+            plugin.supported_round_secs(),
+            Some(vec![300, 900, 3600, 86_400])
+        );
         let declared = plugin.round_labels();
         assert_eq!(
             declared,
-            &[(300, "5m"), (900, "15m")],
-            "the declaration must stay the live 5m/15m Gamma families"
+            &[(300, "5m"), (900, "15m"), (3600, "1h"), (86400, "daily")],
+            "the declaration must stay the live 5m/15m/1h/daily Gamma families"
         );
         // The slug vocabulary and the declaration face spell the SAME
         // names for every declared row.

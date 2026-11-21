@@ -61,26 +61,21 @@ impl MarketPlugin for PolymarketPlugin {
                 | MarketCapabilities::POST_ONLY,
         }]
     }
-    /// The Gamma slug families this plugin routes (`crate::gamma`:
-    /// `duration_label` maps exactly these five; the epoch family for
-    /// 5m/15m/4h, the ET clock-wall family for 1h/daily). Declared here so
-    /// the panel's rounds editor offers only durations that discover.
+    /// The Gamma families this plugin currently routes (`300`/`900`: the
+    /// epoch slugs in `crate::gamma`). Declared here so the panel's rounds
+    /// editor and the discovery loop offer only durations that still
+    /// resolve. 1h / 4h / daily stay in `duration_label` and the slug
+    /// helpers for tests and a possible later restore, but are not
+    /// advertised — the historical ET wall-clock slugs no longer resolve,
+    /// and 4h epoch slugs currently miss.
     fn supported_round_secs(&self) -> Option<Vec<i64>> {
-        Some(vec![300, 900, 3600, 14400, 86_400])
+        Some(vec![300, 900])
     }
-    /// The Gamma slug labels for those families — the plugin's own naming
-    /// vocabulary (`crate::gamma::duration_label` spells the same table when
-    /// it builds discovery slugs; this declaration is the contract face of
-    /// the same knowledge). Verbatim the historical kernel table so the
-    /// `round_duration.get` readout keeps rendering identical labels.
+    /// Labels for the declared families. Same vocabulary as
+    /// `crate::gamma::duration_label` for these seconds; the readout of
+    /// `round_duration.get` renders these strings.
     fn round_labels(&self) -> &[(i64, &'static str)] {
-        &[
-            (300, "5m"),
-            (900, "15m"),
-            (3600, "1h"),
-            (14400, "4h"),
-            (86400, "daily"),
-        ]
+        &[(300, "5m"), (900, "15m")]
     }
     fn data_feed(&self) -> Option<&dyn DataFeed> {
         Some(&POLY_DATA_FEED)
@@ -197,30 +192,25 @@ impl OrderExecutor for PolymarketExecutor {
 mod round_labels_tests {
     use super::*;
 
-    /// The anti-drift pin (issue 648): this plugin's declared label table is
-    /// VERBATIM the historical kernel table (`scanner::duration_label_for`,
-    /// retired by this change) — the values the `round_duration.get` readout
-    /// rendered before the labels moved to the declaration face. A drift here
-    /// is a UI-visible rename of an existing family, not a declaration
-    /// detail: 300→"5m", 900→"15m", 3600→"1h", 14400→"4h", 86400→"daily".
-    /// `crate::gamma::duration_label` (the slug builder's own copy) must
-    /// agree with this table — the two faces spell one venue vocabulary.
+    /// Anti-drift pin (issue 648, updated 2026-11-21): the declaration
+    /// face lists only the families this plugin currently routes (5m/15m).
+    /// A drift here is a UI-visible change to the rounds editor and the
+    /// discovery loop. `crate::gamma::duration_label` must agree with
+    /// every declared row — the two faces spell one venue vocabulary.
+    /// The slug helpers still know 1h/4h/daily; those rows are
+    /// intentionally not declared.
     #[test]
-    fn declared_round_labels_are_verbatim_the_historical_kernel_table() {
-        let declared = PolymarketPlugin.round_labels();
+    fn declared_round_labels_match_the_routed_families() {
+        let plugin = PolymarketPlugin;
+        assert_eq!(plugin.supported_round_secs(), Some(vec![300, 900]));
+        let declared = plugin.round_labels();
         assert_eq!(
             declared,
-            &[
-                (300, "5m"),
-                (900, "15m"),
-                (3600, "1h"),
-                (14400, "4h"),
-                (86400, "daily"),
-            ],
-            "the declaration must stay verbatim the historical kernel table"
+            &[(300, "5m"), (900, "15m")],
+            "the declaration must stay the live 5m/15m Gamma families"
         );
-        // The slug vocabulary and the declaration face spell the SAME table —
-        // a rename on either side alone would split the venue's own names.
+        // The slug vocabulary and the declaration face spell the SAME
+        // names for every declared row.
         for (sec, label) in declared {
             assert_eq!(crate::gamma::duration_label(*sec), Some(*label));
         }

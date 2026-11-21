@@ -266,13 +266,15 @@ impl AccountFileEntry {
     }
 }
 
-/// Test-fixture helper: the historical kernel whitelist, now spelled as the
-/// plugins' declared union (polymarket's five families ∪ kalshi's 900). Tests
-/// pass this where production threads the registry union through
+/// Test-fixture helper: a five-family historical whitelist (the table
+/// Polymarket used to declare, plus kalshi's 900). Tests pass this where
+/// production threads the live registry union through
 /// [`load_account_ledgers`] / [`validate_rounds`], so no test invents new
-/// assertion semantics — the values are exactly what the shipped plugins
-/// declare. `pub` (not `pub(crate)`) because the integration tests are
-/// external crates; `#[doc(hidden)]` keeps it out of the documented API.
+/// assertion semantics. The fixture is deliberately wider than the
+/// current Polymarket declaration (5m/15m only) so unit tests can still
+/// exercise 1h/4h/daily as allowed values. `pub` (not `pub(crate)`)
+/// because the integration tests are external crates; `#[doc(hidden)]`
+/// keeps it out of the documented API.
 #[doc(hidden)]
 pub const TEST_ALLOWED_ROUNDS: &[i64] = &[300, 900, 3600, 14400, 86400];
 

@@ -417,7 +417,7 @@ pub fn render_json_full(
             // 与 Loading 门都 feature-detect 它）。空串 = 未分所，前端降级。
             "prices": r.market_prices.iter().map(|m| serde_json::json!({
                 "asset": m.asset, "up": m.up, "down": m.down,
-                "venue": m.venue })).collect::<Vec<_>>(),
+                "venue": m.venue, "durationSec": m.duration_sec })).collect::<Vec<_>>(),
             // #550（症状②）：per-venue 轮次钟行 —— 倒计时卡按 active venue
             // 选行重绑（账户切换器就是交易所切换器），不再读全局保守钟的
             // 标量块。老内核没有该键 → 空表，面板走现行为（feature-detect
@@ -649,6 +649,7 @@ pub fn render_json_full(
             // 与 engine.books 的富化同源）——HftPage 的 venue Loading 门
             // 同时盯着 prices 与 books 两路行。
             "venue": a.venue,
+            "durationSec": a.duration_sec,
             "up": book_side_json(&a.up),
             "down": book_side_json(&a.down),
         })).collect::<Vec<_>>(),

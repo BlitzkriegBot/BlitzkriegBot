@@ -189,6 +189,11 @@ check('SegmentedControl 真正禁用内部按钮（disabled 不能只落到根 d
   assert.match(src, /:disabled="props\.disabled"/, '内部 tab 按钮必须绑定 disabled，否则 flagLocked / busy 时档位仍可点')
 })
 
+check('行情卡与盘口都按账户锚定档位过滤（durationSec）', () => {
+  assert.match(hft, /filterByVenueDur\(prices\.value, activeVenue\.value, identityDurSec\.value\)/, 'visiblePrices 必须按 identityDurSec 过滤，不能只按 venue')
+  assert.match(hft, /filterByVenueDur\(books\.value, activeVenue\.value, identityDurSec\.value\)/, 'visibleBooks 必须同样按 identityDurSec 过滤，否则盘口停在默认 15m')
+})
+
 check('档位已知时 venueRound 不得回退到同 venue 另一族（切换后行情/倒计时串族）', () => {
   const vr = hft.match(/const venueRound = computed\(\(\) => \{[\s\S]*?\n\}\)/)
   assert.ok(vr, '缺 venueRound computed')

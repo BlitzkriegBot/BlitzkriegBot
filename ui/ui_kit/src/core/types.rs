@@ -179,6 +179,11 @@ pub struct MarketPriceView {
     /// 不过滤（与 webui 的 feature-detect 降级同一纪律）。
     #[serde(default)]
     pub venue: String,
+    /// The row's family duration in seconds (0 = legacy / undeclared).
+    /// The panel filters price cards by the account's anchored duration.
+    /// Must not be stripped by typed re-assembly.
+    #[serde(default)]
+    pub duration_sec: i64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -242,6 +247,10 @@ pub struct AssetBooksView {
     /// 世界）——面板按「未分所」降级，不过滤。
     #[serde(default)]
     pub venue: String,
+    /// Family duration in seconds (0 = legacy / undeclared). The panel
+    /// filters depth rows the same way it filters price cards.
+    #[serde(default)]
+    pub duration_sec: i64,
     #[serde(default)]
     pub up: BookSideView,
     #[serde(default)]

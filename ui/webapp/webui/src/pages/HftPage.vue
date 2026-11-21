@@ -458,7 +458,7 @@ const roundHref = computed(() => {
 /** 盘口深度卡的可见行：同一 Loading 门。 */
 const visibleBooks = computed<AssetBook[]>(() => {
   if (venueLoading.value) return []
-  return filterByVenue(books.value, activeVenue.value).rows
+  return filterByVenueDur(books.value, activeVenue.value, identityDurSec.value).rows
 })
 
 /** 未绑定态（''/undefined）：显示「该账户未绑定交易所」空态，不显示任何

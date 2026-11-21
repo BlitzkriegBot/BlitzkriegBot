@@ -505,8 +505,20 @@ impl Scanner {
             };
             u8::from(family != active_grid)
         });
-        let mut seen: HashSet<(String, String)> = HashSet::new();
-        rows.retain(|m| seen.insert((m.venue.clone(), m.asset.clone())));
+        // Unique within one family only. A 5m and a 15m BTC row must both
+        // reach the panel so it can filter by the account's anchored
+        // duration; uniquing on (venue, asset) alone used to keep only the
+        // process-default family (usually 15m), so switching to 5m left the
+        // price cards on the 15m CLOB.
+        let mut seen: HashSet<(String, String, i64)> = HashSet::new();
+        rows.retain(|m| {
+            let family = if m.round_duration_sec > 0 {
+                m.round_duration_sec
+            } else {
+                active_grid
+            };
+            seen.insert((m.venue.clone(), m.asset.clone(), family))
+        });
         rows
     }
 

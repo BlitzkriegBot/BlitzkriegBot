@@ -277,6 +277,11 @@ export interface AssetBook {
    * 缺字段 → undefined，前端按「未分所」降级（不过滤、不崩）。
    */
   venue?: string
+  /**
+   * 轮次档位（秒）：该盘口行属于哪一档。老内核缺字段 → undefined，
+   * 前端 feature-detect，按 venue-only 过滤，不崩。
+   */
+  durationSec?: number
   up: BookSide
   down: BookSide
 }

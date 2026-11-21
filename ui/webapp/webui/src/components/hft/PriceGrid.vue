@@ -40,6 +40,13 @@ defineProps<{
 function spreadCents(m: MarketPrice): number {
   return Math.max(0, m.up + m.down - 1) * 100
 }
+
+function snapshotTitle(fetchedAtMs?: number): string {
+  if (typeof fetchedAtMs === 'number' && fetchedAtMs > 0) {
+    return `占位快照，${new Date(fetchedAtMs).toLocaleString()} 拉取，尚未高频同步`
+  }
+  return '占位快照，尚未高频同步'
+}
 </script>
 
 <template>
@@ -71,6 +78,11 @@ function spreadCents(m: MarketPrice): number {
       <div class="flex items-center justify-between">
         <span class="flex min-w-0 items-center gap-1.5">
           <span class="truncate text-[13px] font-bold tracking-wide">{{ priceCardId(m.asset, m.durationSec) }}</span>
+          <span
+            v-if="m.source === 'snapshot'"
+            class="shrink-0 rounded border border-gold/40 px-1 py-px text-[10px] font-medium text-gold"
+            :title="snapshotTitle(m.fetchedAtMs)"
+          >快照</span>
         </span>
         <Badge class="figures" :variant="spreadCents(m) <= 1 ? 'up' : 'gold'">
           {{ spreadCents(m).toFixed(1) }}¢

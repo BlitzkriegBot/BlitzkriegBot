@@ -308,7 +308,10 @@ fn discovery_loop(
                 .flat_map(|m| [m.up_token_id.clone(), m.down_token_id.clone()])
                 .collect();
             // Registers the round with the engine (opens this family's clock).
-            host.on_round_markets(markets).await;
+            let admitted = host.on_round_markets(markets).await;
+            if !admitted {
+                continue;
+            }
             if !tokens.is_empty() {
                 host.subscribe_tokens("predictfun", tokens).await;
             }

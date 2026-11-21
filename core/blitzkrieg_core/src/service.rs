@@ -31,6 +31,7 @@ mod config_gates;
 mod daily_loss_gate;
 mod engine_cycle;
 mod extensions;
+mod family_feed_sync;
 mod helpers;
 mod persistence;
 mod pricing;
@@ -138,6 +139,10 @@ pub struct Core {
     intent_audit: crate::arbitration::AuditSink,
     pub(crate) positions: PositionManager,
     books: HashMap<TokenId, Book>,
+    /// Traffic-economy first: one high-freq feed per (venue, family),
+    /// refcounted across accounts. Placeholders are one row per
+    /// (venue, family, asset) for venues that have a configured account.
+    pub(crate) family_feed: std::sync::Mutex<crate::market::family_feed::FamilyFeedPlane>,
     /// The pending-close exit-reason ledger — map, insertion order and the
     /// eviction/sweep counters as one grouped state machine (issue #780).
     /// The four helpers in `settlement_orders/closing.rs` are its only way

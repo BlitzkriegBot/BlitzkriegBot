@@ -101,9 +101,10 @@ impl MarketHost for DiscoverySink {
     fn on_round_markets(
         &self,
         markets: Vec<blitzkrieg_bk_contract::MarketDescriptor>,
-    ) -> blitzkrieg_bk_contract::BoxFuture<'_, ()> {
+    ) -> blitzkrieg_bk_contract::BoxFuture<'_, bool> {
         Box::pin(async move {
             self.rounds.lock().await.push(markets);
+            true
         })
     }
     fn subscribe_tokens(
@@ -255,8 +256,8 @@ impl MarketHost for BookSink {
     fn on_round_markets(
         &self,
         _: Vec<blitzkrieg_bk_contract::MarketDescriptor>,
-    ) -> blitzkrieg_bk_contract::BoxFuture<'_, ()> {
-        Box::pin(async {})
+    ) -> blitzkrieg_bk_contract::BoxFuture<'_, bool> {
+        Box::pin(async { true })
     }
     fn subscribe_tokens(
         &self,

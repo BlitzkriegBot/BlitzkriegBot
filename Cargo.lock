@@ -1218,6 +1218,8 @@ dependencies = [
 name = "blitzkrieg-bk-contract"
 version = "0.4.2"
 dependencies = [
+ "chrono",
+ "chrono-tz",
  "rust_decimal",
  "serde",
  "serde_json",

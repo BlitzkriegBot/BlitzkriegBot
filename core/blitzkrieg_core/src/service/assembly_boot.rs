@@ -987,6 +987,7 @@ impl Core {
             // RFC 568 阶段一：配对簿随进程启动为空账（不持久化 —— 事实事件
             // 重放经同一事件流重建，#559 3c 的口径见 pair 模块注释）。
             pair_book: crate::pair::PairBook::default(),
+            family_feed: std::sync::Mutex::new(crate::market::family_feed::FamilyFeedPlane::new()),
             // #861: the boot-loaded risk state (None = no risk-state path —
             // the backtester/most-test shape: session-scoped, as always).
             risk_state,
@@ -1032,6 +1033,7 @@ impl Core {
                 "cockpit boot derivation from the env file failed ({e}); the                  launcher-snapshot values stand for this boot"
             );
         }
+        core.sync_family_feed_from_accounts();
         core
     }
 

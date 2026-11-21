@@ -36,6 +36,9 @@ async fn session_fixture() -> (UnixStream, broadcast::Sender<Event>) {
         discovery_mounted: Arc::new(std::sync::Mutex::new(Default::default())),
         soft_unloaded_polling_instances: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     let (bus_tx, _) = broadcast::channel::<Event>(512);
     // socketpair：std 一对 → 双端各包一层 tokio。服务端一端交给

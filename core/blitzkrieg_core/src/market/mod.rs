@@ -9,6 +9,7 @@
 //! This module hosts the registry and the enablement/boot logic only — the
 //! core names no market.
 
+pub mod family_feed;
 pub mod host;
 pub mod registry;
 

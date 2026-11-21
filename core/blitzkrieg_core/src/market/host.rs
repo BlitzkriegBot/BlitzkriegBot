@@ -474,7 +474,7 @@ impl MarketHost for CoreHost {
     }
 
     #[allow(clippy::collapsible_if)]
-    fn on_round_markets(&self, markets: Vec<api::MarketDescriptor>) -> BoxFuture<'_, ()> {
+    fn on_round_markets(&self, markets: Vec<api::MarketDescriptor>) -> BoxFuture<'_, bool> {
         Box::pin(async move {
             // B2 (轮次多族 软卸): the poll-output gate, when the assembly
             // installed one. A soft-unloaded family's batch is dropped
@@ -493,7 +493,7 @@ impl MarketHost for CoreHost {
                 .cloned();
             if let Some(gate) = gate {
                 if !gate(markets.clone()).await {
-                    return;
+                    return false;
                 }
             }
             let now = now_ms();
@@ -564,17 +564,53 @@ impl MarketHost for CoreHost {
                     now,
                 );
             }
+            true
         })
     }
 
     fn subscribe_tokens<'a>(&'a self, plugin: &str, tokens: Vec<String>) -> BoxFuture<'a, ()> {
         let plugin = plugin.to_string();
         Box::pin(async move {
-            self.core
-                .lock()
-                .await
-                .subscribe_feed_tokens(&plugin, tokens)
-                .await;
+            let c = self.core.lock().await;
+            let configured = {
+                let plane = c.family_feed();
+                plane.venue_is_configured(&plugin)
+            };
+            let any_account = {
+                let plane = c.family_feed();
+                !plane.inspect().venues_with_accounts.is_empty()
+            };
+            if configured {
+                c.publish_family_feed_subscriptions(&plugin).await;
+            } else if any_account {
+                // A venue with no configured account must not keep a connection.
+                c.subscribe_feed_tokens(&plugin, Vec::new()).await;
+                c.subscribe_placeholder_tokens(&plugin, Vec::new()).await;
+            } else {
+                // Tests / hosts without the account plane: pass through.
+                c.subscribe_feed_tokens(&plugin, tokens).await;
+            }
+        })
+    }
+
+    fn data_family_plan<'a>(
+        &'a self,
+        venue: &str,
+    ) -> BoxFuture<'a, blitzkrieg_market_api::DataFamilyPlan> {
+        let venue = venue.to_string();
+        Box::pin(async move {
+            let c = self.core.lock().await;
+            let plane = c.family_feed();
+            if !plane.venue_is_configured(&venue) {
+                if plane.inspect().venues_with_accounts.is_empty() {
+                    return blitzkrieg_market_api::DataFamilyPlan::Unspecified;
+                }
+                return blitzkrieg_market_api::DataFamilyPlan::Silent;
+            }
+            blitzkrieg_market_api::DataFamilyPlan::Active {
+                live: plane.live_families(&venue),
+                placeholder: plane.placeholder_families(&venue),
+            }
         })
     }
 

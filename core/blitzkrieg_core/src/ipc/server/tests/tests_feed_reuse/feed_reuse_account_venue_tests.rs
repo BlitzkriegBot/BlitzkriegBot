@@ -83,6 +83,9 @@ async fn account_create_mounts_a_never_booted_venues_data_plane_at_runtime() {
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
 
     let reply = rpc_with_data_plane(
@@ -268,6 +271,9 @@ async fn venue_set_unbind_does_not_touch_the_data_plane() {
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
 
     // Unbind: the write lands, nothing mounts.

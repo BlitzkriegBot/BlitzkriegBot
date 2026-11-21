@@ -20,7 +20,7 @@
 
 use crate::gamma::{duration_label, slug_for};
 use blitzkrieg_bk_contract::net::now_ms;
-use blitzkrieg_bk_contract::{MarketDescriptor, MarketHost};
+use blitzkrieg_bk_contract::{DataFamilyPlan, MarketDescriptor, MarketHost};
 use polymarket_client_sdk_v2::gamma::Client as GammaClient;
 use polymarket_client_sdk_v2::gamma::types::request::MarketsRequest;
 use std::collections::HashMap;
@@ -135,11 +135,18 @@ pub fn spawn(
         // has nothing listed" instead of silent empty books.
         let mut silent_family_warned: std::collections::HashSet<i64> =
             std::collections::HashSet::new();
+        let mut last_placeholder_fetch_ms: HashMap<i64, i64> = HashMap::new();
+        let mut last_window_end_ms: HashMap<i64, i64> = HashMap::new();
         let mut tick = tokio::time::interval(Duration::from_secs(poll_sec.max(3)));
         loop {
             tick.tick().await;
             let now = now_ms();
             let now_sec = now / 1000;
+            let plan = host.data_family_plan("polymarket").await;
+            if matches!(plan, DataFamilyPlan::Silent) {
+                host.subscribe_tokens("polymarket", Vec::new()).await;
+                continue;
+            }
             // The poll's family mix: (family, assets-found) per declared
             // family, logged on change (the item-5 regression gate).
             let mut mix: Vec<(i64, usize)> = Vec::new();
@@ -153,6 +160,31 @@ pub fn spawn(
             for fam in &families {
                 let label = duration_label(*fam).expect("families pre-filtered to declared labels");
                 let slot = now_sec / fam;
+                let query_this_family = match &plan {
+                    DataFamilyPlan::Unspecified => true,
+                    DataFamilyPlan::Silent => false,
+                    DataFamilyPlan::Active { live, .. } => {
+                        if live.contains(fam) {
+                            true
+                        } else {
+                            let last = last_placeholder_fetch_ms.get(fam).copied().unwrap_or(0);
+                            let due = last == 0 || now.saturating_sub(last) >= 300_000;
+                            let end = last_window_end_ms.get(fam).copied().unwrap_or(0);
+                            let rolled = end > 0 && now >= end;
+                            due || rolled
+                        }
+                    }
+                };
+                if !query_this_family {
+                    if let Some(cached) = last_live.get(fam) {
+                        all_markets.extend(markets_for_subscribe_union(
+                            &[],
+                            Some(cached.as_slice()),
+                            now,
+                        ));
+                    }
+                    continue;
+                }
 
                 let mut markets: Vec<MarketDescriptor> = Vec::new();
                 // #498: which configured assets actually landed a market THIS
@@ -297,6 +329,10 @@ pub fn spawn(
                 // even when the engine re-feed is skipped below. The union is
                 // the only input to `subscribe_tokens` (REPLACE).
                 last_live.insert(*fam, markets.clone());
+                last_placeholder_fetch_ms.insert(*fam, now);
+                if let Some(end) = markets.iter().map(|m| m.expires_at_ms).max() {
+                    last_window_end_ms.insert(*fam, end);
+                }
                 all_markets.extend(markets.iter().cloned());
                 if last_fed
                     .get(fam)
@@ -317,7 +353,14 @@ pub fn spawn(
                 // One sub-batch PER FAMILY: the B2 soft-unload gate resolves a
                 // batch's family from its own descriptors, so a mixed batch
                 // would let one unloaded family drag the others down with it.
-                host.on_round_markets(markets).await;
+                let admitted = host.on_round_markets(markets).await;
+                if !admitted {
+                    // Soft-unload dropped the batch. Do not mark the slot
+                    // as fed — the next poll must retry so a later
+                    // round_duration.set can admit the still-open window
+                    // without waiting for the next slot.
+                    continue;
+                }
                 let note = if missing.is_empty() {
                     String::new()
                 } else {

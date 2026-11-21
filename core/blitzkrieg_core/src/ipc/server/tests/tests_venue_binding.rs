@@ -118,6 +118,9 @@ async fn venue_set_mounts_a_never_booted_venues_data_plane_at_runtime() {
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
 
     let reply = rpc_with_data_plane(
@@ -280,6 +283,9 @@ async fn account_create_mount_times_out_fail_closed_then_retry_mounts_all_famili
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
 
     // Hold the core lock — the maintenance-loop shape #777 describes.

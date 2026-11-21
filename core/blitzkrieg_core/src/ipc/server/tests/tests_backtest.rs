@@ -38,6 +38,9 @@ async fn rpc_jobs(
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     let mut session = SessionState::default();
     serde_json::from_str(

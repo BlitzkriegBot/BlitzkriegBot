@@ -46,6 +46,8 @@ blitzkrieg-binance-spot :: serde_json
 blitzkrieg-binance-spot :: tokio
 blitzkrieg-binance-spot :: tokio-tungstenite
 blitzkrieg-binance-spot :: tracing
+blitzkrieg-bk-contract :: chrono
+blitzkrieg-bk-contract :: chrono-tz
 blitzkrieg-bk-contract :: rust_decimal
 blitzkrieg-bk-contract :: serde
 blitzkrieg-bk-contract :: serde_json

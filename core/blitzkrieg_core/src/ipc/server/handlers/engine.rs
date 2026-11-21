@@ -166,6 +166,8 @@ pub(crate) async fn handle_engine(
             // from the process-default `round` scalar.
             doc["currentRounds"] = serde_json::to_value(c.current_rounds_view(now))
                 .unwrap_or_else(|_| serde_json::json!([]));
+            doc["feedEconomy"] = serde_json::to_value(c.family_feed_inspect())
+                .unwrap_or_else(|_| serde_json::json!({}));
             Ok(doc)
         }
         method::ENGINE_BOOKS => {

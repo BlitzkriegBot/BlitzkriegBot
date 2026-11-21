@@ -134,6 +134,7 @@ impl Core {
                 "round duration override cleared for account — falls back to default grid \
                  ({ROUND_DURATION_SET_NOTE})"
             );
+            self.sync_family_feed_from_accounts();
             return Ok(RoundDurationUpdate {
                 account_id: account_id.clone(),
                 next_session_sec: self.config.default_round_duration_sec,
@@ -175,6 +176,7 @@ impl Core {
             "round duration set for account — live this session, persisted \
              ({ROUND_DURATION_SET_NOTE})"
         );
+        self.sync_family_feed_from_accounts();
         Ok(RoundDurationUpdate {
             account_id: account_id.clone(),
             next_session_sec: sec,

@@ -18,6 +18,33 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// live subscription set (e.g. when a new round's tokens are discovered).
 pub trait SubscriptionControl: Send + Sync {
     fn set_tokens(&self, tokens: Vec<TokenId>);
+    /// Low-frequency placeholder token set (inactive families). Default
+    /// is a no-op so existing feeds keep compiling; a venue that can
+    /// poll a snapshot implements this.
+    fn set_placeholder_tokens(&self, tokens: Vec<TokenId>) {
+        let _ = tokens;
+    }
+}
+
+/// How the host wants discovery and the high-freq feed to treat one venue's
+/// declared families. Traffic-economy first: a venue with no configured
+/// account is [`Silent`]; a venue with accounts has one live family (or a
+/// small union when several accounts disagree) and the rest as placeholders.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum DataFamilyPlan {
+    /// Host has not implemented the plane — discovery keeps its historical
+    /// all-families walk (tests and older hosts).
+    #[default]
+    Unspecified,
+    /// No configured account for this venue: discover nothing, subscribe
+    /// nothing, open no connection.
+    Silent,
+    /// `live` is high-freq; every other declared family is a placeholder
+    /// (REST every 300s, plus an immediate rediscovery on roll).
+    Active {
+        live: Vec<i64>,
+        placeholder: Vec<i64>,
+    },
 }
 
 /// The core's inward-facing API, implemented by the host. This is the ONLY
@@ -47,7 +74,13 @@ pub trait MarketHost: Send + Sync {
     }
     fn on_top_of_book(&self, update: TopOfBookUpdate) -> BoxFuture<'_, ()>;
     fn on_spot(&self, update: SpotUpdate) -> BoxFuture<'_, ()>;
-    fn on_round_markets(&self, markets: Vec<MarketDescriptor>) -> BoxFuture<'_, ()>;
+    /// Register a discovery batch with the engine. Returns `true` if the
+    /// batch was admitted; `false` if the soft-unload gate dropped it
+    /// (the family is not on any account's active set). Discovery must
+    /// only record a slot as already-fed when this returns `true` —
+    /// otherwise a later `round_duration.set` onto that family would
+    /// starve until the next slot, because the same signature is skipped.
+    fn on_round_markets(&self, markets: Vec<MarketDescriptor>) -> BoxFuture<'_, bool>;
     /// Replace the live orderbook subscription set (new round tokens) on the
     /// NAMED plugin's feed. `plugin` is the market-plugin name (`self.name()`
     /// of the caller's own plugin): with multiple data plugins running
@@ -55,6 +88,10 @@ pub trait MarketHost: Send + Sync {
     /// Polymarket rollover must never replace the Kalshi subscription set.
     /// Single-plugin sessions route by the one registered name.
     fn subscribe_tokens<'a>(&'a self, plugin: &str, tokens: Vec<TokenId>) -> BoxFuture<'a, ()>;
+    /// The live / placeholder plan for `venue`. Default is Unspecified.
+    fn data_family_plan<'a>(&'a self, _venue: &str) -> BoxFuture<'a, DataFamilyPlan> {
+        Box::pin(async { DataFamilyPlan::Unspecified })
+    }
     /// A [`DataFeed`] of the NAMED plugin registers its control handle here at
     /// start-up so later `subscribe_tokens` calls reach it (and only it).
     /// `plugin` is the market-plugin name; one control slot per name.

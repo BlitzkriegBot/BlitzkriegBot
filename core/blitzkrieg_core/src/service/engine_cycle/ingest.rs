@@ -143,6 +143,7 @@ impl Core {
                 }
             }
             crate::engine::DataEvent::RoundMarkets { markets, .. } => {
+                self.note_family_feed_markets(markets, now_ms);
                 // #498: a same-slot second feed is a STAGGERED-LISTING top-up
                 // (the engine merges it into the scanner without any rollover),
                 // so the rollover bookkeeping below must not run for it: it
@@ -570,6 +571,9 @@ impl Core {
                 .probe_ticks
                 .note_tick(token, &venue, ts_ms);
         }
+
+        let book_tokens: Vec<String> = books.iter().map(|(t, _, _)| t.clone()).collect();
+        self.stamp_family_feed_books(&book_tokens, ts_ms);
 
         // 镜像（exit/mark 路径）：与 Batch 事件同语义 —— 每本 received_ms
         // 统一为批次时间戳。

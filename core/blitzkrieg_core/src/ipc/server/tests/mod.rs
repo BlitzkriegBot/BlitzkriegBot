@@ -452,6 +452,9 @@ async fn rpc(
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     let mut session = SessionState::default();
     serde_json::from_str(
@@ -496,6 +499,9 @@ async fn rpc_with_subs(
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     serde_json::from_str(
         &handle_line(
@@ -634,6 +640,9 @@ async fn rpc_with_updates(
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     serde_json::from_str(
         &handle_line(

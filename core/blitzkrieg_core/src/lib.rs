@@ -81,6 +81,8 @@ pub mod market;
 pub mod marketdata;
 pub mod model;
 pub mod ome;
+pub mod round_id;
+pub mod round_id_migrate;
 // #648 C: the #352 on-chain pull (Polymarket Data/Gamma/CLOB APIs → the
 // backtest JSONL event stream, with resume + cache + SHA256 manifests) MOVED
 // to the `blitzkrieg-onchain-pull` crate. The kernel keeps only the

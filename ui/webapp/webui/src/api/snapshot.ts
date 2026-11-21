@@ -384,6 +384,12 @@ export interface VenueRound {
   /** The venue tag (empty = legacy bucket). */
   venue: string
   slot: number
+  /**
+   * Venue start-Unix-ts identifier (slot × durationSec). Present on cores
+   * that unify the ledger and the panel with the exchange slug. Older
+   * cores omit it — the panel derives the same number from slot + duration.
+   */
+  roundId?: number
   ageSec: number
   timeLeftSec: number
   durationSec?: number

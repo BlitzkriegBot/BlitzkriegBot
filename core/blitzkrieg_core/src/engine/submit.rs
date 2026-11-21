@@ -357,6 +357,17 @@ impl Engine {
                     size
                 }
             };
+            // Persist the venue start-ts identifier (slot × family duration),
+            // not the scanner index, so the ledger and the panel share one
+            // number with Polymarket's slug. Expiry of this row uses
+            // `round_id::round_end_ms`, which still understands legacy indices.
+            let family_dur = self
+                .scanner
+                .market_for_token(&sig.token_id)
+                .map(|m| m.round_duration_sec)
+                .filter(|d| *d > 0)
+                .unwrap_or(self.cfg.scanner.round_duration_sec);
+            let persisted_round_id = crate::round_id::venue_round_id(cand_round.slot, family_dur);
             orders.push(crate::model::OrderRequest {
                 token_id: sig.token_id.clone(),
                 condition_id: sig.condition_id,
@@ -410,7 +421,7 @@ impl Engine {
                 strategy: sig.strategy,
                 asset: sig.asset.clone(),
                 direction: sig.direction.as_str().to_string(),
-                round_slot: cand_round.slot,
+                round_slot: persisted_round_id,
                 // E28 §9.2, extended by the multi-account fanout: the signal
                 // carries its SCOPE's account (the default scope keeps the
                 // process default, byte-identical to the old behaviour).

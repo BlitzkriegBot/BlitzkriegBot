@@ -817,7 +817,7 @@ impl Core {
                 None,
                 self.account_round_duration(pos.account_id.as_str()),
             );
-            now_ms >= (pos.round_slot + 1) * eff * 1000
+            now_ms >= crate::round_id::round_end_ms(pos.round_slot, eff)
         } else {
             now_ms > pos.expires_at_ms
         };

@@ -43,7 +43,7 @@ async fn the_soft_unload_gate_admits_the_overridden_familys_batches() {
     let mut c = Core::with_account_book(cfg, book);
     c.config_mut()
         .account_round_durations
-        .insert("default".to_string(), 3600);
+        .insert("default".to_string(), 120);
     let core = Arc::new(AsyncMutex::new(c));
     let mut mounted = BTreeSet::new();
     mounted.insert(("venuelive".to_string(), 900));
@@ -86,18 +86,19 @@ async fn the_soft_unload_gate_admits_the_overridden_familys_batches() {
     );
     assert_eq!(data_plane.soft_unloaded_count(), 0);
 
-    // Without the override the same batch is soft-unloaded (B2 unchanged):
-    // no account declares 3600 any more, the gate drops it and counts.
+    // Soft-unload must NOT discard market data for a declared family:
+    // after the account leaves 3600 the 1h batch still admits so prices
+    // stay warm for the next switch. Trading stays fail-closed elsewhere.
     core.lock()
         .await
         .config_mut()
         .account_round_durations
         .clear();
     assert!(
-        !data_plane.admit_poll_batch(&core, &[batch]).await,
-        "an undeclared, un-overridden family stays soft-unloaded"
+        data_plane.admit_poll_batch(&core, &[batch]).await,
+        "declared 3600s market data stays warm after the account leaves the family"
     );
-    assert_eq!(data_plane.soft_unloaded_count(), 1);
+    assert_eq!(data_plane.soft_unloaded_count(), 0);
 }
 
 fn override_plane(
@@ -268,7 +269,7 @@ async fn dropped_batch_is_cached_and_cleared_when_family_becomes_active() {
         position_log_path: None,
         ..Default::default()
     };
-    // Account is on 15m; a 1h batch must be dropped and cached.
+    // Account is on 15m; an undeclared 120s family is still dropped and cached.
     let mut c = Core::with_account_book(cfg, book);
     c.config_mut()
         .account_round_durations
@@ -291,20 +292,20 @@ async fn dropped_batch_is_cached_and_cleared_when_family_becomes_active() {
     };
     let batch = desc(
         "polymarket",
-        3600,
+        120,
         now + 3_500_000,
-        (now + 3_500_000) / 1000 / 3600,
-        "1h while on 15m",
+        (now + 3_500_000) / 1000 / 120,
+        "unknown 120s family",
     );
     assert!(
         !data_plane
             .admit_poll_batch(&core, std::slice::from_ref(&batch))
             .await,
-        "1h is unloaded while the account is on 15m"
+        "an undeclared 120s family is still dropped"
     );
-    let cached = data_plane.take_dropped_batch("polymarket", 3600);
-    assert!(cached.is_some(), "the dropped 1h batch must be cached");
-    assert_eq!(cached.as_ref().unwrap()[0].question, "1h while on 15m");
+    let cached = data_plane.take_dropped_batch("polymarket", 120);
+    assert!(cached.is_some(), "the dropped 120s batch must be cached");
+    assert_eq!(cached.as_ref().unwrap()[0].question, "unknown 120s family");
     // Put it back — take consumed the cache, as the set-path replay will.
     // Re-drop to restore the production shape (admit_poll_batch caches again).
     assert!(
@@ -317,15 +318,17 @@ async fn dropped_batch_is_cached_and_cleared_when_family_becomes_active() {
         .await
         .config_mut()
         .account_round_durations
-        .insert("default".to_string(), 3600);
+        .insert("default".to_string(), 120);
+    // An undeclared duration stays dropped even if an account "anchors" it:
+    // only 300/900/3600/86400 stay warm. Cache remains so a retry is possible.
     assert!(
-        data_plane
+        !data_plane
             .admit_poll_batch(&core, std::slice::from_ref(&batch))
             .await,
-        "after the account switches to 1h the same batch must admit"
+        "undeclared 120s must stay dropped"
     );
     assert!(
-        data_plane.take_dropped_batch("polymarket", 3600).is_none(),
-        "an admitted batch must not stay in the drop cache"
+        data_plane.take_dropped_batch("polymarket", 120).is_some(),
+        "the dropped undeclared batch stays cached"
     );
 }

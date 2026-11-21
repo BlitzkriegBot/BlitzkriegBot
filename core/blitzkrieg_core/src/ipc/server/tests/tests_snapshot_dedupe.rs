@@ -958,3 +958,199 @@ async fn engine_round_current_rounds_daily_uses_observed_span() {
         "wire carries the daily currentRound: {rounds:?}"
     );
 }
+
+/// With no observed daily close, currentRound must still name the
+/// America/New_York noon window (the same instant `slug_epoch_daily`
+/// uses). A UTC-midnight grid (`now/86400*86400`) is a fake round id
+/// and is forbidden (L1–L6).
+#[tokio::test]
+async fn current_rounds_daily_uses_et_noon_when_no_observed_window() {
+    let (core, registry, peer) = hot_reload_fixture().await;
+    let set = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"round_duration.set","params":{"accountId":"default","durationSec":86400,"reason":"ssot daily et-noon without observe"}}"#
+            .to_string(),
+    )
+    .await;
+    assert!(
+        set.get("error").is_none(),
+        "anchoring default at daily must succeed: {set}"
+    );
+
+    // 2026-11-21 08:57 UTC = 03:57 EST, inside the 11-20 noon → 11-21 noon
+    // window. Slug start 1795194000; close 1795280400. UTC midnight of
+    // that day is 1795219200 and must not appear.
+    let now_sec = 1_795_251_420i64;
+    let now = now_sec * 1000;
+    let start_sec = 1_795_194_000i64;
+    let end_sec = 1_795_280_400i64;
+    let utc_midnight = (now_sec / 86_400) * 86_400;
+    assert_eq!(utc_midnight, 1_795_219_200);
+
+    let view = {
+        let c = core.lock().await;
+        c.current_rounds_view(now)
+    };
+    let cur = view
+        .iter()
+        .find(|r| r.account_id == "default")
+        .expect("default currentRound");
+    assert_eq!(cur.duration_sec, 86400);
+    assert_eq!(
+        cur.round_id, start_sec,
+        "roundId must be the ET-noon slug start, got {} (utc midnight would be {})",
+        cur.round_id, utc_midnight
+    );
+    assert_ne!(
+        cur.round_id, utc_midnight,
+        "must never fall back to UTC midnight"
+    );
+    assert_eq!(cur.start_ms, start_sec * 1000);
+    assert_eq!(cur.end_ms, end_sec * 1000);
+    assert_eq!(cur.age_sec, now_sec - start_sec);
+    assert_eq!(cur.time_left_sec, end_sec - now_sec);
+}
+
+/// Declared families stay warm in the engine. After 5m/15m/1h/daily rows
+/// have been ingested while the account is on 15m, the FIRST
+/// `current_rounds_view` after `round_duration.set` already has priced
+/// cards for the new family — no re-ingest, no wait for the next slot.
+#[tokio::test]
+async fn current_rounds_prices_are_warm_on_first_snapshot_after_switch() {
+    use crate::model::CryptoMarket;
+    use rust_decimal::Decimal;
+
+    let (core, registry, peer) = hot_reload_fixture().await;
+    // 2026-11-21 08:57 UTC = 03:57 EST, inside the 11-20 noon daily window
+    // and inside the 5m/15m/1h slots computed below.
+    let now_sec = 1_795_251_420i64;
+    let now = now_sec * 1000;
+    let start_5m = now_sec / 300 * 300;
+    let start_15m = now_sec / 900 * 900;
+    let start_1h = now_sec / 3600 * 3600;
+    let start_daily = 1_795_194_000i64;
+    let end_daily = 1_795_280_400i64;
+
+    fn row(dur: i64, _start_sec: i64, end_sec: i64, up: i64, down: i64) -> CryptoMarket {
+        CryptoMarket {
+            asset: "BTC".to_string(),
+            condition_id: format!("cond-{dur}"),
+            question_id: format!("q-{dur}"),
+            up_token_id: format!("up-{dur}"),
+            down_token_id: format!("down-{dur}"),
+            up_price: Decimal::new(up, 2),
+            down_price: Decimal::new(down, 2),
+            expires_at_ms: end_sec * 1000,
+            round_slot: end_sec / dur,
+            round_duration_sec: dur,
+            archive_verdict: false,
+            venue: "polymarket".to_string(),
+            neg_risk: false,
+            question: format!("BTC {dur}"),
+        }
+    }
+
+    {
+        let mut c = core.lock().await;
+        c.engine_on_data(
+            crate::engine::DataEvent::RoundMarkets {
+                markets: vec![
+                    row(300, start_5m, start_5m + 300, 41, 59),
+                    row(900, start_15m, start_15m + 900, 52, 48),
+                    row(3600, start_1h, start_1h + 3600, 63, 37),
+                    row(86400, start_daily, end_daily, 55, 45),
+                ],
+                now_ms: now,
+            },
+            now,
+        );
+    }
+
+    let view900 = {
+        let c = core.lock().await;
+        c.current_rounds_view(now)
+    };
+    let cur900 = view900
+        .iter()
+        .find(|r| r.account_id == "default")
+        .expect("default currentRound");
+    assert_eq!(cur900.duration_sec, 900);
+    assert_eq!(cur900.prices.len(), 1, "15m already has a priced card");
+    assert_eq!(cur900.prices[0].duration_sec, 900);
+
+    async fn set_dur(
+        core: &std::sync::Arc<tokio::sync::Mutex<Core>>,
+        registry: &crate::market::registry::MarketPluginRegistry,
+        peer: &PeerAuth,
+        id: u32,
+        sec: i64,
+    ) {
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"round_duration.set","params":{{"accountId":"default","durationSec":{sec},"reason":"warm switch"}}}}"#
+        );
+        let reply = rpc(core, registry, peer, line).await;
+        assert!(
+            reply.get("error").is_none(),
+            "set {sec} must succeed: {reply}"
+        );
+    }
+
+    set_dur(&core, &registry, &peer, 2, 3600).await;
+    let view1h = {
+        let c = core.lock().await;
+        c.current_rounds_view(now)
+    };
+    let cur1h = view1h
+        .iter()
+        .find(|r| r.account_id == "default")
+        .expect("1h currentRound");
+    assert_eq!(cur1h.duration_sec, 3600);
+    assert_eq!(
+        cur1h.prices.len(),
+        1,
+        "first snapshot after switching to 1h must already have prices (no re-ingest)"
+    );
+    assert_eq!(cur1h.prices[0].duration_sec, 3600);
+    assert_eq!(cur1h.round_id, start_1h);
+    assert_eq!(cur1h.prices[0].up, Decimal::new(63, 2));
+
+    set_dur(&core, &registry, &peer, 3, 86400).await;
+    let view_d = {
+        let c = core.lock().await;
+        c.current_rounds_view(now)
+    };
+    let cur_d = view_d
+        .iter()
+        .find(|r| r.account_id == "default")
+        .expect("daily currentRound");
+    assert_eq!(cur_d.duration_sec, 86400);
+    assert_eq!(
+        cur_d.prices.len(),
+        1,
+        "first snapshot after switching to daily must already have prices"
+    );
+    assert_eq!(cur_d.round_id, start_daily);
+    assert_ne!(cur_d.round_id, (now_sec / 86_400) * 86_400);
+    assert_eq!(cur_d.prices[0].duration_sec, 86400);
+
+    set_dur(&core, &registry, &peer, 4, 300).await;
+    let view5 = {
+        let c = core.lock().await;
+        c.current_rounds_view(now)
+    };
+    let cur5 = view5
+        .iter()
+        .find(|r| r.account_id == "default")
+        .expect("5m currentRound");
+    assert_eq!(cur5.duration_sec, 300);
+    assert_eq!(
+        cur5.prices.len(),
+        1,
+        "switching back to 5m mid-round must show the current 5m card immediately"
+    );
+    assert_eq!(cur5.round_id, start_5m);
+    assert_eq!(cur5.prices[0].duration_sec, 300);
+    assert_eq!(cur5.prices[0].up, Decimal::new(41, 2));
+}

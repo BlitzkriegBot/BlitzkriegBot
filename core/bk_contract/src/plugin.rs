@@ -47,7 +47,13 @@ pub trait MarketHost: Send + Sync {
     }
     fn on_top_of_book(&self, update: TopOfBookUpdate) -> BoxFuture<'_, ()>;
     fn on_spot(&self, update: SpotUpdate) -> BoxFuture<'_, ()>;
-    fn on_round_markets(&self, markets: Vec<MarketDescriptor>) -> BoxFuture<'_, ()>;
+    /// Register a discovery batch with the engine. Returns `true` if the
+    /// batch was admitted; `false` if the soft-unload gate dropped it
+    /// (the family is not on any account's active set). Discovery must
+    /// only record a slot as already-fed when this returns `true` —
+    /// otherwise a later `round_duration.set` onto that family would
+    /// starve until the next slot, because the same signature is skipped.
+    fn on_round_markets(&self, markets: Vec<MarketDescriptor>) -> BoxFuture<'_, bool>;
     /// Replace the live orderbook subscription set (new round tokens) on the
     /// NAMED plugin's feed. `plugin` is the market-plugin name (`self.name()`
     /// of the caller's own plugin): with multiple data plugins running

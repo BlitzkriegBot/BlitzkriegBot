@@ -317,7 +317,14 @@ pub fn spawn(
                 // One sub-batch PER FAMILY: the B2 soft-unload gate resolves a
                 // batch's family from its own descriptors, so a mixed batch
                 // would let one unloaded family drag the others down with it.
-                host.on_round_markets(markets).await;
+                let admitted = host.on_round_markets(markets).await;
+                if !admitted {
+                    // Soft-unload dropped the batch. Do not mark the slot
+                    // as fed — the next poll must retry so a later
+                    // round_duration.set can admit the still-open window
+                    // without waiting for the next slot.
+                    continue;
+                }
                 let note = if missing.is_empty() {
                     String::new()
                 } else {

@@ -243,6 +243,7 @@ impl DataPlaneRuntime {
     /// `pairs`'s venue dimension (the boot's actives + runtime mounts).
     /// `pairs` is the caller's already-materialized (venue, duration) mount
     /// book — the venue dimension this session actually runs.
+    #[allow(dead_code)] // trading/active-set helper; market-data admit no longer consults it
     fn active_families(
         &self,
         accounts: &[crate::account::Account],
@@ -290,55 +291,42 @@ impl DataPlaneRuntime {
         active
     }
 
-    /// B2 (轮次多族 软卸): the discovery poll-output gate. A batch whose
-    /// (venue, duration) family is NOT in the active set is dropped here —
-    /// the soft-unloaded instance keeps polling (nothing kills it) but its
-    /// rounds never reach the engine/scanner again. The batch's family is
-    /// the venue tag plus the descriptor's declared `round_duration_sec`
-    /// (plugins stamp the family they queried). Reconstructing duration as
-    /// `expires_at_ms / 1000 / round_slot` only works when the window start
-    /// is an exact multiple of the declared length; Polymarket daily windows
-    /// start at America/New_York noon, so that quotient lands on 86402 (or
-    /// 82800/90000 around DST) and a 1-second Gamma skew on a 5m window can
-    /// yield 299 — both dropped even after the account switched onto that
-    /// family. Every dropped batch bumps the gauge.
+    /// Discovery poll-output gate for MARKET DATA. Every declared family
+    /// (5m/15m/1h/daily — 300/900/3600/86400, with daily canonicalized
+    /// from measured 23h–25h spans) of a mounted venue stays WARM in the
+    /// engine: latest markets and prices are kept so `round_duration.set`
+    /// can publish a priced currentRound on the first snapshot, with no
+    /// blank cards. Soft-unload still stops trading and strategy evaluation
+    /// for families no account anchors (the fail-closed duration-conflict
+    /// and grid-pool gates). Duration is the descriptor's declared
+    /// `round_duration_sec`, never the expires/slot quotient (a daily
+    /// ET-noon window measures 86402; a 1-second 5m skew can measure 299).
+    /// A batch that is not a declared family, or whose venue is not
+    /// mounted, is still dropped and counted.
     pub(super) async fn admit_poll_batch(
         &self,
         core: &Arc<AsyncMutex<Core>>,
         markets: &[blitzkrieg_market_api::MarketDescriptor],
     ) -> bool {
+        let _ = core;
         let Some(first) = markets.first() else {
             return true;
         };
         let global = self.discovery_round_duration_sec;
         let dur = poll_batch_family_duration(first, global);
         let venue = first.venue.as_str();
-        let active = {
-            let pairs = self
-                .discovery_mounted
-                .lock()
-                .expect("data plane mounted set poisoned")
-                .clone();
-            let c = core.lock().await;
-            let accounts: Vec<crate::account::Account> =
-                c.accounts().account_list().into_iter().cloned().collect();
-            // #1165: the live overrides ride the SAME lock — the gate reads
-            // one coherent snapshot of (accounts, overrides).
-            let overrides = c.config().account_round_durations.clone();
-            self.active_families(&accounts, &overrides, &pairs)
-        };
-        if active.contains(&(venue.to_string(), dur)) {
+        if self.venue_mounted(venue) && is_declared_data_family(dur) {
             self.forget_dropped_batch(venue, dur);
             return true;
         }
-        self.remember_dropped_batch(venue, dur, markets);
-        self.soft_unloaded_polling_instances
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        eprintln!(
-            "blitzkrieg-core: discovery batch for {venue}@{dur}s dropped — the family was \
-             soft-unloaded (no account declares it any more); restart the core or re-add the \
-             family to resume"
-        );
+        let first = self.remember_dropped_batch(venue, dur, markets);
+        if first {
+            self.soft_unloaded_polling_instances
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            eprintln!(
+                "blitzkrieg-core: discovery batch for {venue}@{dur}s dropped — not a declared                  data family of a mounted venue"
+            );
+        }
         false
     }
 
@@ -358,12 +346,18 @@ impl DataPlaneRuntime {
         venue: &str,
         dur: i64,
         markets: &[blitzkrieg_market_api::MarketDescriptor],
-    ) {
+    ) -> bool {
         if markets.is_empty() {
-            return;
+            return false;
         }
-        self.dropped_lock()
-            .insert((venue.to_string(), dur), markets.to_vec());
+        let sig = Self::batch_signature(markets);
+        let mut lock = self.dropped_lock();
+        let key = (venue.to_string(), dur);
+        let same = lock
+            .get(&key)
+            .is_some_and(|prev| Self::batch_signature(prev) == sig);
+        lock.insert(key, markets.to_vec());
+        !same
     }
 
     fn forget_dropped_batch(&self, venue: &str, dur: i64) {
@@ -372,6 +366,14 @@ impl DataPlaneRuntime {
 
     /// Take the last dropped batch for this family, if any, so a grid write
     /// can replay it through `on_round_markets` once the family is active.
+    fn batch_signature(markets: &[blitzkrieg_market_api::MarketDescriptor]) -> String {
+        markets
+            .iter()
+            .map(|m| format!("{}:{}|{}", m.asset, m.up_token_id, m.down_token_id))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     pub(super) fn take_dropped_batch(
         &self,
         venue: &str,
@@ -652,6 +654,12 @@ pub(super) fn poll_batch_family_duration(
 /// Map measured daily window lengths (ET-noon skew, DST 23h/25h, the live
 /// 86402s soft-unload key) onto the declared 86400s family used by the
 /// active-set gate and `round_duration.set`.
+/// Families whose market and price rows stay warm even when no account
+/// currently anchors them. Soft-unload must not discard these.
+pub(super) fn is_declared_data_family(dur: i64) -> bool {
+    matches!(canonical_family_duration(dur), 300 | 900 | 3600 | 86_400)
+}
+
 pub(super) fn canonical_family_duration(dur: i64) -> i64 {
     if (82_800..=90_000).contains(&dur) {
         86_400

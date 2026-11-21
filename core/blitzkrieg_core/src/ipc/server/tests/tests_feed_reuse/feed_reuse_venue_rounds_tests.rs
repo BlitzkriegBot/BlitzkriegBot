@@ -710,15 +710,16 @@ async fn rounds_set_soft_unloads_a_clean_removal_and_the_poll_gate_drops_it() {
         data_plane.discovery_mounted_at("roundssoft", 3600),
         "the soft-unload must leave the running instance mounted"
     );
-    // The poll side: the same batch is now DROPPED, gauge bumps.
+    // Market data for a declared family stays warm after soft-unload
+    // (trading is refused elsewhere). The gauge must not count it as dropped.
     assert!(
-        !data_plane.admit_poll_batch(&core, &batch_3600).await,
-        "the soft-unloaded family's poll batch must be dropped"
+        data_plane.admit_poll_batch(&core, &batch_3600).await,
+        "declared 3600s market data stays warm after the family is no longer anchored"
     );
     assert_eq!(
         data_plane.soft_unloaded_count(),
-        1,
-        "the gauge counts the dropped batch"
+        0,
+        "warming a declared family must not bump the drop gauge"
     );
     // The ACTIVE family (900) still admits.
     let slot900 = now / 1000 / 900;
@@ -741,7 +742,11 @@ async fn rounds_set_soft_unloads_a_clean_removal_and_the_poll_gate_drops_it() {
         data_plane.admit_poll_batch(&core, &batch_900).await,
         "the still-active family's batch must keep flowing"
     );
-    assert_eq!(data_plane.soft_unloaded_count(), 1, "no double count");
+    assert_eq!(
+        data_plane.soft_unloaded_count(),
+        0,
+        "no drop counted for declared families"
+    );
 }
 
 /// B2 (轮次多族): the parametric refusals — a union-foreign duration

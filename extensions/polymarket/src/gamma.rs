@@ -86,27 +86,8 @@ fn slug_epoch(asset: &str, round_duration_sec: i64, now_sec: i64) -> Option<Stri
 /// the noon is taken from tzdata (chrono-tz), never from a written table.
 /// Noon itself is never the NY DST fold or gap (those are at 02:00).
 pub fn slug_epoch_daily(asset: &str, now_sec: i64) -> Option<String> {
-    let start = et_noon_start_sec(now_sec)?;
+    let start = blitzkrieg_bk_contract::et_noon_start_sec(now_sec)?;
     Some(format!("{}-updown-1d-{}", asset.to_lowercase(), start))
-}
-
-/// Unix timestamp of the ET-noon that opens the daily window containing
-/// `now_sec`. Before 12:00 ET that is yesterday's noon; from 12:00 ET on
-/// it is today's noon.
-fn et_noon_start_sec(now_sec: i64) -> Option<i64> {
-    use chrono::TimeZone;
-    let et = DateTime::from_timestamp(now_sec, 0)?.with_timezone(&chrono_tz::America::New_York);
-    let mut noon_date = et.date_naive();
-    if et.hour() < 12 {
-        noon_date -= chrono::Duration::days(1);
-    }
-    let naive = noon_date.and_hms_opt(12, 0, 0)?;
-    match chrono_tz::America::New_York.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) => Some(dt.timestamp()),
-        // Fail closed: noon is never ambiguous or missing in
-        // America/New_York, so any other result is a programming surprise.
-        _ => None,
-    }
 }
 
 /// Ticker → the full asset name the ET-named slugs spell out. Verified live

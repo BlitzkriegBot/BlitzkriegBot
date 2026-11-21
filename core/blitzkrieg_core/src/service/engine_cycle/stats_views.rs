@@ -924,7 +924,6 @@ impl Core {
     /// DST 23h/25h span is published honestly and the panel never divides
     /// a 5m countdown by the process-default 15m scalar.
     pub fn current_rounds_view(&self, now: i64) -> Vec<crate::service::CurrentRoundView> {
-        use crate::round_id::{VENUE_TS_FLOOR, venue_round_id};
         use crate::service::{CurrentRoundPriceView, CurrentRoundView};
 
         let Some(engine) = self.engine.as_ref() else {
@@ -952,38 +951,16 @@ impl Core {
                 venue.as_str()
             };
             let t = scanner.round_timing_for(clock_venue, duration_sec, now);
-            // Prefer the venue's observed close (a daily ET-noon end is not
-            // the UTC 86400 grid). The window start is that close minus the
-            // family length for 5m/15m/1h and for daily on non-DST days;
-            // when the observed close is missing, fall back to the slot
-            // grid. Never a sibling family's span.
-            let end_ms = if t.expires_at_ms > 0 {
-                t.expires_at_ms
-            } else {
-                0
-            };
-            let start_ms = if end_ms > 0 && duration_sec > 0 {
-                end_ms.saturating_sub(duration_sec.saturating_mul(1000))
-            } else {
-                let grid_id = venue_round_id(t.slot, duration_sec);
-                if grid_id >= VENUE_TS_FLOOR {
-                    grid_id.saturating_mul(1000)
-                } else {
-                    0
-                }
-            };
-            let end_ms = if end_ms > start_ms {
-                end_ms
-            } else if start_ms > 0 {
-                start_ms.saturating_add(duration_sec.saturating_mul(1000))
-            } else {
-                t.expires_at_ms
-            };
-            let round_id = if start_ms / 1000 >= VENUE_TS_FLOOR {
-                start_ms / 1000
-            } else {
-                venue_round_id(t.slot, duration_sec)
-            };
+            // Prefer the venue's observed close. Daily windows are
+            // America/New_York noon-to-noon (the same instant
+            // `slug_epoch_daily` uses). When no close has been observed,
+            // daily still uses that ET-noon computation — never a
+            // UTC-midnight 86400 grid, which would invent a fake round id
+            // (L1–L6). If tzdata cannot name the noon, the window is
+            // published as unknown (zeros) rather than a stand-in.
+            // 5m/15m/1h keep the UTC-aligned slot grid when no close is in.
+            let (start_ms, end_ms, round_id) =
+                family_window(duration_sec, now, t.expires_at_ms, t.slot);
             let time_left_sec = if end_ms > now {
                 (end_ms - now) / 1000
             } else {
@@ -1176,5 +1153,77 @@ impl Core {
                 exit_fee_usd: p.flows.exit_fee_usd,
             })
             .collect()
+    }
+}
+
+/// Start, end, and venue round id for one family at `now`.
+///
+/// Daily (`86400`) is always the ET-noon window (observed close if it
+/// falls in that window, otherwise the tzdata noon). It must never use
+/// `venue_round_id(slot, 86400)`, which is UTC midnight. If tzdata cannot
+/// name the noon, the window is unknown (zeros), never a stand-in.
+fn family_window(duration_sec: i64, now: i64, observed_end_ms: i64, slot: i64) -> (i64, i64, i64) {
+    use crate::round_id::{VENUE_TS_FLOOR, venue_round_id};
+    use blitzkrieg_market_api::{et_noon_end_sec, et_noon_start_sec};
+
+    if duration_sec == 86_400 {
+        let now_sec = now / 1000;
+        let anchor_sec = if observed_end_ms > now {
+            now_sec
+        } else if observed_end_ms > 0 {
+            (observed_end_ms / 1000).saturating_sub(1)
+        } else {
+            now_sec
+        };
+        let Some(start) = et_noon_start_sec(anchor_sec) else {
+            return (0, 0, 0);
+        };
+        let start_ms = start.saturating_mul(1000);
+        // A close taken from the scanner's UTC 86400 grid is not a venue
+        // observation (it is midnight UTC). Ignore it and use the ET-noon
+        // close; otherwise a missing live daily market would publish a
+        // fake window (L1–L6). A real Polymarket daily close is ET noon,
+        // which is never 00:00 UTC.
+        let end_ms = if observed_end_ms > start_ms && observed_end_ms % 86_400_000 != 0 {
+            observed_end_ms
+        } else {
+            et_noon_end_sec(anchor_sec)
+                .map(|e| e.saturating_mul(1000))
+                .unwrap_or(0)
+        };
+        if end_ms > start_ms {
+            (start_ms, end_ms, start)
+        } else {
+            (0, 0, 0)
+        }
+    } else {
+        let end_ms = if observed_end_ms > 0 {
+            observed_end_ms
+        } else {
+            0
+        };
+        let start_ms = if end_ms > 0 && duration_sec > 0 {
+            end_ms.saturating_sub(duration_sec.saturating_mul(1000))
+        } else {
+            let grid_id = venue_round_id(slot, duration_sec);
+            if grid_id >= VENUE_TS_FLOOR {
+                grid_id.saturating_mul(1000)
+            } else {
+                0
+            }
+        };
+        let end_ms = if end_ms > start_ms {
+            end_ms
+        } else if start_ms > 0 {
+            start_ms.saturating_add(duration_sec.saturating_mul(1000))
+        } else {
+            observed_end_ms
+        };
+        let round_id = if start_ms / 1000 >= VENUE_TS_FLOOR {
+            start_ms / 1000
+        } else {
+            venue_round_id(slot, duration_sec)
+        };
+        (start_ms, end_ms, round_id)
     }
 }

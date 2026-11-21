@@ -5,7 +5,8 @@
 //! `blitzkrieg_market_api` re-exports them unchanged (`pub use
 //! blitzkrieg_bk_contract::…`), so every existing import path keeps compiling
 //! with one single definition behind it. The crate is deliberately a leaf:
-//! deps = serde/serde_json/rust_decimal only, no internal dependencies, and
+//! deps = serde/serde_json/rust_decimal plus chrono/chrono-tz for the
+//! shared America/New_York noon daily window, no internal dependencies, and
 //! nothing here performs I/O — the unified mapping ledger's std::fs
 //! persistence stays in `blitzkrieg-market-api` under
 //! `blitzkrieg_market_api::unified::ledger`.
@@ -16,6 +17,7 @@
 
 pub mod account;
 pub mod decimal;
+pub mod et_noon;
 pub mod event_api;
 pub mod execution_api;
 pub mod fee;
@@ -39,3 +41,5 @@ pub use plugin::{
 };
 pub use types::*;
 pub use unified::{HedgeVerdict, UnifiedEvent};
+
+pub use et_noon::{et_noon_end_sec, et_noon_start_sec};

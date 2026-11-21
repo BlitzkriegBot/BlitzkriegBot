@@ -42,3 +42,5 @@ pub use blitzkrieg_bk_contract::plugin::{
 };
 pub use blitzkrieg_bk_contract::types::*;
 pub use unified::{HedgeVerdict, UnifiedEvent};
+
+pub use blitzkrieg_bk_contract::{et_noon_end_sec, et_noon_start_sec};

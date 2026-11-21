@@ -474,7 +474,7 @@ impl MarketHost for CoreHost {
     }
 
     #[allow(clippy::collapsible_if)]
-    fn on_round_markets(&self, markets: Vec<api::MarketDescriptor>) -> BoxFuture<'_, ()> {
+    fn on_round_markets(&self, markets: Vec<api::MarketDescriptor>) -> BoxFuture<'_, bool> {
         Box::pin(async move {
             // B2 (轮次多族 软卸): the poll-output gate, when the assembly
             // installed one. A soft-unloaded family's batch is dropped
@@ -493,7 +493,7 @@ impl MarketHost for CoreHost {
                 .cloned();
             if let Some(gate) = gate {
                 if !gate(markets.clone()).await {
-                    return;
+                    return false;
                 }
             }
             let now = now_ms();
@@ -564,6 +564,7 @@ impl MarketHost for CoreHost {
                     now,
                 );
             }
+            true
         })
     }
 

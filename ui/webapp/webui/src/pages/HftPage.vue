@@ -15,7 +15,7 @@
  */
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useIntervalFn, useIntersectionObserver } from '@vueuse/core'
-import { Activity, Play, Square, Bell, BellOff, X, Clock, Filter, Info, Timer, Check, RefreshCw } from 'lucide-vue-next'
+import { Activity, Play, Square, Bell, BellOff, X, Clock, Filter, Info, Timer, RefreshCw } from 'lucide-vue-next'
 import { api, marketTypeLabel, type MarketPrice, type Position, type TradeRow, type AssetBook, type OrderRow, type NetCheckDoc } from '@/api/client'
 import { accountFrozen, lastErrorBanner } from '@/lib/safety'
 import { usePanelStore } from '@/stores/panel'
@@ -815,7 +815,7 @@ const roundDurLabel = computed(() => {
  * cli_or_env 显式参数在场时写入不赢，提示条如实说明。
  */
 
-// 本单（立即生效，保存与清除同一确认门）：先查当前账户在途仓位，有则必弹
+// 本单（立即生效，写入与清除同一确认门）：先查当前账户在途仓位，有则必弹
 // 确认框（N 仓位 + 滑点警告 + 挂单一并撤销），无仓位直接写；flagLocked 时
 // 整条路径禁用。写入一律立即撤单+市价强平+切网格，不存在「下次会话生效」。
 // 账户 id 在探测时冻结进确认态：确认框停留期间切账户，确认后写的仍是探测
@@ -826,7 +826,7 @@ const hftRoundConfirmSec = ref(0)
 const hftRoundConfirmKind = ref<'set' | 'reset'>('set')
 const hftRoundConfirmAccount = ref('default')
 
-/** 保存与清除共用的「有仓必弹确认」前置：探测冻结账户的在途仓位，有仓弹
+/** 写入与清除共用的「有仓必弹确认」前置：探测冻结账户的在途仓位，有仓弹
  * 确认框（kind 区分 set/reset 文案），无仓直接写。 */
 async function confirmThenWrite(kind: 'set' | 'reset'): Promise<void> {
   const accountId = store.activeAccount ?? 'default'
@@ -861,9 +861,8 @@ async function writeRound(kind: 'set' | 'reset', accountId: string): Promise<voi
 
 /**
  * 倒计时卡档位是切换按钮本身：点选即进入写入路径（有仓先确认、无仓直接
- * 秒切）。此前 SegmentedControl 只改 pending，必须再点「保存」才写内核，
- * 选中档位与倒计时/行情卡脱节，控件看起来形同虚设。
- * 点回当前档或 flagLocked 时不写；写入失败留下 dirty，保存按钮仍可重试。
+ * 秒切）。点回当前档或 flagLocked 时不写；写入失败把错误写在横幅上，
+ * 再点同一档即可重试，不再另设保存按钮。
  */
 async function onPickRound(sec: string): Promise<void> {
   if (roundSwitch.flagLocked.value || roundSwitch.busy.value) return
@@ -873,7 +872,7 @@ async function onPickRound(sec: string): Promise<void> {
 }
 
 // 清除该账户的轮次设置，回落到启动参数解析（issue 1155：设置页轮次卡删除后，
-// 行情页保留唯一的清除入口，不让 reset 沦为仅 API 可达）。清除与保存同一
+// 行情页保留唯一的清除入口，不让 reset 沦为仅 API 可达）。清除与写入同一
 // 确认门：内核对 reset 同样撤单+市价强平（trading_reset.rs 先强平再分支）。
 async function doClearRound(): Promise<void> {
   await confirmThenWrite('reset')
@@ -1156,15 +1155,6 @@ const journalOpen = ref(false)
             </div>
           </Tooltip>
           <Button
-            v-if="roundSwitch.dirty.value"
-            size="sm"
-            :disabled="roundSwitch.busy.value"
-            title="把选中的轮次周期写入当前账户；立即撤单该账户在途单、按市价真实强平其仓位，再切入新网格（有在途仓位时先弹此确认）"
-            @click="confirmThenWrite('set')"
-          >
-            <Check class="size-3.5" />保存
-          </Button>
-          <Button
             v-if="!roundSwitch.flagLocked.value"
             size="sm"
             :disabled="roundSwitch.busy.value || roundSwitch.doc.value?.perAccount?.[store.activeAccount ?? 'default'] === undefined"
@@ -1174,7 +1164,7 @@ const journalOpen = ref(false)
             <RefreshCw class="size-3.5" />清除
           </Button>
 
-          <!-- 保存与清除共用同一确认门：有在途仓位时必弹，N 仓位 + 滑点警告 +
+          <!-- 写入与清除共用同一确认门：有在途仓位时必弹，N 仓位 + 滑点警告 +
                挂单一并撤销；kind 区分 set/reset 文案；账户 id 冻结进确认态。 -->
           <ConfirmWordDialog
             v-model:open="hftRoundConfirmOpen"
@@ -1242,7 +1232,7 @@ const journalOpen = ref(false)
 
       <!-- 轮次周期切换的落定反馈（与设置 · 通用 卡同一组横幅；next_session
            写入后 10s 自动重启，可立即/取消）。 -->
-      <AlertBanner v-if="roundSwitch.err.value" class="mt-3" tone="warn">{{ roundSwitch.err.value }}</AlertBanner>
+      <AlertBanner v-if="roundSwitch.err.value" class="mt-3" tone="warn">{{ roundSwitch.err.value }}（再点档位可重试）</AlertBanner>
       <AlertBanner v-if="roundSwitch.msg.value" class="mt-3" tone="info">{{ roundSwitch.msg.value }}</AlertBanner>
 
       <!--

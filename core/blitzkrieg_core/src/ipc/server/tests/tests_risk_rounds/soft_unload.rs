@@ -96,3 +96,135 @@ async fn the_soft_unload_gate_admits_the_overridden_familys_batches() {
     );
     assert_eq!(data_plane.soft_unloaded_count(), 1);
 }
+
+fn override_plane(
+    venue: &str,
+    process_default_sec: i64,
+    override_sec: i64,
+) -> (std::sync::Arc<tokio::sync::Mutex<Core>>, DataPlaneRuntime) {
+    let now = now_ms();
+    let book = crate::account::AccountLedgers::new(
+        vec![crate::account::Account {
+            id: crate::account::AccountId::from("default"),
+            name: "main".into(),
+            market_type: blitzkrieg_market_api::MarketType::Prediction,
+            status: crate::account::AccountStatus::Active,
+            credential_keys: crate::account::CredentialKeys::default(),
+            venue: venue.to_string(),
+            trading_enabled: true,
+            strategies: Vec::new(),
+            rounds: Vec::new(),
+            opening_equity: None,
+            updated_at_ms: now,
+        }],
+        crate::account::AccountId::from("default"),
+    );
+    let cfg = CoreConfig {
+        engine_enabled: true,
+        round_duration_sec: process_default_sec,
+        trade_log_path: None,
+        order_log_path: None,
+        position_log_path: None,
+        ..Default::default()
+    };
+    let mut c = Core::with_account_book(cfg, book);
+    c.config_mut()
+        .account_round_durations
+        .insert("default".to_string(), override_sec);
+    let core = Arc::new(AsyncMutex::new(c));
+    let mut mounted = BTreeSet::new();
+    mounted.insert((venue.to_string(), process_default_sec));
+    mounted.insert((venue.to_string(), override_sec));
+    let data_plane = DataPlaneRuntime {
+        feed_ws_enabled: true,
+        discovery_enabled: true,
+        discovery_assets: vec!["BTC".to_string()],
+        discovery_round_duration_sec: process_default_sec,
+        discovery_mounted: Arc::new(std::sync::Mutex::new(mounted)),
+        soft_unloaded_polling_instances: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        feed_reuse: None,
+    };
+    (core, data_plane)
+}
+
+fn desc(
+    venue: &str,
+    duration_sec: i64,
+    expires_at_ms: i64,
+    round_slot: i64,
+    question: &str,
+) -> blitzkrieg_market_api::MarketDescriptor {
+    blitzkrieg_market_api::MarketDescriptor {
+        asset: "BTC".to_string(),
+        condition_id: "c".to_string(),
+        question_id: "q".to_string(),
+        up_token_id: "u".to_string(),
+        down_token_id: "d".to_string(),
+        up_price: Decimal::new(5, 1),
+        down_price: Decimal::new(5, 1),
+        expires_at_ms,
+        round_slot,
+        round_duration_sec: duration_sec,
+        venue: venue.to_string(),
+        neg_risk: false,
+        question: question.to_string(),
+    }
+}
+
+/// 15m → 5m: a reconstructed expires/slot (here 301s) used to be dropped
+/// as an unknown family even though the account was on 300s.
+/// The gate must key on the declared 300s field so prices and the clock
+/// keep flowing after the switch and after each 5m roll.
+#[tokio::test]
+async fn admit_uses_declared_duration_when_expiry_span_is_skewed() {
+    let (core, data_plane) = override_plane("polymarket", 900, 300);
+    // expires/slot is a reconstructed duration: give it a 301s quotient
+    // that is not in the active set, while the descriptor declares 300.
+    // (At live timestamps, end/floor(end/300) almost never yields 299;
+    // the gate must ignore that quotient whenever the declared field is set.)
+    let expires_at_ms = 301_000_000i64;
+    let round_slot = 1_000i64;
+    let batch = desc("polymarket", 300, expires_at_ms, round_slot, "skewed 5m");
+    assert_eq!(
+        expires_at_ms / 1000 / round_slot,
+        301,
+        "the fixture must actually reproduce a 301s false family"
+    );
+    assert!(
+        data_plane
+            .admit_poll_batch(&core, std::slice::from_ref(&batch))
+            .await,
+        "declared 300s must admit even when expires/slot yields 301"
+    );
+    assert_eq!(data_plane.soft_unloaded_count(), 0);
+}
+
+/// Daily windows start at America/New_York noon, so expires/slot lands on
+/// 86402 (observed live as the soft-unload key) rather than the declared
+/// 86400. Switching onto daily must still admit the batch.
+#[tokio::test]
+async fn admit_keys_daily_on_declared_86400_not_measured_86402() {
+    let (core, data_plane) = override_plane("polymarket", 900, 86_400);
+    // 20778 * 86402 = 1_795_250_556; floor(end/86400) is also 20778, so
+    // the old span formula yields 86402.
+    let end_sec = 20_778i64 * 86_402;
+    let batch = desc(
+        "polymarket",
+        86_400,
+        end_sec * 1000,
+        end_sec / 86_400,
+        "daily 86402 skew",
+    );
+    assert_eq!(
+        end_sec / (end_sec / 86_400),
+        86_402,
+        "the fixture must actually reproduce the 86402s false family"
+    );
+    assert!(
+        data_plane
+            .admit_poll_batch(&core, std::slice::from_ref(&batch))
+            .await,
+        "declared daily 86400 must admit even when expires/slot yields 86402"
+    );
+    assert_eq!(data_plane.soft_unloaded_count(), 0);
+}

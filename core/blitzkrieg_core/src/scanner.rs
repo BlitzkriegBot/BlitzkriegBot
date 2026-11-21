@@ -250,17 +250,30 @@ impl Scanner {
             .filter(|((_, d), t)| *d == duration_sec && **t > 0)
             .map(|(_, t)| *t)
             .min();
-        let effective = match self
+        let declared = match self
             .actual_end_time_ms
             .get(&(venue.to_string(), duration_sec))
         {
             // The venue's own declaration (in this family) is authoritative
             // for its markets.
-            Some(t) if *t > 0 => *t,
+            Some(t) if *t > 0 => Some(*t),
             // No own declaration: the conservative family clock — the earliest
-            // observed expiry across same-duration venues, or the family grid
-            // when none has spoken.
-            _ => earliest_in_family.unwrap_or(grid),
+            // observed expiry across same-duration venues.
+            _ => earliest_in_family,
+        };
+        // A stored end at or before `local_now` is the previous window's
+        // close. After a roll that close equals the new start, so using it
+        // pins `time_left` to 0 and `age` to the full duration while `slot`
+        // / the venue round-id have already moved — the panel then shows
+        // the current 5m id with a dead countdown. Fall forward to the
+        // unoffset family grid until a fresh observation lands. A still-open
+        // end (including a Polymarket daily close at America/New_York noon)
+        // is kept even if a sibling family's observe moved this venue's
+        // clock_offset and shifted `slot_at`.
+        let wall_grid = (local_now_ms / 1000 / duration_sec + 1) * duration_sec * 1000;
+        let effective = match declared {
+            Some(t) if t > local_now_ms => t,
+            _ => wall_grid.max(grid),
         };
         let time_left = ((effective - local_now_ms) / 1000).max(0);
         RoundTiming {

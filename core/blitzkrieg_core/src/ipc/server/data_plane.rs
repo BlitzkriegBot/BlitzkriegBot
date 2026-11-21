@@ -276,10 +276,14 @@ impl DataPlaneRuntime {
     /// (venue, duration) family is NOT in the active set is dropped here —
     /// the soft-unloaded instance keeps polling (nothing kills it) but its
     /// rounds never reach the engine/scanner again. The batch's family is
-    /// resolved the way the plugins stamp their descriptors: the venue tag
-    /// plus the batch's own round length derived from the descriptors'
-    /// expiry/span (`row_duration_sec`'s reading — 0 = the global family).
-    /// Every dropped batch bumps the gauge.
+    /// the venue tag plus the descriptor's declared `round_duration_sec`
+    /// (plugins stamp the family they queried). Reconstructing duration as
+    /// `expires_at_ms / 1000 / round_slot` only works when the window start
+    /// is an exact multiple of the declared length; Polymarket daily windows
+    /// start at America/New_York noon, so that quotient lands on 86402 (or
+    /// 82800/90000 around DST) and a 1-second Gamma skew on a 5m window can
+    /// yield 299 — both dropped even after the account switched onto that
+    /// family. Every dropped batch bumps the gauge.
     pub(super) async fn admit_poll_batch(
         &self,
         core: &Arc<AsyncMutex<Core>>,
@@ -288,17 +292,8 @@ impl DataPlaneRuntime {
         let Some(first) = markets.first() else {
             return true;
         };
-        // The batch's duration: the plugin baked its family into the slot
-        // derivation, so the batch's span reproduces it (the same fact
-        // `round_slot = end_ms / 1000 / round_sec` was built from). One
-        // descriptor is enough — a batch is one family's poll.
-        let span_sec = if first.round_slot > 0 && first.expires_at_ms > 0 {
-            first.expires_at_ms / 1000 / first.round_slot
-        } else {
-            0
-        };
         let global = self.discovery_round_duration_sec;
-        let dur = if span_sec > 0 { span_sec } else { global };
+        let dur = poll_batch_family_duration(first, global);
         let venue = first.venue.as_str();
         let active = {
             let pairs = self
@@ -574,5 +569,35 @@ pub(super) async fn enable_venue_at_runtime(
                 }
             }
         }
+    }
+}
+
+/// Resolve the family duration of a discovery poll batch.
+///
+/// Prefer the descriptor's declared `round_duration_sec`. The expiry/slot
+/// quotient is only a fallback for older plugins that left the field at 0.
+/// Daily windows are then canonicalized onto the declared 86400s key.
+pub(super) fn poll_batch_family_duration(
+    first: &blitzkrieg_market_api::MarketDescriptor,
+    global: i64,
+) -> i64 {
+    let raw = if first.round_duration_sec > 0 {
+        first.round_duration_sec
+    } else if first.round_slot > 0 && first.expires_at_ms > 0 {
+        first.expires_at_ms / 1000 / first.round_slot
+    } else {
+        global
+    };
+    canonical_family_duration(raw)
+}
+
+/// Map measured daily window lengths (ET-noon skew, DST 23h/25h, the live
+/// 86402s soft-unload key) onto the declared 86400s family used by the
+/// active-set gate and `round_duration.set`.
+pub(super) fn canonical_family_duration(dur: i64) -> i64 {
+    if (82_800..=90_000).contains(&dur) {
+        86_400
+    } else {
+        dur
     }
 }

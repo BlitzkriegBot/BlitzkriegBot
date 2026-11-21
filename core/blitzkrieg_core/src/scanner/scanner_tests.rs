@@ -817,6 +817,70 @@ fn off_pool_refusal_info_is_once_per_venue_and_family() {
     );
 }
 
+/// After a 5m roll, the previous window's close equals the new start.
+/// Keeping that stored end would report time_left=0 / age=300 on the new
+/// slot (the panel shows the current venue ts with a frozen countdown).
+/// The clock must fall back to the new grid until a fresh observation.
+#[test]
+fn stale_end_at_previous_close_does_not_zero_the_new_slot() {
+    let mut s = Scanner::new(ScannerConfig {
+        round_duration_sec: 300,
+        ..Default::default()
+    });
+    // Slot 5984120: 11:40–11:45. Observe its close.
+    let prev_end = 1_795_236_300_000i64;
+    let during_prev = prev_end - 60_000;
+    s.observe_end_time_for("polymarket", 300, prev_end, during_prev);
+    let mid = s.round_timing_for("polymarket", 300, during_prev);
+    assert_eq!(
+        mid.time_left_sec, 60,
+        "live window still uses the observation"
+    );
+    assert_eq!(mid.expires_at_ms, prev_end);
+
+    // 40s into the next 5m window (11:45–11:50); no new observation yet
+    // (discovery was soft-unloaded, or the first post-roll poll missed).
+    let into_next = prev_end + 40_000;
+    let rolled = s.round_timing_for("polymarket", 300, into_next);
+    assert_eq!(
+        rolled.slot,
+        into_next / 1000 / 300,
+        "wall-clock slot must already be the new window"
+    );
+    assert_eq!(
+        rolled.expires_at_ms,
+        (rolled.slot + 1) * 300 * 1000,
+        "stale previous close must not remain the family end"
+    );
+    assert_eq!(rolled.time_left_sec, 260, "countdown must keep rolling");
+    assert_eq!(rolled.age_sec, 40);
+}
+
+/// A Polymarket daily close at America/New_York noon is not UTC-aligned.
+/// While that end is still in the future it must be kept, even though it
+/// does not equal the UTC 86400 grid.
+#[test]
+fn daily_et_noon_end_is_kept_while_still_open() {
+    let mut s = Scanner::new(ScannerConfig {
+        round_duration_sec: 86_400,
+        ..Default::default()
+    });
+    // 2026-11-20 12:00 EST = 17:00 UTC = 1795194000; close is 2026-11-21
+    // 12:00 EST = 1795280400. Mid-window (the live 5m-stuck report's now).
+    let end = 1_795_280_400_000i64;
+    let now = 1_795_236_160_000i64;
+    s.observe_end_time_for("polymarket", 86_400, end, now);
+    let t = s.round_timing_for("polymarket", 86_400, now);
+    assert_eq!(
+        t.expires_at_ms, end,
+        "ET-noon close must not be replaced by the UTC midnight grid"
+    );
+    assert!(
+        t.time_left_sec > 0,
+        "daily countdown must remain open: {t:?}"
+    );
+}
+
 /// `target = "engine"` events for the grid-pool refusal line.
 #[derive(Clone)]
 struct OffPoolLogCapture(Arc<Mutex<Vec<tracing::Level>>>);

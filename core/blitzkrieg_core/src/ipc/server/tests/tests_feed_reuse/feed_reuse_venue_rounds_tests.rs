@@ -87,6 +87,9 @@ async fn venue_set_mounts_every_declared_family_of_the_account() {
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     VENUE_LIVE_DISCOVERY_CFG
         .lock()
@@ -257,6 +260,9 @@ async fn rounds_set_mounts_every_added_family_and_persists_the_declaration() {
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     VENUE_LIVE_DISCOVERY_CFG
         .lock()
@@ -468,6 +474,9 @@ async fn rounds_set_refuses_a_removal_with_open_exposure_and_moves_nothing() {
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     VENUE_LIVE_DISCOVERY_CFG
         .lock()
@@ -623,6 +632,9 @@ async fn rounds_set_soft_unloads_a_clean_removal_and_the_poll_gate_drops_it() {
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     VENUE_LIVE_DISCOVERY_CFG
         .lock()
@@ -807,6 +819,9 @@ async fn rounds_set_refuses_bad_values_and_the_empty_set_removes_the_file_key() 
             0,
         )),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
 
     // Whitelist-foreign duration: refused before anything moved.

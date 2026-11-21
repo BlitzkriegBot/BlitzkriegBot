@@ -65,6 +65,21 @@ pub(super) struct DataPlaneRuntime {
     /// (the inner Arcs are shared) so its `on_round_markets` fan-out reads
     /// the same edges the mount path writes.
     pub(super) feed_reuse: Option<crate::market::host::FeedReuse>,
+    /// Last discovery batch the soft-unload gate dropped, keyed by
+    /// (venue, canonical family duration). Polymarket's discovery loop
+    /// records a family as "already fed" after `on_round_markets` returns,
+    /// even when the gate dropped the batch, and will not re-feed the same
+    /// slot until the slot or token signature changes (up to an hour on
+    /// 1h, a day on daily; also a mid-slot 5m/15m after a roll that
+    /// happened while the family was unloaded). `round_duration.set`, which
+    /// re-activates the family, replays this cache through the same host
+    /// path so prices and the venue clock appear without waiting for the
+    /// next slot.
+    pub(super) last_dropped_batches: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::BTreeMap<(String, i64), Vec<blitzkrieg_market_api::MarketDescriptor>>,
+        >,
+    >,
 }
 
 impl DataPlaneRuntime {
@@ -146,6 +161,9 @@ impl DataPlaneRuntime {
                 std::sync::atomic::AtomicUsize::new(0),
             ),
             feed_reuse: Some(feed_reuse),
+            last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
         }
     }
 
@@ -310,8 +328,10 @@ impl DataPlaneRuntime {
             self.active_families(&accounts, &overrides, &pairs)
         };
         if active.contains(&(venue.to_string(), dur)) {
+            self.forget_dropped_batch(venue, dur);
             return true;
         }
+        self.remember_dropped_batch(venue, dur, markets);
         self.soft_unloaded_polling_instances
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         eprintln!(
@@ -320,6 +340,44 @@ impl DataPlaneRuntime {
              family to resume"
         );
         false
+    }
+
+    fn dropped_lock(
+        &self,
+    ) -> std::sync::MutexGuard<
+        '_,
+        std::collections::BTreeMap<(String, i64), Vec<blitzkrieg_market_api::MarketDescriptor>>,
+    > {
+        self.last_dropped_batches
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn remember_dropped_batch(
+        &self,
+        venue: &str,
+        dur: i64,
+        markets: &[blitzkrieg_market_api::MarketDescriptor],
+    ) {
+        if markets.is_empty() {
+            return;
+        }
+        self.dropped_lock()
+            .insert((venue.to_string(), dur), markets.to_vec());
+    }
+
+    fn forget_dropped_batch(&self, venue: &str, dur: i64) {
+        self.dropped_lock().remove(&(venue.to_string(), dur));
+    }
+
+    /// Take the last dropped batch for this family, if any, so a grid write
+    /// can replay it through `on_round_markets` once the family is active.
+    pub(super) fn take_dropped_batch(
+        &self,
+        venue: &str,
+        dur: i64,
+    ) -> Option<Vec<blitzkrieg_market_api::MarketDescriptor>> {
+        self.dropped_lock().remove(&(venue.to_string(), dur))
     }
 
     /// The gauge readout (`core.status`): how many discovery-poll batches

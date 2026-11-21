@@ -99,6 +99,11 @@ async fn ensure_round_family_mounted(
     };
     for venue in venues {
         if data_plane.discovery_mounted_at(&venue, family) {
+            // Instance already runs, but its last feed of this family may
+            // have been dropped by the soft-unload gate and then skipped
+            // as a duplicate slot. Replay the cached batch now that the
+            // account has activated the family.
+            replay_dropped_family(host, data_plane, &venue, family).await;
             continue; // already running — nothing to mount
         }
         let Some(plugin) = registry.get(&venue) else {
@@ -118,6 +123,7 @@ async fn ensure_round_family_mounted(
         {
             data_plane.mark_discovery_mounted(&venue, family);
             data_plane.mark_mounted(&venue);
+            replay_dropped_family(host, data_plane, &venue, family).await;
             continue;
         }
         // The core guard is NOT held across the mount (it re-enters the core
@@ -143,5 +149,30 @@ async fn ensure_round_family_mounted(
             data_plane.mark_discovery_mounted(&venue, family);
             data_plane.mark_mounted(&venue);
         }
+        replay_dropped_family(host, data_plane, &venue, family).await;
     }
+}
+
+/// Push a still-open dropped batch back through the host now that the
+/// family is in the active set. The admission gate sees the new override
+/// and admits; expired rows are discarded (the next discovery poll will
+/// fetch a live slot if this window has already closed).
+async fn replay_dropped_family(
+    host: &std::sync::Arc<dyn blitzkrieg_market_api::MarketHost>,
+    data_plane: &DataPlaneRuntime,
+    venue: &str,
+    family: i64,
+) {
+    let Some(batch) = data_plane.take_dropped_batch(venue, family) else {
+        return;
+    };
+    let now = now_ms();
+    let live: Vec<_> = batch
+        .into_iter()
+        .filter(|m| m.expires_at_ms > now)
+        .collect();
+    if live.is_empty() {
+        return;
+    }
+    host.on_round_markets(live).await;
 }

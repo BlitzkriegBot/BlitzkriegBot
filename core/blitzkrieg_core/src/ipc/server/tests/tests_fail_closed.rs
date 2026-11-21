@@ -46,6 +46,9 @@ async fn spawn_on(core: Arc<AsyncMutex<Core>>, bus_tx: &broadcast::Sender<Event>
         discovery_mounted: Arc::new(std::sync::Mutex::new(Default::default())),
         soft_unloaded_polling_instances: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
     ours.set_nonblocking(true).expect("nonblocking");

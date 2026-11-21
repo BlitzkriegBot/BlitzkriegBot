@@ -406,6 +406,9 @@ async fn round_duration_set_mounts_the_new_familys_discovery_at_runtime() {
         discovery_mounted: Arc::new(std::sync::Mutex::new(mounted)),
         soft_unloaded_polling_instances: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
 
     // Override to the unmounted family: the write must mount it live.

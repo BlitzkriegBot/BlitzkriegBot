@@ -55,6 +55,9 @@ async fn the_soft_unload_gate_admits_the_overridden_familys_batches() {
         discovery_mounted: Arc::new(std::sync::Mutex::new(mounted)),
         soft_unloaded_polling_instances: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
 
     // A 3600s batch — the family the override runs. The span derivation the
@@ -143,6 +146,9 @@ fn override_plane(
         discovery_mounted: Arc::new(std::sync::Mutex::new(mounted)),
         soft_unloaded_polling_instances: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
     };
     (core, data_plane)
 }
@@ -227,4 +233,99 @@ async fn admit_keys_daily_on_declared_86400_not_measured_86402() {
         "declared daily 86400 must admit even when expires/slot yields 86402"
     );
     assert_eq!(data_plane.soft_unloaded_count(), 0);
+}
+
+/// A family that was soft-unloaded mid-slot is cached so `round_duration.set`
+/// can replay it. Discovery will not re-feed the same slot (it treats a
+/// dropped `on_round_markets` as already delivered). Switching the account
+/// onto that family must therefore: (1) have the dropped batch on hand,
+/// (2) admit it once the override is live, (3) clear the cache on admit
+/// so a later stale replay cannot resurrect an old slot.
+#[tokio::test]
+async fn dropped_batch_is_cached_and_cleared_when_family_becomes_active() {
+    let now = now_ms();
+    let book = crate::account::AccountLedgers::new(
+        vec![crate::account::Account {
+            id: crate::account::AccountId::from("default"),
+            name: "main".into(),
+            market_type: blitzkrieg_market_api::MarketType::Prediction,
+            status: crate::account::AccountStatus::Active,
+            credential_keys: crate::account::CredentialKeys::default(),
+            venue: "polymarket".to_string(),
+            trading_enabled: true,
+            strategies: Vec::new(),
+            rounds: Vec::new(),
+            opening_equity: None,
+            updated_at_ms: now,
+        }],
+        crate::account::AccountId::from("default"),
+    );
+    let cfg = CoreConfig {
+        engine_enabled: true,
+        round_duration_sec: 900,
+        trade_log_path: None,
+        order_log_path: None,
+        position_log_path: None,
+        ..Default::default()
+    };
+    // Account is on 15m; a 1h batch must be dropped and cached.
+    let mut c = Core::with_account_book(cfg, book);
+    c.config_mut()
+        .account_round_durations
+        .insert("default".to_string(), 900);
+    let core = Arc::new(AsyncMutex::new(c));
+    let mut mounted = BTreeSet::new();
+    mounted.insert(("polymarket".to_string(), 900));
+    mounted.insert(("polymarket".to_string(), 3600));
+    let data_plane = DataPlaneRuntime {
+        feed_ws_enabled: true,
+        discovery_enabled: true,
+        discovery_assets: vec!["BTC".to_string()],
+        discovery_round_duration_sec: 900,
+        discovery_mounted: Arc::new(std::sync::Mutex::new(mounted)),
+        soft_unloaded_polling_instances: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        feed_reuse: None,
+        last_dropped_batches: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
+    };
+    let batch = desc(
+        "polymarket",
+        3600,
+        now + 3_500_000,
+        (now + 3_500_000) / 1000 / 3600,
+        "1h while on 15m",
+    );
+    assert!(
+        !data_plane
+            .admit_poll_batch(&core, std::slice::from_ref(&batch))
+            .await,
+        "1h is unloaded while the account is on 15m"
+    );
+    let cached = data_plane.take_dropped_batch("polymarket", 3600);
+    assert!(cached.is_some(), "the dropped 1h batch must be cached");
+    assert_eq!(cached.as_ref().unwrap()[0].question, "1h while on 15m");
+    // Put it back — take consumed the cache, as the set-path replay will.
+    // Re-drop to restore the production shape (admit_poll_batch caches again).
+    assert!(
+        !data_plane
+            .admit_poll_batch(&core, std::slice::from_ref(&batch))
+            .await
+    );
+
+    core.lock()
+        .await
+        .config_mut()
+        .account_round_durations
+        .insert("default".to_string(), 3600);
+    assert!(
+        data_plane
+            .admit_poll_batch(&core, std::slice::from_ref(&batch))
+            .await,
+        "after the account switches to 1h the same batch must admit"
+    );
+    assert!(
+        data_plane.take_dropped_batch("polymarket", 3600).is_none(),
+        "an admitted batch must not stay in the drop cache"
+    );
 }

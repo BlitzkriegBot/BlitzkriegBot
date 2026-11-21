@@ -30,7 +30,8 @@ const check = (label, fn) => {
   }
 }
 
-const { filterByAccount } = await import('../src/lib/account-filter.ts')
+const { filterByAccount, filterByVenueDur } = await import('../src/lib/account-filter.ts')
+const { priceCardId } = await import('../src/lib/round-id.ts')
 
 const row = (id, accountId) => ({ id, accountId })
 
@@ -81,5 +82,58 @@ check('real wire shapes: trade rows with accountId from the gateway', () => {
   assert.equal(out.attributed, true)
 })
 
+
+const price = (asset, durationSec, up, down) => ({
+  venue: 'polymarket', asset, durationSec, up, down,
+})
+
+check('priceCardId stamps the family suffix the operator asked for', () => {
+  assert.equal(priceCardId('BTC', 300), 'BTC-5m')
+  assert.equal(priceCardId('ETH', 900), 'ETH-15m')
+  assert.equal(priceCardId('SOL', 3600), 'SOL-1h')
+  assert.equal(priceCardId('XRP', 86400), 'XRP-1d')
+})
+
+check('a 5m-anchored account shows exactly one price card per asset', () => {
+  const rows = [
+    price('BTC', 900, 0.97, 0.03),
+    price('ETH', 900, 0.99, 0.01),
+    price('SOL', 900, 0.96, 0.04),
+    price('XRP', 900, 0.98, 0.02),
+    price('BTC', 300, 0.84, 0.16),
+    price('ETH', 300, 0.77, 0.23),
+    price('SOL', 300, 0.74, 0.26),
+    price('XRP', 300, 0.85, 0.15),
+  ]
+  const out = filterByVenueDur(rows, 'polymarket', 300)
+  assert.equal(out.attributed, true)
+  assert.deepEqual(out.rows.map((r) => r.asset), ['BTC', 'ETH', 'SOL', 'XRP'])
+  assert.ok(out.rows.every((r) => r.durationSec === 300), 'must not keep the 15m twin of the same asset')
+  const ids = out.rows.map((r) => priceCardId(r.asset, r.durationSec))
+  assert.deepEqual(ids, ['BTC-5m', 'ETH-5m', 'SOL-5m', 'XRP-5m'])
+  assert.equal(new Set(ids).size, ids.length, 'card ids must be unique')
+})
+
+check('untagged twins do not sneak into a duration-filtered 5m grid', () => {
+  const rows = [
+    price('BTC', 300, 0.84, 0.16),
+    { venue: 'polymarket', asset: 'BTC', up: 0.97, down: 0.03 },
+    price('ETH', 300, 0.77, 0.23),
+  ]
+  const out = filterByVenueDur(rows, 'polymarket', 300)
+  assert.deepEqual(out.rows.map((r) => r.asset), ['BTC', 'ETH'])
+  assert.ok(out.rows.every((r) => r.durationSec === 300))
+})
+
+check('old kernels that stamp no durationSec still fall back to venue-only', () => {
+  const rows = [
+    { venue: 'polymarket', asset: 'BTC', up: 0.5, down: 0.5 },
+    { venue: 'polymarket', asset: 'ETH', up: 0.4, down: 0.6 },
+  ]
+  const out = filterByVenueDur(rows, 'polymarket', 300)
+  assert.deepEqual(out.rows.map((r) => r.asset), ['BTC', 'ETH'])
+})
+
 console.log(failures === 0 ? '\nRESULT: PASS' : `\nRESULT: FAIL (${failures})`)
+
 process.exit(failures === 0 ? 0 : 1)

@@ -194,6 +194,7 @@ const venueRound = computed(() => {
   // 于 venueRound，这里不构成 computed 环；缺读数前退回 venue-only 选行。
   const dur =
     roundSwitch.doc.value?.perAccount?.[store.activeAccount ?? 'default'] ??
+    roundSwitch.doc.value?.engineActiveSec ??
     roundSwitch.doc.value?.effectiveSec
   const exact =
     typeof dur === 'number' && dur > 0
@@ -242,7 +243,9 @@ watch(snap, (s) => {
   const vr = venueRound.value
   const acct = store.activeAccount ?? 'default'
   const dur =
-    roundSwitch.doc.value?.perAccount?.[acct] ?? roundSwitch.doc.value?.effectiveSec
+    roundSwitch.doc.value?.perAccount?.[acct]
+    ?? roundSwitch.doc.value?.engineActiveSec
+    ?? roundSwitch.doc.value?.effectiveSec
   if (vr) {
     // The identity venue has its own clock row: bind to it. The venue key
     // guards re-binding — a row for a DIFFERENT venue never refreshes this
@@ -415,7 +418,12 @@ const venueLoading = computed(() => {
 // 成功后行情卡/倒计时仍按旧档过滤，切换看起来没有生效。
 const roundDurHintSec = computed<number | null>(() => {
   const acct = store.activeAccount ?? 'default'
-  return roundSwitch.doc.value?.perAccount?.[acct] ?? roundSwitch.doc.value?.effectiveSec ?? null
+  return (
+    roundSwitch.doc.value?.perAccount?.[acct]
+    ?? roundSwitch.doc.value?.engineActiveSec
+    ?? roundSwitch.doc.value?.effectiveSec
+    ?? null
+  )
 })
 
 /** 身份所轮长：venueRound 行有 durationSec 就用它，缺席回落 roundDurHintSec，

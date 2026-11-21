@@ -89,11 +89,10 @@ export function filterByVenue<T extends VenuedRow>(
 
 /**
  * venue 层双过滤（行情多档位：同一 venue 的 5m/15m 轮次可并行，行带
- * `durationSec` 标记所属档位）。仅当 `durationSec` 有值且输入行中
- * 有人携带 `durationSec` 时，才按 `venue + durationSec` 双过滤；
- * `durationSec` 缺省（null/undefined）或全行未打 tag 时降回 venue-only，
- * 与 `filterByVenue` 语义一致——老内核/未打 tag 行不被静默丢弃。
- * 单行自缺 `durationSec` 时同样退回 venue-only（保留不可归档位的行）。
+ * `durationSec` 标记所属档位）。帐户已锚定档位且输入行中有人携带
+ * `durationSec` 时，只保留 `venue + durationSec` 都匹配的行——未打 tag
+ * 的行不再混入（否则 5m 卡和 15m 卡会同时出现在网格里）。
+ * `durationSec` 缺省，或全行未打 tag（老内核）时降回 venue-only。
  */
 export function filterByVenueDur<T extends VenuedRow>(
   rows: readonly T[],
@@ -109,7 +108,7 @@ export function filterByVenueDur<T extends VenuedRow>(
       rows: rows.filter(
         (r) =>
           (!r.venue || r.venue === venue) &&
-          (typeof r.durationSec !== 'number' || r.durationSec === durationSec),
+          r.durationSec === durationSec,
       ),
       attributed: true,
     }

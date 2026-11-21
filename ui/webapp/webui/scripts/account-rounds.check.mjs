@@ -194,6 +194,23 @@ check('行情卡与盘口都按账户锚定档位过滤（durationSec）', () =>
   assert.match(hft, /filterByVenueDur\(books\.value, activeVenue\.value, identityDurSec\.value\)/, 'visibleBooks 必须同样按 identityDurSec 过滤，否则盘口停在默认 15m')
 })
 
+check('行情卡与盘口按 BTC-5m / BTC-15m 识别，5m 锚定只渲染一套资产卡', () => {
+  const grid = read('src', 'components', 'hft', 'PriceGrid.vue')
+  const depth = read('src', 'components', 'hft', 'DepthCard.vue')
+  assert.match(grid, /priceCardId\(m\.asset, m\.durationSec\)/, 'PriceGrid 的 key 与标题必须走 priceCardId（BTC-5m / BTC-15m）')
+  assert.match(depth, /priceCardId\(b\.asset, b\.durationSec\)/, '盘口资产选项必须同样用 priceCardId，不能只按 asset 当 key')
+  const id = read('src', 'lib', 'round-id.ts')
+  assert.match(id, /export function priceCardId/, '缺 priceCardId 助手')
+  assert.match(id, /\$\{name\}-\$\{label\}/, 'priceCardId 必须拼出资产-档位后缀')
+})
+
+check('身份轮长优先读 engineActiveSec，不能跳过它直接回落到进程默认 effectiveSec', () => {
+  const hint = hft.match(/const roundDurHintSec = computed<number \| null>\(\(\) => \{[\s\S]*?\n\}\)/)
+  assert.ok(hint, '缺 roundDurHintSec computed')
+  assert.match(hint[0], /engineActiveSec/, 'roundDurHintSec 必须读 engineActiveSec（进程默认 effectiveSec=900 会把 5m 账户的过滤放成 15m）')
+})
+
+
 check('档位已知时 venueRound 不得回退到同 venue 另一族（切换后行情/倒计时串族）', () => {
   const vr = hft.match(/const venueRound = computed\(\(\) => \{[\s\S]*?\n\}\)/)
   assert.ok(vr, '缺 venueRound computed')

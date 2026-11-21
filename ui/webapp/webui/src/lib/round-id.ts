@@ -39,6 +39,17 @@ export function durationLabel(durationSec: number): string | null {
   }
 }
 
+/** 行情卡 / 盘口行的稳定 id：`BTC-5m`、`ETH-15m`。帐户锚定哪一档，就只渲染
+ *  带该后缀的卡片，避免 5m 与 15m 两套同名资产卡同时出现。 */
+export function priceCardId(asset: string, durationSec: number | null | undefined): string {
+  const name = (asset ?? '').trim()
+  if (typeof durationSec === 'number' && durationSec > 0) {
+    const label = durationLabel(durationSec) ?? `${durationSec}s`
+    return name ? `${name}-${label}` : label
+  }
+  return name
+}
+
 /** Absolute Polymarket event URL, or null when the duration/id/asset is unknown. */
 export function exchangeUpdownUrl(
   asset: string,

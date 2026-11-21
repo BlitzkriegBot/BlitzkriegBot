@@ -124,8 +124,10 @@ pub struct CurrentRoundPriceView {
     pub down_token_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub condition_id: String,
-    /// `snapshot` (placeholder REST) or `live` (high-freq subscription).
-    /// Empty when the kernel has not stamped this card — never invent `live`.
+    /// `snapshot` (placeholder REST), `live` (high-freq subscription), or
+    /// `unreliable` (a book exists but the mid is not a tradeable reference,
+    /// e.g. a near-expiry 0.01/1.00 stub whose mid is 0.505). Empty when the
+    /// kernel has not stamped this card — never invent `live`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
     /// Venue-or-kernel time the mid was fetched. 0 when unknown; omitted.

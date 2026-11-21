@@ -295,6 +295,8 @@ pub async fn spawn_feed(host: Arc<dyn MarketHost>, token_ids: Vec<String>) -> Fe
     FeedHandle {
         tx: ctl_tx,
         placeholder_tx: ph_tx,
+        last_live: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        last_placeholder: std::sync::Arc::new(std::sync::Mutex::new(None)),
         _ev: ev_tx,
     }
 }
@@ -304,12 +306,23 @@ pub async fn spawn_feed(host: Arc<dyn MarketHost>, token_ids: Vec<String>) -> Fe
 pub struct FeedHandle {
     tx: mpsc::Sender<Vec<String>>,
     placeholder_tx: mpsc::Sender<Vec<String>>,
+    last_live: std::sync::Arc<std::sync::Mutex<Option<Vec<String>>>>,
+    last_placeholder: std::sync::Arc<std::sync::Mutex<Option<Vec<String>>>>,
     _ev: mpsc::Sender<FeedEvent>,
 }
 
 impl FeedHandle {
     /// Replace the Polymarket orderbook subscription set (new round tokens).
     pub async fn subscribe(&self, tokens: Vec<String>) {
+        {
+            let mut guard = self.last_live.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(prev) = guard.as_ref()
+                && same_token_set(prev, &tokens)
+            {
+                return;
+            }
+            *guard = Some(tokens.clone());
+        }
         let _ = self.tx.send(tokens).await;
     }
 }
@@ -317,11 +330,12 @@ impl FeedHandle {
 impl blitzkrieg_bk_contract::SubscriptionControl for FeedHandle {
     fn set_tokens(&self, tokens: Vec<String>) {
         // Non-async control surface: `try_send` avoids blocking the host's tick.
-        // The channel has capacity 16 and is only written on round rollovers.
-        let _ = self.tx.try_send(tokens);
+        // Unchanged sets are dropped so a discovery republish cannot fill the
+        // channel or cut the poll interval (a real rollover still goes through).
+        try_send_if_changed(&self.tx, &self.last_live, tokens);
     }
     fn set_placeholder_tokens(&self, tokens: Vec<String>) {
-        let _ = self.placeholder_tx.try_send(tokens);
+        try_send_if_changed(&self.placeholder_tx, &self.last_placeholder, tokens);
     }
 }
 
@@ -356,6 +370,37 @@ fn poll_ok_line(lat_ms: u128, now_ms: i64, venue_ms: &[i64], tokens: usize) -> S
         ),
         None => format!("poly poll ok lat_ms={lat_ms} tokens={tokens}"),
     }
+}
+
+/// Compare subscription sets as sets: order and duplicate entries must not
+/// retrigger a fetch. `publish_family_feed_subscriptions` re-sends the same
+/// placeholder tokens on every discovery tick; treating that as a rollover
+/// would cut the 300 s placeholder wait down to the discovery cadence.
+fn same_token_set(a: &[String], b: &[String]) -> bool {
+    let mut a = a.to_vec();
+    let mut b = b.to_vec();
+    a.sort();
+    b.sort();
+    a.dedup();
+    b.dedup();
+    a == b
+}
+
+/// Push `tokens` only when the set actually changed. Unchanged republishes
+/// must not fill the control channel or cut the poller wait.
+fn try_send_if_changed(
+    tx: &mpsc::Sender<Vec<String>>,
+    last: &std::sync::Mutex<Option<Vec<String>>>,
+    tokens: Vec<String>,
+) {
+    let mut guard = last.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(prev) = guard.as_ref()
+        && same_token_set(prev, &tokens)
+    {
+        return;
+    }
+    *guard = Some(tokens.clone());
+    let _ = tx.try_send(tokens);
 }
 
 /// Poll `POST /books` for the current token set.
@@ -534,15 +579,30 @@ async fn poly_rest_loop(
             }
         }
 
-        // Wait out the interval, but let a new token set cut the wait short: a
-        // rollover should not sit on the previous round's cadence before its
-        // first fetch.
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(interval_ms)) => {}
-            update = ctl_rx.recv() => match update {
-                Some(t) => tokens = t,
-                None => return,
-            },
+        // Wait out the interval. A *changed* token set (roll, promote,
+        // demote, first subscribe) cuts the wait so the new round is fetched
+        // immediately. An unchanged republish must not: the placeholder
+        // poller is on a 300 s cadence, and the host re-publishes the same
+        // set on every discovery tick.
+        let deadline = std::time::Instant::now() + Duration::from_millis(interval_ms);
+        loop {
+            let remain = deadline.saturating_duration_since(std::time::Instant::now());
+            if remain.is_zero() {
+                break;
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(remain) => { break; }
+                update = ctl_rx.recv() => match update {
+                    Some(t) => {
+                        if same_token_set(&tokens, &t) {
+                            continue;
+                        }
+                        tokens = t;
+                        break;
+                    }
+                    None => return,
+                },
+            }
         }
     }
 }
@@ -905,6 +965,83 @@ mod tests {
         assert!(
             !latest.contains(&a),
             "the previous round must stop being polled; polls={after:?}"
+        );
+    }
+
+    /// Re-sending the same token set must not cut the poll interval. The host
+    /// re-publishes placeholder tokens on every discovery tick; if that were
+    /// treated as a rollover, the 300 s placeholder cadence would collapse
+    /// to the discovery cadence (~5 s), which is the traffic-economy bug
+    /// measured after #126.
+    #[tokio::test]
+    async fn unchanged_token_set_does_not_cut_the_poll_interval() {
+        let srv = FakeClob::start(200).await;
+        let a = token(1);
+        let (ev_tx, _ev_rx) = mpsc::channel::<FeedEvent>(64);
+        let (ctl_tx, ctl_rx) = mpsc::channel::<Vec<String>>(4);
+        let interval = Duration::from_millis(250);
+        let handle = tokio::spawn(poly_rest_loop(
+            vec![a.clone()],
+            ev_tx,
+            ctl_rx,
+            srv.url.clone(),
+            250,
+        ));
+        let first = srv.wait_for_requests(1).await;
+        assert_eq!(first.len(), 1, "one opening poll");
+
+        // Several identical republishes, including a reordered duplicate.
+        ctl_tx.send(vec![a.clone()]).await.expect("send same set");
+        ctl_tx
+            .send(vec![a.clone(), a.clone()])
+            .await
+            .expect("send same set with dup");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let mid = srv.seen().await.len();
+        assert_eq!(
+            mid, 1,
+            "an unchanged set must not trigger a fetch before the interval elapses; polls so far={mid}"
+        );
+
+        // After the interval, the regular cadence should fire once more.
+        tokio::time::sleep(interval + Duration::from_millis(120)).await;
+        let after_wait = srv.seen().await.len();
+        handle.abort();
+        assert!(
+            after_wait >= 2,
+            "the cadence must still poll after the interval; polls={after_wait}"
+        );
+        // And must not have burst: two polls in ~250+80+120 ms is expected,
+        // a cut-the-wait bug would have produced extra polls from the sends.
+        assert!(
+            after_wait <= 3,
+            "unchanged republishes must not burst; polls={after_wait}"
+        );
+    }
+
+    /// A changed set must still cut the wait (roll / promote / demote).
+    #[tokio::test]
+    async fn changed_token_set_still_cuts_the_wait() {
+        let srv = FakeClob::start(200).await;
+        let a = token(1);
+        let b = token(2);
+        let (ev_tx, _ev_rx) = mpsc::channel::<FeedEvent>(64);
+        let (ctl_tx, ctl_rx) = mpsc::channel::<Vec<String>>(4);
+        let handle = tokio::spawn(poly_rest_loop(
+            vec![a.clone()],
+            ev_tx,
+            ctl_rx,
+            srv.url.clone(),
+            5_000, // long interval: a cut must be the only way to see poll 2 quickly
+        ));
+        let _ = srv.wait_for_requests(1).await;
+        ctl_tx.send(vec![b.clone()]).await.expect("send new set");
+        let after = srv.wait_for_requests(2).await;
+        handle.abort();
+        let latest = &after.last().expect("second poll").1;
+        assert!(
+            latest.contains(&b) && !latest.contains(&a),
+            "a real set change must poll immediately; polls={after:?}"
         );
     }
 

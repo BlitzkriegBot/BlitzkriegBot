@@ -170,6 +170,12 @@ const countForDur = ref<number | undefined>(0)
 // 空白、刷新才恢复」的另一种成因。
 const leftSec = ref(0)
 
+// 轮次读数/写路径（round_duration.get/set）：该账户 per-account 覆盖优先，
+// 缺省回落 default 网格。doc 经 api.roundDuration() 异步落地，setup 期间为 null；
+// 声明必须置于 venueRound 与立即 watch(snap) 之前，否则 setup 同步段读
+// roundSwitch.doc.value 会命中 TDZ 并把整页挂载垮掉（ReferenceError 'O'）。
+const roundSwitch = useRoundDuration()
+
 /**
  * The round clock row of the identity venue (显示账户的 venue，老内核回落
  * active 账户绑定), if this core speaks venueRounds and the venue has an
@@ -392,6 +398,28 @@ const venueLoading = computed(() => {
   if (venueDataArrived.value) return false
   // nowMs（2s tick）是重算驱动：快照静止时超时窗口也要能走完。
   return nowMs.value - venueSwitchAt.value < VENUE_LOADING_TIMEOUT_MS
+})
+
+/** 身份所轮长（round_duration.get 生效值）：该 ref 同时是挂单过期链的回落源
+ * （identityDurSec）—— 一份读数两个消费点。读数落地前为 null，orderExpired
+ * 在逐单当拍取值，无需重绑。声明必须置于 visiblePrices 与立即
+ * watch([..., visiblePrices, ...]) 之前，否则 setup 同步段读 identityDurSec
+ * 会命中 TDZ（ReferenceError 'tt'）。 */
+const roundDurHintSec = ref<number | null>(null)
+void api
+  .roundDuration()
+  .then((d) => {
+    const acct = store.activeAccount ?? 'default'
+    roundDurHintSec.value = d.perAccount?.[acct] ?? d.effectiveSec
+  })
+  .catch(() => {})
+
+/** 身份所轮长：venueRound 行有 durationSec 就用它，缺席回落 roundDurHintSec，
+ * 再缺省（读数未到）回落 900（orderExpired 逐单当拍取值，无需重绑）。 */
+const identityDurSec = computed<number | null>(() => {
+  const d = venueRound.value?.durationSec
+  if (typeof d === 'number' && d > 0) return d
+  return roundDurHintSec.value
 })
 
 /** 行情卡的可见行：Loading 门开着 = 清空（绝不残留旧所盘口）。 */
@@ -745,15 +773,7 @@ watch([venueUnbound, venueLoading, visiblePrices, engineUp], () => {
 
 /** 空态文案里的当前轮次档位名（5m/15m/1h/…）；非标档位回退秒数。
  *  读 `round_duration.get` 的生效值（config 驱动），不拿 age+left 反推。
- *  该 ref 同时是挂单过期链的回落源（identityDurSec）—— 一份读数两个消费点。 */
-const roundDurHintSec = ref<number | null>(null)
-void api
-  .roundDuration()
-  .then((d) => {
-    const acct = store.activeAccount ?? 'default'
-    roundDurHintSec.value = d.perAccount?.[acct] ?? d.effectiveSec
-  })
-  .catch(() => {})
+ *  （ref 本身在 setup 早期已声明，见 visiblePrices 上方。） */
 const roundDurLabel = computed(() => {
   const sec = roundDurHintSec.value
   if (!sec) return '当前档位'
@@ -769,7 +789,6 @@ const roundDurLabel = computed(() => {
  * cli_or_env 显式参数在场时写入不赢，提示条如实说明。倒计时期间挂单
  * 过期链照旧走本会话网格 —— 重启会把一切坐标系重建。
  */
-const roundSwitch = useRoundDuration()
 
 // 本单（立即生效，保存与清除同一确认门）：先查当前账户在途仓位，有则必弹
 // 确认框（N 仓位 + 滑点警告 + 挂单一并撤销），无仓位直接写；flagLocked 时
@@ -925,11 +944,6 @@ const positions = computed(() =>
 // round_duration.get 的生效值（roundDurHintSec，下方空态文案同源），再缺
 // 省（读数未到）回落 900 保持现行为。orderExpired 是函数，逐单调用的当拍
 // 取值 —— venue 变化后下一拍即按新族长算，无需重绑。
-const identityDurSec = computed<number | null>(() => {
-  const d = venueRound.value?.durationSec
-  if (typeof d === 'number' && d > 0) return d
-  return roundDurHintSec.value
-})
 function orderExpired(o: OrderRow): boolean {
   const dur = identityDurSec.value ?? 900
   return o.roundSlot > 0 && Date.now() / 1000 >= (o.roundSlot + 1) * dur

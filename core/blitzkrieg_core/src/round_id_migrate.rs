@@ -258,9 +258,26 @@ fn backup_path(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// A per-call unique temp name beside `path`.
+///
+/// The suffix used to be a fixed `TMP_SUFFIX`, which made two concurrent
+/// migrations of the same ledger write the same temp file: the first `rename`
+/// moved it away and the second failed with `write <dest>: No such file or
+/// directory`. That is not a hypothetical — `CoreConfig::default()` carries
+/// cwd-relative ledger paths, so every test that boots a default core shares
+/// one physical file, and the parallel lib suite hit the collision (#138).
+/// pid + a process-wide counter keeps each writer's temp its own, so a
+/// concurrent second pass either wins the rename or fails the overwrite
+/// check, never a phantom ENOENT.
 fn tmp_path(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
     let mut s = path.as_os_str().to_os_string();
-    s.push(TMP_SUFFIX);
+    s.push(format!(
+        "{TMP_SUFFIX}-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
     PathBuf::from(s)
 }
 
@@ -406,6 +423,76 @@ mod tests {
             body,
             "original backup must stay the pre-migration bytes"
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #138: two concurrent migrations of the SAME ledger must never trip over
+    /// each other's temp file.
+    ///
+    /// The temp name used to be deterministic (`<ledger>.tmp-venue-round-id`),
+    /// so writer B could `rename` after writer A had already moved that temp
+    /// away and fail with `write <dest>: No such file or directory`. This pins
+    /// the fix at the level the bug lived: distinct temp names, so both writers
+    /// either succeed or fail the *content* check — never a phantom ENOENT on
+    /// a name they both own.
+    #[test]
+    fn concurrent_migrations_of_one_ledger_do_not_collide_on_the_temp_file() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let dir = tmp_dir();
+        let path = dir.join("orders.jsonl");
+        // Legacy rows the migration will rewrite on both passes.
+        let mut body = String::new();
+        for i in 0..200 {
+            body.push_str(&format!(
+                "{{\"id\":\"o{i}\",\"roundSlot\":{},\"roundDurationSec\":300,\"size\":\"3\"}}\n",
+                5_984_100 + i
+            ));
+        }
+        fs::write(&path, &body).unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let path = path.clone();
+                thread::spawn(move || {
+                    // Line both writers up so their write windows overlap.
+                    barrier.wait();
+                    migrate_jsonl_file(&path)
+                })
+            })
+            .collect();
+
+        for h in handles {
+            let r = h
+                .join()
+                .expect("a migration thread panicked; the collision must be a Result, not a panic");
+            let r = r.unwrap_or_else(|e| {
+                panic!(
+                    "concurrent migration failed: {e} — a shared temp name is the \
+                     deterministic-tmp-file bug (#138) coming back"
+                )
+            });
+            assert!(
+                r.fingerprints_match(),
+                "money must stay byte-identical even under concurrency"
+            );
+        }
+
+        // The ledger is left in the migrated (idempotent) state, and the
+        // pre-migration bytes are still recoverable from the backup.
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(after.contains("\"roundSlot\":1795230000"), "{after}");
+        assert!(backup_path(&path).is_file());
+        // No writer may leave its temp behind.
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-venue-round-id"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files survived: {leftovers:?}");
         fs::remove_dir_all(&dir).ok();
     }
 

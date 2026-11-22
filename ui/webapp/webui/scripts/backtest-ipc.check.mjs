@@ -87,11 +87,26 @@ check('src/ carries no file-read surface', () => {
 check('the backtest page reaches everything through the backtest.* proxy', () => {
   const page = srcFiles.find((f) => f.path.endsWith('pages/BacktestPage.vue'))
   assert.ok(page, 'BacktestPage.vue missing')
-  // All four verbs of the flow, each an api.* call — the page has no other
-  // data source.
-  for (const fn of ['backtestOnchainList', 'backtestOnchainPull', 'backtestRun', 'backtestStatus', 'backtestResult', 'backtestExport']) {
-    assert.ok(page.src.includes(`api.${fn}`), `page does not call api.${fn}`)
+  // All six verbs of the flow, each an api.* call. #129 moved the STATUS
+  // polling timer out of the page and into `stores/backtest-jobs.ts`, so the
+  // red line is "the frontend reaches the kernel only through these six
+  // proxy calls", not "these six strings live in this one file". The page
+  // still owns the user-triggered verbs; the store owns the status cadence.
+  // Widened to the semantic claim on purpose — a page that fetched the
+  // kernel any other way would still fail (the call would have to be one of
+  // these six names, and `FS_PATTERNS` above already bans local-file access).
+  const store = srcFiles.find((f) => f.path.endsWith('stores/backtest-jobs.ts'))
+  assert.ok(store, 'stores/backtest-jobs.ts missing')
+  for (const fn of ['backtestOnchainList', 'backtestOnchainPull', 'backtestRun', 'backtestResult', 'backtestExport']) {
+    assert.ok(
+      page.src.includes(`api.${fn}`) || store.src.includes(`api.${fn}`),
+      `neither page nor store calls api.${fn}`,
+    )
   }
+  // The status verb explicitly: it moved to the store in #129 and the page
+  // must NOT have kept a second copy.
+  assert.ok(store.src.includes('api.backtestStatus'), 'store does not call api.backtestStatus')
+  assert.ok(!page.src.includes('api.backtestStatus'), 'page kept its own api.backtestStatus call — status cadence belongs to the store')
 })
 
 console.log('red line 2 — the 「回放复盘」 rename is total')

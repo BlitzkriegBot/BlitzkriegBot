@@ -6,12 +6,14 @@
  * 网关是纯代理、内核是唯一执行者。三张图：资金曲线 / 平仓原因分布 / 入场价格带分布。
  * 报告持久化在 localStorage，刷新不丢；可导出 JSON 或清除。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import type { EChartsOption } from 'echarts'
 import { Download, HardDriveDownload, Play, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { api, ApiError } from '@/api/client'
-import type { BacktestDataset, BacktestJobStatusDoc, BacktestResultDoc } from '@/api/client'
+import type { BacktestDataset } from '@/api/client'
 import { usePanelStore } from '@/stores/panel'
+import { useBacktestJobStore } from '@/stores/backtest-jobs'
 import { backtestLabel, loadBacktest, saveBacktest, clearBacktest } from '@/composables/backtestStore'
 import type { BacktestReport } from '@/backtest'
 import { useChart, areaFade, palette, tooltipStyle, axisX, axisY } from '@/lib/chart'
@@ -88,10 +90,18 @@ const start = ref(isoDay(new Date(Date.now() - 7 * 86400_000)))
 const end = ref(isoDay(new Date()))
 const assetsRaw = ref('')
 const pulling = ref(false)
-const pullDocs = ref<BacktestJobStatusDoc[]>([])
-const pullsSettled = ref(false) // 全部落定后只刷新一次列表
+// Job state lives in the store (single-source rebuild): one timer, one copy,
+// survives page navigation. The page only reads it and starts jobs.
+const jobs = useBacktestJobStore()
+const {
+  pullDocs, btDoc, lastResult, lastBtId,
+  pullBusy, resultError,
+} = storeToRefs(jobs)
 
-const pullBusy = computed(() => pullDocs.value.some((d) => d.state === 'running'))
+// 任务已完成但结果信封没取回时如实说（不是「没有结果」）——与页面其它错误同一出口。
+watch(resultError, (m) => {
+  if (m) setErr(`结果取回失败：${m} — 任务已完成，稍后重试导出即可。`)
+})
 
 async function startPull(): Promise<void> {
   setErr(null)
@@ -110,21 +120,9 @@ async function startPull(): Promise<void> {
   }
   const assets = assetsRaw.value.trim() ? assetsRaw.value.split(/[\s,，、]+/).filter(Boolean) : []
   pulling.value = true
-  pullsSettled.value = false
   try {
     const { jobIds } = await api.backtestOnchainPull({ wallet: w, start: start.value, end: end.value, assets })
-    pullDocs.value = jobIds.map((jobId) => ({
-      jobId,
-      kind: 'pull',
-      state: 'running',
-      phase: 'queued',
-      detail: '已提交，等待内核受理…',
-      progress: 0,
-      startedAtMs: Date.now(),
-      finishedAtMs: null,
-      error: null,
-    }))
-    startPoll()
+    jobs.startPulls(jobIds)
   } catch (e) {
     setErr(`拉取没发出去：${failMsg(e)}`)
   } finally {
@@ -150,9 +148,6 @@ const slippageTicks = ref('1')
 const verifyLatencyMs = ref('286')
 const strategiesRaw = ref('')
 
-const btDoc = ref<BacktestJobStatusDoc | null>(null)
-const lastResult = ref<BacktestResultDoc | null>(null)
-const lastBtId = ref<string | null>(null)
 const canRun = computed(() => selected.value !== null && btDoc.value?.state !== 'running')
 
 async function runBacktest(): Promise<void> {
@@ -180,18 +175,7 @@ async function runBacktest(): Promise<void> {
       strategies,
     })
     lastBtId.value = jobId
-    btDoc.value = {
-      jobId,
-      kind: 'backtest',
-      state: 'running',
-      phase: 'replay',
-      detail: '已提交，引擎正在虚拟时钟里重放数据集…',
-      progress: 0,
-      startedAtMs: Date.now(),
-      finishedAtMs: null,
-      error: null,
-    }
-    startPoll()
+    jobs.startBacktest(jobId)
   } catch (e) {
     setErr(`回测没发出去：${failMsg(e)}`)
   }
@@ -204,55 +188,27 @@ function modeName(m: string): string {
 
 // ── 轮询：~1s 一次 backtest.status，直到任务落定 ────────────────────────────
 
-let timer: number | null = null
-function startPoll(): void {
-  if (timer === null) timer = window.setInterval(pollOnce, 1000)
-}
-function stopPoll(): void {
-  if (timer !== null) {
-    window.clearInterval(timer)
-    timer = null
-  }
-}
-onUnmounted(stopPoll)
+// ── 轮询：全部归 store（单一数据源）；页面只挂可见性、在落定时接一次结果 ──────
+//
+// 页面此前自己跑 1s setInterval，任务副本只活在组件里：切页即丢「进行中」，
+// 多入口还会各开一条定时器。现在定时器由 stores/backtest-jobs.ts 持有，
+// 只在有任务在跑且有人在看时存在；页面挂载/卸载只增减可见性计数。
 
-async function pollOnce(): Promise<void> {
-  for (const d of pullDocs.value) {
-    if (d.state !== 'running') continue
-    try {
-      Object.assign(d, await api.backtestStatus(d.jobId))
-    } catch {
-      /* 瞬时网络抖动 — 下一轮再试 */
-    }
-  }
-  if (pullDocs.value.length > 0 && !pullBusy.value && !pullsSettled.value) {
-    pullsSettled.value = true
-    await refreshDatasets()
-  }
+onMounted(() => {
+  jobs.setOnPullsSettled(refreshDatasets)
+  jobs.attach()
+})
+onUnmounted(() => {
+  jobs.setOnPullsSettled(null)
+  jobs.detach()
+})
 
-  const b = btDoc.value
-  if (b?.state === 'running') {
-    try {
-      const nd = await api.backtestStatus(b.jobId)
-      btDoc.value = nd
-      if (nd.state === 'done') await collectResult(nd.jobId)
-    } catch {
-      /* 继续轮询 */
-    }
-  }
-  if (!pullBusy.value && btDoc.value?.state !== 'running') stopPoll()
-}
-
-async function collectResult(id: string): Promise<void> {
-  try {
-    const res = await api.backtestResult(id)
-    lastResult.value = res
-    report.value = res.report
-    saveBacktest(res.report)
-  } catch (e) {
-    setErr(`结果取回失败：${failMsg(e)} — 任务已完成，稍后重试导出即可。`)
-  }
-}
+/** store 取回已完成任务的结果后，页面负责持久化与展示（写一次，不复制读数）。 */
+watch(lastResult, (res) => {
+  if (!res) return
+  report.value = res.report
+  saveBacktest(res.report)
+})
 
 // ── 导出 / 清除 ─────────────────────────────────────────────────────────────
 

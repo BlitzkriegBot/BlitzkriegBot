@@ -3,5 +3,3 @@
 # This file is debt, not a licence. New hits fail the gate; retire a line when the page is converted.
 src/components/charts/KlineChart.vue:111:poll-kernel
 src/pages/BacktestPage.vue:209:poll-kernel
-src/pages/HftPage.vue:74:poll-kernel
-src/pages/HftPage.vue:862:api-snapshot

@@ -255,7 +255,7 @@ check('store 快照写回按世代 + 身份门控：旧账户的迟到快照不�
     /requestId !== accountsSeq \|\| epoch !== displayEpoch/,
     '账户簿镜像写回未按序号/世代门控',
   )
-  const fn = store.match(/async function refresh\(\): Promise<void> \{[\s\S]*?\n  \}/)
+  const fn = store.match(/async function refresh\(\): Promise<(?:void|boolean)> \{[\s\S]*?\n  \}/)
   assert.ok(fn, 'store 缺 refresh')
   // The request id + captured identity (no volatile fields in the key).
   assert.match(fn[0], /const requestId = \+\+refreshSeq/, '快照批次缺单调请求序号')

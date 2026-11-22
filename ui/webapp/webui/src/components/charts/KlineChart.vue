@@ -4,9 +4,10 @@
  * gateway's thin proxy `GET /api/kline-history`).
  *
  * The panel has no WebSocket: the whole data channel is poll-redraw-poll on
- * the same 2s tick the HFT tab uses for snapshots, honouring the same
- * persisted fastPoll preference (on = 2 s, off = 15 s at the orderbook's pace);
- * the chart keeps ticking on either setting instead of lying about liveness.
+ * the shared cadence beat the market page uses for snapshots, honouring the
+ * same persisted fastPoll preference (on = 2 s, off = 15 s at the orderbook's
+ * pace). One timer serves both; the chart keeps ticking on either setting
+ * instead of lying about liveness.
  * The LAST bar is the GROWING one
  * (`isClosed: false`) — it is drawn semi-transparent so "still forming" reads
  * at a glance; closed bars never change under it (§10.3: data-driven close,
@@ -17,13 +18,12 @@
  * semantics, not rise/fall, so the mapping is deliberately crossed here.
  */
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { useIntervalFn } from '@vueuse/core'
 import type { EChartsOption } from 'echarts'
 import { useChart, palette, tooltipStyle } from '@/lib/chart'
 import { clockTime, dateTime, compact } from '@/lib/format'
 import { api, KLINE_INTERVALS, type KlineBar, type KlineIntervalWire } from '@/api/client'
-import { useSettingsStore } from '@/stores/settings'
 import { usePanelStore } from '@/stores/panel'
+import { useCadenceStore } from '@/stores/cadence'
 
 const props = withDefaults(defineProps<{
   symbol: string
@@ -31,16 +31,13 @@ const props = withDefaults(defineProps<{
   defaultInterval?: KlineIntervalWire
 }>(), { height: 260, defaultInterval: 'min1' })
 
-const settings = useSettingsStore()
 const store = usePanelStore()
+const cadence = useCadenceStore()
 const el = ref<HTMLDivElement | null>(null)
 const interval = ref<KlineIntervalWire>(props.defaultInterval)
 const bars = ref<KlineBar[]>([])
 const loaded = ref(false)
 const failed = ref<string | null>(null)
-
-// ── 快轮：fastPoll 開時 2s 刷新，關閉時 15s 刷新（與盤口節奏一致）
-const pollInterval = computed(() => (settings.fastPoll ? 2_000 : 15_000))
 
 /**
  * issue 781：请求序号 + 请求时刻的身份捕获。切换账户/venue/symbol 后，
@@ -107,11 +104,13 @@ watch(
   { immediate: true },
 )
 
-// 2s poll（fastPoll 開）或 15s poll（fastPoll 關），與盤口節奏保持一致
-const { pause: stopPoll } = useIntervalFn(() => {
+// Shared cadence: 2s when fastPoll is on, 15s when off, same beat as the
+// market-page snapshot refresh. No second timer.
+function onCadenceTick(): void {
   void refresh()
-}, pollInterval)
-onUnmounted(() => { stopPoll() })
+}
+cadence.startTickWatch(onCadenceTick)
+onUnmounted(() => { cadence.stopTickWatch(onCadenceTick) })
 
 /** Sub-minute and 1m bars read as clock time; wider spans need the date. */
 function fmtBarTime(ms: number, iv: string): string {

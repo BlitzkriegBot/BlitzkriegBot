@@ -482,8 +482,8 @@ export const usePanelStore = defineStore('panel', () => {
     await refreshAccounts()
   }
 
-  async function refresh(): Promise<void> {
-    if (!hasToken()) return
+  async function refresh(): Promise<boolean> {
+    if (!hasToken()) return false
     // issue 781：每拍轮询有单调序号 + 请求时刻的 (display 账户, venue) 身份
     // 捕获。15s / 2s 等多个计时器并发时，只有「最新一拍且身份仍匹配」的
     // 响应可以写回 —— 切户/切所后迟到的旧账户快照静默丢弃，不再覆盖新
@@ -503,6 +503,7 @@ export const usePanelStore = defineStore('panel', () => {
       (!identityKnown || identityAccount === displayAccount.value) &&
       (!identityKnown || identityVenue === activeAccountVenue.value)
     loading.value = true
+    let snapOk = false
     try {
       // PR H: the account-scoped aggregates ride their own proxy routes
       // beside the snapshot. `acct` absent = 全局面板 —— 两条读数置空，页面
@@ -523,6 +524,7 @@ export const usePanelStore = defineStore('panel', () => {
       const current = isCurrent()
       if (snap.status === 'fulfilled' && current) {
         snapshot.value = snap.value
+        snapOk = true
         // issue 561: 快照顶层的 displayAccount/displayVenue 是内核的账户
         // 事实 —— 轮询每拍镜像（乐观写在两拍之间由 setDisplayAccount 维
         // 持，快照到达后以内核读数为准）。缺字段（老内核）保留现值。
@@ -557,8 +559,10 @@ export const usePanelStore = defineStore('panel', () => {
         lastUpdated.value = Date.now()
       }
       void acctList
+      return snapOk
     } catch (e) {
       if (isCurrent()) error.value = e instanceof Error ? e.message : String(e)
+      return false
     } finally {
       loading.value = false
     }

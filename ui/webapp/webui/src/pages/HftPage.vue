@@ -19,7 +19,7 @@ import { Activity, Play, Square, Bell, BellOff, X, Clock, Filter, Info, Timer, R
 import { api, marketTypeLabel, type MarketPrice, type Position, type TradeRow, type AssetBook, type OrderRow, type NetCheckDoc } from '@/api/client'
 import { accountFrozen, lastErrorBanner } from '@/lib/safety'
 import { usePanelStore } from '@/stores/panel'
-import { useSettingsStore } from '@/stores/settings'
+import { useCadenceStore } from '@/stores/cadence'
 import { useTheme } from '@/lib/theme'
 import {
   num, money, signedMoney, winRateOf, winRateValue, pct, signedPct, cents, mmss, duration,
@@ -53,7 +53,6 @@ import JournalCard from '@/components/hft/JournalCard.vue'
 import TradesTables from '@/components/hft/TradesTables.vue'
 
 const store = usePanelStore()
-const settings = useSettingsStore()
 const { sound, toggleSound } = useTheme()
 const snap = computed(() => store.snapshot)
 /** Market-section SSOT: one kernel-published object per account. */
@@ -69,12 +68,12 @@ const lastHealRoundId = ref<number | undefined>(undefined)
 // 任何 history/曲线/统计视图在它非空时都不能把空行读成「没有成交」。
 const tradesDegrade = computed(() => snap.value?.tradesDegrade ?? null)
 
-// Fast tick: 2s snapshot poll (HFT pacing), faster than the shell's 15s.
+// Fast tick: shared 2s snapshot cadence (HFT pacing), faster than the shell's 15s.
 // Pacing is a persisted preference (E8-d 设置); off turns this tab watch-only.
-const { pause: stopFast } = useIntervalFn(() => {
-  if (settings.fastPoll) void store.refresh()
-}, 2_000)
-onUnmounted(() => { stopFast() })
+// The timer lives in the cadence store so the K-line chart can share the beat.
+const cadence = useCadenceStore()
+cadence.startSnapshotWatch()
+onUnmounted(() => { cadence.stopSnapshotWatch() })
 
 // ── alert sounds ─────────────────────────────────────────────────────────────
 // issue 1199 D10：挂载点已提升到 App.vue 壳层（本页无 KeepAlive，切页即卸
@@ -859,7 +858,15 @@ const hftRoundConfirmAccount = ref('default')
 async function confirmThenWrite(kind: 'set' | 'reset'): Promise<void> {
   const accountId = store.activeAccount ?? 'default'
   try {
-    const snap = await api.snapshot()
+    // Fresh read through the store (single source). Fail closed if this
+    // refresh does not land a snapshot — never skip the flatten confirm
+    // because a stale empty copy said there were no positions.
+    const ok = await store.refresh()
+    const snap = store.snapshot
+    if (!ok || !snap) {
+      roundSwitch.err.value = store.error || '快照不可用'
+      return
+    }
     const n = (snap.positions ?? []).filter(
       (p: Position) => p.accountId === accountId && (p.shares ?? 0) > 0,
     ).length

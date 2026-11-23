@@ -12,7 +12,7 @@
 import { computed, ref } from 'vue'
 import type { EChartsOption } from 'echarts'
 import { useChart, areaFade, palette, tooltipStyle } from '@/lib/chart'
-import { cents } from '@/lib/format'
+import { cents, finiteNumber } from '@/lib/format'
 import type { BookLevel, BookSide } from '@/api/client'
 
 const props = withDefaults(defineProps<{ side: BookSide | null; height?: number }>(), {
@@ -69,7 +69,8 @@ const option = computed<EChartsOption>(() => {
         const arr = params as { seriesName: string; value: [number, number] }[]
         const pt = arr?.[0]?.value
         if (!pt) return ''
-        return `${cents(pt[0])}<br/><b>${pt[1].toFixed(1)}</b> 份`
+        const size = finiteNumber(pt[1])
+        return `${cents(pt[0])}<br/><b>${size === null ? '—' : size.toFixed(1)}</b> 份`
       },
     },
     xAxis: {

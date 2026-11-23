@@ -10,15 +10,22 @@
  * greppable (hft-venue-switch 门禁扫的就是这些消费点).
  */
 import { TrendingUp, TrendingDown } from 'lucide-vue-next'
-import type { MarketPrice } from '@/api/client'
+import type { AssetBook, MarketPrice } from '@/api/client'
 import Card from '@/components/ui/card/Card.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
 import EmptyState from '@/components/ui/empty/EmptyState.vue'
 import RollingNumber from '@/components/ui/roll/RollingNumber.vue'
-import { cents } from '@/lib/format'
+import {
+  binarySpreadCents,
+  cents,
+  finiteNumber,
+  formatSpreadCents,
+  oneSidedQuoteText,
+  NOT_A_TRADE_PRICE_LABEL,
+} from '@/lib/format'
 import { priceCardId } from '@/lib/round-id'
 
-defineProps<{
+const props = defineProps<{
   /** Gate-cleared, venue-filtered rows (empty while the Loading gate is open). */
   visiblePrices: MarketPrice[]
   /** 未绑定态：该账户没绑交易所 —— 不显示任何行情数据。 */
@@ -35,10 +42,29 @@ defineProps<{
   venueRoundUnsupported: boolean
   /** 空态文案里的当前轮次档位名（5m/15m/1h/…）。 */
   roundDurLabel: string
+  /**
+   * Same-tick books as the price cards (page-filtered visibleBooks).
+   * Used only to surface a one-sided quote when the mid is unreliable.
+   */
+  visibleBooks?: AssetBook[]
 }>()
 
-function spreadCents(m: MarketPrice): number {
-  return Math.max(0, m.up + m.down - 1) * 100
+function bookFor(m: MarketPrice): AssetBook | undefined {
+  const books = props.visibleBooks ?? []
+  return books.find((b) =>
+    b.asset === m.asset
+    && (b.durationSec === m.durationSec
+      || (b.durationSec == null && m.durationSec == null)),
+  )
+}
+
+function spreadBadgeText(m: MarketPrice): string {
+  return formatSpreadCents(binarySpreadCents(m.up, m.down))
+}
+
+function spreadIsTight(m: MarketPrice): boolean {
+  const s = binarySpreadCents(m.up, m.down)
+  return s !== null && s <= 1
 }
 
 function snapshotTitle(fetchedAtMs?: number): string {
@@ -52,18 +78,25 @@ function quoteUnreliable(m: MarketPrice): boolean {
   return m.source === 'unreliable'
 }
 
+function quoteLine(m: MarketPrice, side: 'up' | 'down'): string {
+  const book = bookFor(m)
+  const s = book ? (side === 'up' ? book.up : book.down) : null
+  return s ? oneSidedQuoteText(s.bestBid, s.bestAsk) : '—'
+}
+
 function priceText(m: MarketPrice, side: 'up' | 'down'): string {
-  if (quoteUnreliable(m)) return '—'
-  return Number(side === 'up' ? m.up : m.down).toFixed(3)
+  if (quoteUnreliable(m)) return quoteLine(m, side)
+  const n = finiteNumber(side === 'up' ? m.up : m.down)
+  return n === null ? '—' : n.toFixed(3)
 }
 
 function centsText(m: MarketPrice, side: 'up' | 'down'): string {
-  if (quoteUnreliable(m)) return '—'
+  if (quoteUnreliable(m)) return NOT_A_TRADE_PRICE_LABEL
   return cents(side === 'up' ? m.up : m.down)
 }
 
 function unreliableTitle(): string {
-  return '盘口价差过宽，中间价不可用作价（常见于临近到期的占位盘口），不会当作实时价显示'
+  return '盘口价差过宽，中间价不可用作价（常见于临近到期的占位盘口），不会当作实时价显示。单边报价来自盘口买一/卖一，不能作为成交价。'
 }
 </script>
 
@@ -107,8 +140,8 @@ function unreliableTitle(): string {
             :title="unreliableTitle()"
           >不可用作价</span>
         </span>
-        <Badge v-if="!quoteUnreliable(m)" class="figures" :variant="spreadCents(m) <= 1 ? 'up' : 'gold'">
-          {{ spreadCents(m).toFixed(1) }}¢
+        <Badge v-if="!quoteUnreliable(m)" class="figures" :variant="spreadIsTight(m) ? 'up' : 'gold'">
+          {{ spreadBadgeText(m) }}
         </Badge>
       </div>
       <div class="mt-3 grid grid-cols-2 gap-3">
@@ -117,12 +150,10 @@ function unreliableTitle(): string {
             <TrendingUp class="size-3" />UP
           </div>
           <div class="stat-num mt-1 text-[21px] leading-none text-up">
-            <RollingNumber v-if="!quoteUnreliable(m)" :value="priceText(m, 'up')" />
-            <span v-else>—</span>
+            <RollingNumber :value="priceText(m, 'up')" />
           </div>
           <div class="mt-0.5 text-[10px] text-faint-fg num">
-            <RollingNumber v-if="!quoteUnreliable(m)" :value="centsText(m, 'up')" />
-            <span v-else>—</span>
+            <RollingNumber :value="centsText(m, 'up')" />
           </div>
         </div>
         <div class="rounded-md border border-down/25 bg-down/8 px-2.5 py-2">
@@ -130,12 +161,10 @@ function unreliableTitle(): string {
             <TrendingDown class="size-3" />DOWN
           </div>
           <div class="stat-num mt-1 text-[21px] leading-none text-down">
-            <RollingNumber v-if="!quoteUnreliable(m)" :value="priceText(m, 'down')" />
-            <span v-else>—</span>
+            <RollingNumber :value="priceText(m, 'down')" />
           </div>
           <div class="mt-0.5 text-[10px] text-faint-fg num">
-            <RollingNumber v-if="!quoteUnreliable(m)" :value="centsText(m, 'down')" />
-            <span v-else>—</span>
+            <RollingNumber :value="centsText(m, 'down')" />
           </div>
         </div>
       </div>

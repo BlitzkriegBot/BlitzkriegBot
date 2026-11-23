@@ -371,6 +371,7 @@ fn the_snapshot_carries_the_venue_tag_on_quote_rows() {
                     down: 0.39,
                     venue: "polymarket".into(),
                     duration_sec: 900,
+                    source: String::new(),
                 },
                 MarketPriceView {
                     asset: "BTC".into(),
@@ -378,6 +379,7 @@ fn the_snapshot_carries_the_venue_tag_on_quote_rows() {
                     down: 0.40,
                     venue: "kalshi".into(),
                     duration_sec: 3600,
+                    source: String::new(),
                 },
             ],
             // #550（症状②）：the per-venue round clock rows travel the

@@ -25,6 +25,10 @@ pub struct MarketPriceView {
     pub asset: String,
     pub up: Decimal,
     pub down: Decimal,
+    /// `unreliable` when the book exists but has no reliable mid (one-sided or wide stub quote);
+    /// empty when live/snapshot fallback applies.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
 }
 
 /// 盘口深度 view (E8-c): one round asset with both token books, as the UI depth
@@ -144,4 +148,33 @@ pub struct BookLevelView {
 
 pub(crate) fn is_zero_i64(v: &i64) -> bool {
     *v == 0
+}
+
+/// Compute display `(up, down, unreliable)` prices from two token books (L1–L6).
+/// When a book exists without a `reliable_mid()` (e.g. one-sided late book or
+/// wide stub quote), returns `0` for that side and marks `unreliable = true`
+/// without falling back to stale market discovery metadata. Also marks
+/// `unreliable = true` if either resulting price is `<= 0`.
+pub(crate) fn reliable_pair_prices(
+    up_book: Option<&crate::model::OrderbookSnapshot>,
+    down_book: Option<&crate::model::OrderbookSnapshot>,
+    fallback_up: Decimal,
+    fallback_down: Decimal,
+) -> (Decimal, Decimal, bool) {
+    let up_mid = up_book.and_then(|b| b.reliable_mid());
+    let down_mid = down_book.and_then(|b| b.reliable_mid());
+    let up_unusable = up_book.is_some() && up_mid.is_none();
+    let down_unusable = down_book.is_some() && down_mid.is_none();
+    let up = up_mid.unwrap_or(if up_unusable {
+        Decimal::ZERO
+    } else {
+        fallback_up
+    });
+    let down = down_mid.unwrap_or(if down_unusable {
+        Decimal::ZERO
+    } else {
+        fallback_down
+    });
+    let unreliable = up_unusable || down_unusable || up <= Decimal::ZERO || down <= Decimal::ZERO;
+    (up, down, unreliable)
 }

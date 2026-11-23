@@ -118,3 +118,73 @@ fn round_view_prices_dedupe_by_asset() {
     let btc = &view.market_prices[0];
     assert_eq!(btc.up, dec!(0.60), "first BTC market's price is kept");
 }
+
+#[test]
+fn round_view_marks_one_sided_and_wide_books_unreliable_without_stale_fallback() {
+    let cfg = CoreConfig {
+        dry_seed_balance: dec!(1000),
+        round_duration_sec: 300,
+        ..Default::default()
+    };
+    let mut c = Core::new(cfg);
+    c.enable_engine(crate::engine::Engine::new(
+        crate::engine::EngineConfig::default(),
+    ));
+    let now = 1_000_000_000i64;
+    let slot = now / 1000 / 300;
+    let end = (slot + 1) * 300 * 1000;
+    c.engine_on_data(
+        crate::engine::DataEvent::RoundMarkets {
+            markets: vec![crate::model::CryptoMarket {
+                asset: "BTC".into(),
+                condition_id: "c-btc".into(),
+                question_id: "q-btc".into(),
+                up_token_id: "tok-up".into(),
+                down_token_id: "tok-down".into(),
+                up_price: dec!(0.60),
+                down_price: dec!(0.40),
+                expires_at_ms: end,
+                round_slot: slot,
+                round_duration_sec: 300,
+                archive_verdict: false,
+                venue: "polymarket".into(),
+                neg_risk: false,
+                question: "BTC 5m".into(),
+            }],
+            now_ms: now,
+        },
+        now,
+    );
+    // One-sided UP book (bid 0.999 / no ask -> mid_price=0) and wide stub DOWN book (0.01/1.00 -> mid=0.505).
+    c.engine_on_data(
+        crate::engine::DataEvent::Book {
+            token_id: "tok-up".into(),
+            bids: vec![(dec!(0.999), dec!(100))],
+            asks: vec![],
+            now_ms: now,
+        },
+        now,
+    );
+    c.engine_on_data(
+        crate::engine::DataEvent::Book {
+            token_id: "tok-down".into(),
+            bids: vec![(dec!(0.01), dec!(100))],
+            asks: vec![(dec!(1.00), dec!(100))],
+            now_ms: now,
+        },
+        now,
+    );
+    let view = c.round_view().expect("round view");
+    let btc = &view.market_prices[0];
+    assert_eq!(
+        btc.up,
+        dec!(0),
+        "one-sided book must not fall back to stale discovery price"
+    );
+    assert_eq!(
+        btc.down,
+        dec!(0),
+        "wide stub book must not leak 0.505 as a mid"
+    );
+    assert_eq!(btc.source, "unreliable");
+}

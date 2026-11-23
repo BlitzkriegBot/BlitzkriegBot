@@ -31,9 +31,11 @@
  * 优先于 tab 归属。
  */
 import { computed, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { AlertTriangle, ChevronDown, Link2, Pencil, Plus, Search, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-vue-next'
-import { api, type StrategyStatsRow, type StrategyParamsReadoutDoc } from '@/api/client'
+import { api, type StrategyStatsRow } from '@/api/client'
 import { usePanelStore } from '@/stores/panel'
+import { useStrategyParamsStore } from '@/stores/strategy-params'
 import { num, signedMoney, pct } from '@/lib/format'
 import { refusalProfile, refusalTotals, REFUSAL_NOTE } from '@/lib/rejections'
 import Card from '@/components/ui/card/Card.vue'
@@ -260,56 +262,9 @@ function isLua(r: StrategyStatsRow): boolean {
 // ── tunables 编辑卡（issue 481 G3）：详情行内的声明域编辑 ────────────────────
 // `strategy.params.get` 读声明域与生效值；`strategy.params.set` 原子写入
 // （内核按声明域校验，plan-first 一个非法整体拒）。读数刷新。
-const paramsCache = ref<Record<string, StrategyParamsReadoutDoc>>({})
-// Draft 键是 `strategy::knob` 的拍平表：v-model 需要普通索引访问做赋值目标
-// （可选链 `draft[s]?.[k]` 编译成非法赋值目标，esbuild 拒绝）。
-const paramsDraft = ref<Record<string, string>>({})
-const paramsBusy = ref<string | null>(null)
-
-/** One strategy's draft slice, keyed by knob. */
-function draftOf(name: string): Record<string, string> {
-  const prefix = `${name}::`
-  const out: Record<string, string> = {}
-  for (const k of Object.keys(paramsDraft.value)) {
-    if (k.startsWith(prefix)) out[k.slice(prefix.length)] = paramsDraft.value[k]
-  }
-  return out
-}
-
-async function loadParams(name: string): Promise<void> {
-  try {
-    const doc = await api.strategyParams(name)
-    paramsCache.value = { ...paramsCache.value, [name]: doc }
-    const fresh: Record<string, string> = {}
-    for (const t of doc.tunables) fresh[`${name}::${t.name}`] = t.value
-    paramsDraft.value = { ...paramsDraft.value, ...fresh }
-  } catch {
-    paramsCache.value = { ...paramsCache.value, [name]: { name, found: false, tunables: [], evolvable: false, paramsAttached: false, note: '读取失败' } }
-  }
-}
-
-async function saveParams(name: string): Promise<void> {
-  const draft = draftOf(name)
-  const cache = paramsCache.value[name]
-  if (!cache) return
-  // 只发改动项：与声明值相同或清空的旋钮不进补丁。
-  const patch: Record<string, string> = {}
-  for (const t of cache.tunables) {
-    const v = (draft[t.name] ?? '').trim()
-    if (v && v !== t.value) patch[t.name] = v
-  }
-  if (!Object.keys(patch).length) return
-  paramsBusy.value = name
-  try {
-    const res = await api.strategyParamsSet({ name, params: patch })
-    await loadParams(name)
-  } catch (e) {
-    // 内核拒绝（域外/未声明/非十进制）——如实转述，值不动。不弹任何卡片。
-    console.error(`参数保存失败 ${name}:`, e instanceof Error ? e.message : String(e))
-  } finally {
-    paramsBusy.value = null
-  }
-}
+const strategyParams = useStrategyParamsStore()
+const { paramsCache, paramsDraft, paramsBusy, arbConfigured, arbLegAccounts } = storeToRefs(strategyParams)
+const { loadParams, saveParams, loadArbConfig } = strategyParams
 
 /** 详情行展开时拉一次 tunables（每名只拉一次；写回后刷新）。 */
 function onExpand(name: string): void {
@@ -342,8 +297,6 @@ const singleRows = computed<StrategyStatsRow[]>(() => rows.value.filter((r) => r
  * 可信账户源。读失败 / 老内核（error 在场）= 无读数 —— 照实降级为只有单所
  * tab，不猜。
  */
-const arbConfigured = ref(false)
-const arbLegAccounts = ref<string[]>([])
 const arbTabVisible = computed(() => {
   const acct = store.displayAccount
   if (!arbConfigured.value || !acct) return false
@@ -354,19 +307,6 @@ const arbTabVisible = computed(() => {
  * 重读 arb 配置。issue 781：只在挂载时读一次会让「本页停留期间新建的配置」直到
  * 离开再回来才出现 —— 挂载、切到套利段、创建/保存提交后都走这里。
  */
-async function loadArbConfig(): Promise<void> {
-  try {
-    const doc = await api.arbConfigGet()
-    if (doc.error) return // 老内核/读失败：无读数即无套利 tab（不猜）
-    arbConfigured.value = !!doc.configured
-    arbLegAccounts.value = [doc.legAAccount, doc.legBAccount].filter(
-      (x): x is string => typeof x === 'string' && !!x,
-    )
-  } catch {
-    // 网络失败同上：单所 tab 照常，套利 tab 不渲染
-  }
-}
-
 // 段消失时把选中 tab 拨回单所：账户从腿账户切走（或配置被解除）后
 // `arb` 不再是 segments 里的一员，v-model 悬空会让 SegmentedControl
 // 失去高亮匹配段（变黑），行过滤也会按悬空的 'arb' 继续裁行。

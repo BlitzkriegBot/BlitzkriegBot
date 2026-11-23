@@ -21,6 +21,7 @@
  * UI 从不碰文件系统 —— 落盘是内核的事，UI 只拿回执。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import type { Component } from 'vue'
 import { VueFlow, Handle, Panel, Position, MarkerType, useVueFlow } from '@vue-flow/core'
 import type { Edge as FlowEdge, Connection } from '@vue-flow/core'
@@ -37,6 +38,7 @@ import {
 import type { BlueprintDoc, BlueprintNodeType, BpNode, BpEdge, NodeFamily } from '@/lib/blueprint'
 import { highlightLua } from '@/lib/lua-highlight'
 import { usePanelStore } from '@/stores/panel'
+import { useBlueprintDraftStore } from '@/stores/blueprint-draft'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
 import Button from '@/components/ui/button/Button.vue'
@@ -287,44 +289,23 @@ function removeInMember(idx: number): void {
 
 // ── 编译（去抖） ───────────────────────────────────────────────────────────
 
-const compiling = ref(false)
-const compileError = ref<string | null>(null)
-const luaSource = ref<string | null>(null)
+const bpDraft = useBlueprintDraftStore()
+const { compileError, luaSource, compiling } = storeToRefs(bpDraft)
 const luaLines = computed(() => (luaSource.value ? highlightLua(luaSource.value) : []))
 const compileOk = computed(() => luaSource.value !== null && !compileError.value)
 
-let compileTimer: ReturnType<typeof setTimeout> | null = null
-
 function scheduleCompile(): void {
-  if (compileTimer) clearTimeout(compileTimer)
-  compileTimer = setTimeout(() => { void doCompile() }, 350)
+  bpDraft.scheduleCompile(blueprintJson.value)
 }
 onBeforeUnmount(() => {
-  if (compileTimer) clearTimeout(compileTimer)
+  bpDraft.cancelPending()
 })
 
 /** 当前画布 → 蓝图 JSON 文档（v1 wire 形，字段/枚举全部镜像编译链）。 */
 const blueprintJson = computed(() => toBlueprintDoc(strategyName.value, bpNodes.value, bpEdges.value))
 
 async function doCompile(): Promise<void> {
-  if (compileTimer) { clearTimeout(compileTimer); compileTimer = null }
-  compiling.value = true
-  try {
-    const doc = await api.blueprintCompile(blueprintJson.value)
-    if (doc.error) {
-      // 内联渲染、含节点 id 的拒绝消息 —— 反向验收的可见性就在这一行。
-      compileError.value = doc.error
-      luaSource.value = null
-    } else {
-      compileError.value = null
-      luaSource.value = doc.lua
-    }
-  } catch (e) {
-    compileError.value = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e)
-    luaSource.value = null
-  } finally {
-    compiling.value = false
-  }
+  await bpDraft.doCompile(blueprintJson.value)
 }
 
 // ── 保存（blueprint.save）与导出 ───────────────────────────────────────────

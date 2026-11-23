@@ -51,6 +51,7 @@ console.log('策略表现 tab 化 — the strategy-tabs contract')
 
 const page = read('src', 'pages', 'Strategies.vue')
 const client = read('src', 'api', 'snapshot.ts')
+const paramsStore = read('src', 'stores', 'strategy-params.ts')
 
 // ── 1. 双段 SegmentedControl ────────────────────────────────────────────────
 check('策略表现卡内有 SegmentedControl 双段（单所 / 套利）', () => {
@@ -69,8 +70,11 @@ check('两段 badge = 各自的行数', () => {
 
 // ── 2. 可见性门 ─────────────────────────────────────────────────────────────
 check('arbConfigGet 读数收敛到 loadArbConfig（挂载 / 段激活 / 提交后重读）', () => {
-  assert.match(page, /api\s*\.\s*arbConfigGet\(\)/, '页面缺 arbConfigGet 读数 —— 可见性门无从判定')
-  assert.match(page, /async function loadArbConfig\(\)/, '缺 loadArbConfig —— 重读路径必须收敛为一个读数口')
+  // issue 129: the fetch lives in the strategy-params store; the page still
+  // owns the three reread triggers (mount, arb-tab activation, commit).
+  assert.ok(page.includes('useStrategyParamsStore'), '策略页未使用 strategy-params store')
+  assert.match(paramsStore, /api\s*\.\s*arbConfigGet\(\)/, 'store 缺 arbConfigGet 读数 —— 可见性门无从判定')
+  assert.match(paramsStore, /async function loadArbConfig\(\)/, '缺 loadArbConfig —— 重读路径必须收敛为一个读数口')
   assert.match(page, /onMounted\(\(\) => \{\s*void loadArbConfig\(\)/, '挂载时未读 arb 配置')
   // issue 781 item 7：切到套利段就重读，新建的配置不依赖「离开页面再回来」。
   assert.match(

@@ -17,14 +17,15 @@
  * 落盘→重读→落审计后才应答），不新增任何旁路。
  */
 import { computed, onMounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { RefreshCw, LockOpen, Minus, Plug } from 'lucide-vue-next'
 import {
   api,
-  type ExecutionPolicyListDoc, type ExecutionPolicySectionDoc,
-  type ExecutionPolicyPreviewDoc, type ExecutionPolicyHistoryDoc,
+  type ExecutionPolicySectionDoc,
   type ExecutionPolicySetParams, type PolicyRuleView,
 } from '@/api/client'
 import { usePanelStore } from '@/stores/panel'
+import { useExecutionPolicyStore } from '@/stores/execution-policy'
 import { isConfigGate } from '@/lib/safety'
 import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
@@ -37,13 +38,9 @@ import PolicyRulesEditor from './PolicyRulesEditor.vue'
 
 const store = usePanelStore()
 const limitsRef = ref<InstanceType<typeof SettingsRiskLimits> | null>(null)
-const policyList = ref<ExecutionPolicyListDoc | null>(null)
-const policySection = ref<ExecutionPolicySectionDoc | null>(null)
-const policyPreview = ref<ExecutionPolicyPreviewDoc | null>(null)
-const policyHistory = ref<ExecutionPolicyHistoryDoc>([])
+const policy = useExecutionPolicyStore()
+const { policyList, policySection, policyPreview, policyHistory, policyErr, policyBusy } = storeToRefs(policy)
 const policyAccountId = ref<string>('defaults')
-const policyErr = ref<string | null>(null)
-const policyBusy = ref(false)
 const policySaving = ref(false)
 
 /** chips：固定的 defaults + 内核报来的账户列表。 */
@@ -76,24 +73,10 @@ function loadEditorFromSection(doc: ExecutionPolicySectionDoc | null): void {
 }
 
 async function loadPolicy(): Promise<void> {
-  policyBusy.value = true
-  try {
-    const list = await api.executionPolicyList()
-    if (list.error) throw new Error(list.error)
-    policyList.value = list
-    const section = await api.executionPolicyGet(policyAccountId.value)
-    policySection.value = 'error' in (section as object) ? null : section
-    loadEditorFromSection(section)
-    try {
-      policyPreview.value = await api.executionPolicyPreview(policyAccountId.value)
-    } catch { /* preview 缺席不阻塞页面（无已平仓交易/无策略都可能出现） */ }
-    policyHistory.value = await api.executionPolicyHistory(policyAccountId.value)
-    policyErr.value = null
-  } catch (e) {
-    policyErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    policyBusy.value = false
-  }
+  const section = await policy.load(policyAccountId.value)
+  // 读取失败时保留本页编辑缓冲，与搬迁前一致。
+  if (policy.policyErr) return
+  loadEditorFromSection(section)
 }
 onMounted(() => void loadPolicy())
 

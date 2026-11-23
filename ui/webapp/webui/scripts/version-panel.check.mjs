@@ -37,6 +37,9 @@ const versionLib = read('src', 'lib', 'version.ts')
 // #381: the version card is a domain sub-page of the settings IA.
 const settingsPage = read('src', 'pages', 'settings', 'SettingsVersion.vue')
 const client = read('src', 'api', 'version.ts')
+// issue 129: configure / check / stage polls live in the version-update store
+// so a tab switch does not drop the in-flight error or start a second timer.
+const versionStore = read('src', 'stores', 'version-update.ts')
 
 console.log('三态：null ≠ false，徽章不许撒谎（N16）')
 
@@ -100,8 +103,11 @@ check('自动更新开关的值来自内核，写盘失败要报错', () => {
   assert.ok(client.includes("'/version/configure'"), 'configure 路由缺失')
   assert.ok(client.includes("'/version/check'"), 'check 路由缺失')
   // configure 的调用方必须把 error 展示出来 —— 静默回退的开关比没有更糟（§7.4）。
-  const toggle = settingsPage.slice(settingsPage.indexOf('toggleAutoUpdate'))
-  assert.ok(toggle.includes('versionErr.value'), 'configure 失败没有落到可见的错误条')
+  // 写路径在 version-update store；页面必须仍把 store 的 versionErr 画成错误条。
+  assert.ok(settingsPage.includes('useVersionUpdateStore'), '检查/配置没有走 version-update store')
+  assert.match(settingsPage, /versionErr/, '设置页没有渲染 versionErr 错误条')
+  const configure = versionStore.slice(versionStore.indexOf('async function configure'))
+  assert.ok(configure.includes('versionErr.value'), 'configure 失败没有落到可见的错误条')
 })
 
 check('出网检查行：Badge 在前、Switch 在后（只对调顺序，不换组件）', () => {

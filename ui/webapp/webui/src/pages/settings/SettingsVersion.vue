@@ -4,11 +4,13 @@
  * 徽章 + 检查更新 / 自动更新 / 暂存下载（issue 379）。
  * 三态读法只有一份（lib/version.ts）：null = 未检查，绝不画成「已是最新」。
  */
-import { computed, onUnmounted, ref } from 'vue'
+import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import { RefreshCw, Tag } from 'lucide-vue-next'
-import { api, type StageState } from '@/api/client'
+import { type StageState } from '@/api/client'
 import { revisionText, versionBadge, stageDependencyHint } from '@/lib/version'
 import { usePanelStore } from '@/stores/panel'
+import { useVersionUpdateStore } from '@/stores/version-update'
 import { dateTime } from '@/lib/format'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
@@ -24,80 +26,15 @@ const store = usePanelStore()
 // 三态读法只有一份（lib/version.ts）：null = 未检查，绝不画成「已是最新」。
 const version = computed(() => store.snapshot?.systemVersion ?? null)
 const versionBadgeView = computed(() => versionBadge(version.value))
-const versionErr = ref<string | null>(null)
-const checkBusy = ref(false)
 
-/**
- * 「检查更新」：网关只是转交（内核拨 GitHub 以秒计，网关绝不等它），所以这里
- * 轮询 snapshot 直到内核的 lastCheckMs 动了；内核明确拒绝（checkEnabled=false）
- * 时 error 原样展示 —— 关闭就是关闭，不静默、不偷跑。
- */
-let checkTimer: ReturnType<typeof setTimeout> | null = null
-const checkDeadlineAt = ref(0)
-
-async function checkNow(): Promise<void> {
-  if (!version.value || checkBusy.value) return
-  const before = version.value.lastCheckMs
-  try {
-    const res = await api.updateCheck()
-    if (res.error) {
-      versionErr.value = res.error
-      return
-    }
-  } catch (e) {
-    versionErr.value = e instanceof Error ? e.message : String(e)
-    return
-  }
-  checkBusy.value = true
-  checkDeadlineAt.value = Date.now() + 45_000
-  const poll = async (): Promise<void> => {
-    await store.refresh()
-    const now = store.snapshot?.systemVersion
-    const moved = now && now.lastCheckMs !== before && now.lastCheckMs !== null
-    if (moved || Date.now() > checkDeadlineAt.value) {
-      checkBusy.value = false
-      return
-    }
-    checkTimer = setTimeout(() => void poll(), 1500)
-  }
-  void poll()
-}
-
-/** 「自动更新」开关：状态来源是内核；写盘失败必须报错（不静默回退）。 */
-async function toggleAutoUpdate(on: boolean): Promise<void> {
-  await configure({ autoUpdate: on })
-}
-
-/**
- * 「更新检查」开关（issue 393）：出网检查此前只能改 TOML —— 面板有开关、按钮灰着、
- * 却没有解锁路径，是半成品。内核的 system.update.configure 本就双键可选，
- * 这里补上第二支开关；同一纪律：状态来自内核，写盘失败原样报错。
- *
- * 排列顺序（2026-10 操作者指正）：行内控件为 Badge（状态读数）在前、Switch
- * （操作控件）在后贴行右缘 —— 组件各司其职原样保留，只对调视觉顺序。
- */
-async function toggleUpdateCheck(on: boolean): Promise<void> {
-  await configure({ checkEnabled: on })
-}
-
-/** 两条开关共用的写路径：内核落盘+落审计后回显，轮询刷新读回内核确认值。 */
-async function configure(body: { autoUpdate?: boolean; checkEnabled?: boolean }): Promise<void> {
-  try {
-    const res = await api.updateConfigure(body)
-    if (res.ok === false && res.error) {
-      versionErr.value = res.error
-    }
-  } catch (e) {
-    versionErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    await store.refresh()
-  }
-}
+// In-flight check / stage polls live in the version-update store so leaving
+// the tab does not drop the busy state or open a second 1.5s loop (issue 129).
+const upd = useVersionUpdateStore()
+const { versionErr, checkBusy, stageBusy, stageErr } = storeToRefs(upd)
+const { checkNow, toggleAutoUpdate, toggleUpdateCheck, configure, stageNow } = upd
 
 // 暂存状态（issue 379）同样来自 snapshot 轮询：旧内核是 null，明说「不支持暂存」。
 const stage = computed(() => store.snapshot?.stageState ?? null)
-const stageBusy = ref(false)
-const stageErr = ref<string | null>(null)
 
 /** 暂存相位的徽章视图：idle/downloading/staged/failed 各自可分辨，绝不塌缩。 */
 const stageBadgeView = computed(() => {
@@ -108,46 +45,6 @@ const stageBadgeView = computed(() => {
   return null
 })
 
-/**
- * 「暂存下载」（§7.5）：内核把较新发布下载到暂存目录并校验 SHA256，然后
- * 停在那里 —— 替换二进制是启动器的事，内核永不碰自己正在执行的文件。网关
- * 只转交，这里轮询 snapshot 的 stageState 直到 phase 离开 downloading；
- * 内核拒绝（autoUpdate=false）时 error 原样展示。
- */
-let stageTimer: ReturnType<typeof setTimeout> | null = null
-const stageDeadlineAt = ref(0)
-
-async function stageNow(): Promise<void> {
-  if (stageBusy.value) return
-  try {
-    const res = await api.updateStage()
-    if (res.error) {
-      stageErr.value = res.error
-      return
-    }
-  } catch (e) {
-    stageErr.value = e instanceof Error ? e.message : String(e)
-    return
-  }
-  stageBusy.value = true
-  stageDeadlineAt.value = Date.now() + 150_000
-  const poll = async (): Promise<void> => {
-    await store.refresh()
-    const now = store.snapshot?.stageState
-    const settled = now && now.phase !== 'downloading'
-    if (settled || Date.now() > stageDeadlineAt.value) {
-      stageBusy.value = false
-      return
-    }
-    stageTimer = setTimeout(() => void poll(), 1500)
-  }
-  void poll()
-}
-
-onUnmounted(() => {
-  if (checkTimer !== null) clearTimeout(checkTimer)
-  if (stageTimer !== null) clearTimeout(stageTimer)
-})
 </script>
 
 <template>

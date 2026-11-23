@@ -184,6 +184,8 @@ pub struct MarketPriceView {
     /// Must not be stripped by typed re-assembly.
     #[serde(default)]
     pub duration_sec: i64,
+    #[serde(default)]
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

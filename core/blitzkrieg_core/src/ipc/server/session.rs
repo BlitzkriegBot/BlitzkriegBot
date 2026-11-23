@@ -599,29 +599,12 @@ pub async fn run(
         // the data plane is self-sufficient, the executor is not invited).
         // The source is resolved through the DECLARED edges only — a plugin
         // whose feed_source names nothing compiled-in keeps its own feed.
-        let mut feeds_to_start: Vec<std::sync::Arc<dyn blitzkrieg_market_api::MarketPlugin>> =
-            Vec::new();
-        for p in &actives {
-            if p.feed_source()
-                .filter(|src| registry.get(src).is_some())
-                .is_some()
-            {
-                continue;
-            }
-            feeds_to_start.push(std::sync::Arc::clone(p));
-        }
-        for src in reused_sources
-            .iter()
-            .filter(|src| !actives.iter().any(|a| a.name() == src.as_str()))
-        {
-            let Some(sp) = registry.get(src) else {
-                continue;
-            };
-            eprintln!(
-                "blitzkrieg-core: {src} consumers — mounting {src}'s data feed (no executor)"
-            );
-            feeds_to_start.push(sp);
-        }
+        let feeds_to_start = select_boot_feeds(
+            &actives,
+            &reused_sources,
+            &registry,
+            !config.binance_assets.is_empty(),
+        );
         // Mount-count discipline: every mount attempt of a REUSED stream
         // (a source some consumer declares) counts once — N consumers of the
         // same source still read 1. The consumer's own (skipped) start never
@@ -644,7 +627,10 @@ pub async fn run(
                 }
             }
         }
-        eprintln!("blitzkrieg-core: rust-native feeds enabled (binance spot; poly on first round)");
+        let started_names: Vec<&str> = feeds_to_start.iter().map(|p| p.name()).collect();
+        eprintln!(
+            "blitzkrieg-core: rust-native feeds enabled (feeds={started_names:?}; poly on first round)"
+        );
     }
 
     // P5: Rust-native round discovery — the plugin finds its own markets and feeds
@@ -1273,4 +1259,130 @@ pub(super) fn spawn_session(
         notifier.abort();
         let _ = writer.await;
     });
+}
+
+/// Select which market plugins' `data_feed()`s boot when `feed_ws_enabled` is true.
+/// Preserves RFC-661 M2 reuse semantics (`actives` minus consumers whose `feed_source`
+/// is compiled in, plus unmounted `reused_sources`), and (post-fix) mounts reference
+/// `MarketType::Spot` feeds when spot assets are configured.
+pub(crate) fn select_boot_feeds(
+    actives: &[std::sync::Arc<dyn blitzkrieg_market_api::MarketPlugin>],
+    reused_sources: &std::collections::BTreeSet<String>,
+    registry: &crate::market::registry::MarketPluginRegistry,
+    include_spot_feeds: bool,
+) -> Vec<std::sync::Arc<dyn blitzkrieg_market_api::MarketPlugin>> {
+    let mut feeds_to_start: Vec<std::sync::Arc<dyn blitzkrieg_market_api::MarketPlugin>> =
+        Vec::new();
+    for p in actives {
+        if p.feed_source()
+            .filter(|src| registry.get(src).is_some())
+            .is_some()
+        {
+            continue;
+        }
+        feeds_to_start.push(std::sync::Arc::clone(p));
+    }
+    for src in reused_sources
+        .iter()
+        .filter(|src| !actives.iter().any(|a| a.name() == src.as_str()))
+    {
+        let Some(sp) = registry.get(src) else {
+            continue;
+        };
+        eprintln!("blitzkrieg-core: {src} consumers — mounting {src}'s data feed (no executor)");
+        feeds_to_start.push(sp);
+    }
+    if include_spot_feeds {
+        // Reference spot plugins (e.g. `binance_spot`, MarketType::Spot) have no
+        // account venue binding or trading rounds, so they are never in `actives`;
+        // mount their `data_feed()` automatically alongside prediction venues.
+        for name in registry.names() {
+            let Some(sp) = registry.get(&name) else {
+                continue;
+            };
+            if sp.market_type() == blitzkrieg_market_api::MarketType::Spot
+                && sp.data_feed().is_some()
+                && !feeds_to_start.iter().any(|p| p.name() == sp.name())
+            {
+                feeds_to_start.push(sp);
+            }
+        }
+    }
+    feeds_to_start
+}
+
+#[cfg(test)]
+mod spot_feed_boot_tests {
+    use super::*;
+    use blitzkrieg_market_api::{
+        BoxFuture, CoreError, DataFeed, DataFeedConfig, MarketHost, MarketPlugin, MarketType,
+        TokenId,
+    };
+    use std::sync::Arc;
+
+    struct NoopFeed(&'static str);
+    impl DataFeed for NoopFeed {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn start<'a>(
+            &'a self,
+            _host: Arc<dyn MarketHost>,
+            _config: DataFeedConfig,
+            _initial_tokens: Vec<TokenId>,
+        ) -> BoxFuture<'a, Result<(), CoreError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct StubPlugin {
+        name: &'static str,
+        market_type: MarketType,
+        feed: NoopFeed,
+    }
+    impl MarketPlugin for StubPlugin {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn market_type(&self) -> MarketType {
+            self.market_type
+        }
+        fn data_feed(&self) -> Option<&dyn DataFeed> {
+            Some(&self.feed)
+        }
+    }
+
+    #[test]
+    fn select_boot_feeds_mounts_spot_reference_feed_when_actives_only_prediction() {
+        let reg = crate::market::registry::MarketPluginRegistry::new();
+        reg.register(Box::new(StubPlugin {
+            name: "polymarket",
+            market_type: MarketType::Prediction,
+            feed: NoopFeed("polymarket"),
+        }));
+        reg.register(Box::new(StubPlugin {
+            name: "binance_spot",
+            market_type: MarketType::Spot,
+            feed: NoopFeed("binance_spot"),
+        }));
+        let actives = crate::market::active_market_plugins(&reg, Some("polymarket"));
+        let reused = std::collections::BTreeSet::new();
+        let selected = select_boot_feeds(&actives, &reused, &reg, true);
+        let names: Vec<&str> = selected.iter().map(|p| p.name()).collect();
+        assert_eq!(
+            names,
+            vec!["polymarket", "binance_spot"],
+            "MarketType::Spot reference feed must start even when actives only names polymarket"
+        );
+
+        let selected_no_spot = select_boot_feeds(&actives, &reused, &reg, false);
+        let names_no_spot: Vec<&str> = selected_no_spot.iter().map(|p| p.name()).collect();
+        assert_eq!(names_no_spot, vec!["polymarket"]);
+
+        let actives_with_spot =
+            crate::market::active_market_plugins(&reg, Some("polymarket,binance_spot"));
+        let selected_dedup = select_boot_feeds(&actives_with_spot, &reused, &reg, true);
+        let names_dedup: Vec<&str> = selected_dedup.iter().map(|p| p.name()).collect();
+        assert_eq!(names_dedup, vec!["polymarket", "binance_spot"]);
+    }
 }

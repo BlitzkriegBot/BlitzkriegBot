@@ -832,20 +832,23 @@ impl Core {
             if market_prices.iter().any(|p| p.asset == m.asset) {
                 continue;
             }
-            let up = engine
-                .book_snapshot(&m.up_token_id)
-                .map(|b| b.mid_price)
-                .filter(|p| *p > Decimal::ZERO)
-                .unwrap_or(m.up_price);
-            let down = engine
-                .book_snapshot(&m.down_token_id)
-                .map(|b| b.mid_price)
-                .filter(|p| *p > Decimal::ZERO)
-                .unwrap_or(m.down_price);
+            let up_book = engine.book_snapshot(&m.up_token_id);
+            let down_book = engine.book_snapshot(&m.down_token_id);
+            let (up, down, unreliable) = crate::service::reliable_pair_prices(
+                up_book.as_ref(),
+                down_book.as_ref(),
+                m.up_price,
+                m.down_price,
+            );
             market_prices.push(MarketPriceView {
                 asset: m.asset.clone(),
                 up,
                 down,
+                source: if unreliable {
+                    "unreliable".to_string()
+                } else {
+                    String::new()
+                },
             });
         }
         Some(RoundView {
@@ -1018,30 +1021,18 @@ impl Core {
                     .map(|m| {
                         let up_book = engine.book_snapshot(&m.up_token_id);
                         let down_book = engine.book_snapshot(&m.down_token_id);
-                        let up_mid = up_book.as_ref().and_then(|b| b.reliable_mid());
-                        let down_mid = down_book.as_ref().and_then(|b| b.reliable_mid());
-                        // A book that exists but has no reliable mid (wide
-                        // stub quote, mid 0.505) must not fall back to the
-                        // market metadata price — that would still pass a
-                        // non-quote off as a card mid (L1).
-                        let up_unusable = up_book.is_some() && up_mid.is_none();
-                        let down_unusable = down_book.is_some() && down_mid.is_none();
-                        let up = up_mid.unwrap_or(if up_unusable {
-                            rust_decimal::Decimal::ZERO
-                        } else {
-                            m.up_price
-                        });
-                        let down = down_mid.unwrap_or(if down_unusable {
-                            rust_decimal::Decimal::ZERO
-                        } else {
-                            m.down_price
-                        });
+                        let (up, down, unreliable) = crate::service::reliable_pair_prices(
+                            up_book.as_ref(),
+                            down_book.as_ref(),
+                            m.up_price,
+                            m.down_price,
+                        );
                         let (mut source, fetched_at_ms) = card_freshness(
                             plane.freshness(&m.up_token_id),
                             plane.freshness(&m.down_token_id),
                         );
-                        if up_unusable || down_unusable {
-                            // Never label a phantom mid `live`.
+                        if unreliable {
+                            // Never label a phantom or zero mid `live`.
                             source = "unreliable".to_string();
                         }
                         CurrentRoundPriceView {

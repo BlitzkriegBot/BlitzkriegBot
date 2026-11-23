@@ -101,28 +101,30 @@ pub(crate) async fn handle_engine(
                         .live_round_rows(now)
                         .into_iter()
                         .map(|m| {
-                            let up = e
-                                .book_snapshot(&m.up_token_id)
-                                .map(|b| b.mid_price)
-                                .filter(|p| *p > Decimal::ZERO)
-                                .unwrap_or(m.up_price);
-                            let down = e
-                                .book_snapshot(&m.down_token_id)
-                                .map(|b| b.mid_price)
-                                .filter(|p| *p > Decimal::ZERO)
-                                .unwrap_or(m.down_price);
+                            let up_book = e.book_snapshot(&m.up_token_id);
+                            let down_book = e.book_snapshot(&m.down_token_id);
+                            let (up, down, unreliable) = crate::service::reliable_pair_prices(
+                                up_book.as_ref(),
+                                down_book.as_ref(),
+                                m.up_price,
+                                m.down_price,
+                            );
                             let duration_sec = if m.round_duration_sec > 0 {
                                 m.round_duration_sec
                             } else {
                                 scanner.round_duration_sec()
                             };
-                            serde_json::json!({
+                            let mut row = serde_json::json!({
                                 "asset": m.asset,
                                 "up": up,
                                 "down": down,
                                 "venue": m.venue,
                                 "durationSec": duration_sec,
-                            })
+                            });
+                            if unreliable {
+                                row["source"] = serde_json::json!("unreliable");
+                            }
+                            row
                         })
                         .collect();
                     // RFC-661 M3: natural rows only — the dual-key table

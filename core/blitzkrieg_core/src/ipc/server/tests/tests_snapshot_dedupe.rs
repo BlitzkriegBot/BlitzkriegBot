@@ -1173,3 +1173,81 @@ async fn current_rounds_prices_are_warm_on_first_snapshot_after_switch() {
     assert_eq!(cur5.prices[0].duration_sec, 300);
     assert_eq!(cur5.prices[0].up, Decimal::new(41, 2));
 }
+
+#[tokio::test]
+async fn engine_round_market_prices_marks_unreliable_books_without_fake_mids() {
+    use crate::model::CryptoMarket;
+    use rust_decimal_macros::dec;
+
+    let (core, registry, peer) = hot_reload_fixture().await;
+    let round_sec = 900i64;
+    let now = now_ms();
+    let slot = now / 1000 / round_sec;
+    let trading_end = (slot + 2) * round_sec * 1000;
+    {
+        let mut guard = core.lock().await;
+        guard.engine_on_data(
+            crate::engine::DataEvent::RoundMarkets {
+                markets: vec![CryptoMarket {
+                    asset: "BTC".into(),
+                    condition_id: "c-btc".into(),
+                    question_id: "q-btc".into(),
+                    up_token_id: "up-btc".into(),
+                    down_token_id: "down-btc".into(),
+                    up_price: dec!(0.30),
+                    down_price: dec!(0.70),
+                    expires_at_ms: trading_end,
+                    round_slot: trading_end / 1000 / round_sec,
+                    round_duration_sec: round_sec,
+                    archive_verdict: false,
+                    venue: "polymarket".into(),
+                    neg_risk: false,
+                    question: "BTC 5m".into(),
+                }],
+                now_ms: now,
+            },
+            now,
+        );
+        guard.engine_on_data(
+            crate::engine::DataEvent::Book {
+                token_id: "up-btc".into(),
+                bids: vec![(dec!(0.999), dec!(50))],
+                asks: vec![],
+                now_ms: now,
+            },
+            now,
+        );
+        guard.engine_on_data(
+            crate::engine::DataEvent::Book {
+                token_id: "down-btc".into(),
+                bids: vec![(dec!(0.01), dec!(50))],
+                asks: vec![(dec!(1.00), dec!(50))],
+                now_ms: now,
+            },
+            now,
+        );
+    }
+    let reply = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"engine.round","params":{}}"#.to_string(),
+    )
+    .await;
+    let row = &reply["result"]["marketPrices"][0];
+    assert_eq!(
+        row["up"],
+        serde_json::json!("0"),
+        "must not fall back to stale 0.30: {row}"
+    );
+    assert_eq!(
+        row["down"],
+        serde_json::json!("0"),
+        "must not leak stub 0.505: {row}"
+    );
+    assert_eq!(
+        row["source"],
+        serde_json::json!("unreliable"),
+        "must mark unreliable: {row}"
+    );
+}

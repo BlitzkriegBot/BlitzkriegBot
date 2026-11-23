@@ -415,9 +415,16 @@ pub fn render_json_full(
             // 这里是 webui 披露过的「类型化重组剥字段」点之一：typed struct
             // 逐字段重拼，不写 venue 就到不了前端（HftPage 的 venue 过滤
             // 与 Loading 门都 feature-detect 它）。空串 = 未分所，前端降级。
-            "prices": r.market_prices.iter().map(|m| serde_json::json!({
-                "asset": m.asset, "up": m.up, "down": m.down,
-                "venue": m.venue, "durationSec": m.duration_sec })).collect::<Vec<_>>(),
+            "prices": r.market_prices.iter().map(|m| {
+                let mut obj = serde_json::json!({
+                    "asset": m.asset, "up": m.up, "down": m.down,
+                    "venue": m.venue, "durationSec": m.duration_sec,
+                });
+                if !m.source.is_empty() {
+                    obj["source"] = serde_json::json!(m.source);
+                }
+                obj
+            }).collect::<Vec<_>>(),
             // #550（症状②）：per-venue 轮次钟行 —— 倒计时卡按 active venue
             // 选行重绑（账户切换器就是交易所切换器），不再读全局保守钟的
             // 标量块。老内核没有该键 → 空表，面板走现行为（feature-detect

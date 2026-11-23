@@ -430,3 +430,143 @@ fn late_favorite_source_is_clock_safe() {
         "new late_favorite is clock-safe → event-driven path on"
     );
 }
+
+/// With `--min-time-left 180` (production kernel arg), `late_favorite` still enters
+/// in the 20–120s window via its `timing` exemption ONLY when `DataEvent::Spot` feeds
+/// `"BTC"` sec1 klines; without spot events, it places 0 orders.
+#[test]
+fn late_favorite_spot_feed_enters_inside_min_time_left_180_gate() {
+    let run_scenario = |feed_spot: bool| -> (u64, u64, u64) {
+        let mut core_cfg = CoreConfig {
+            risk: RiskConfig {
+                max_order_notional: dec!(10_000),
+                ..Default::default()
+            },
+            dry_seed_balance: dec!(100_000),
+            engine_enabled: true,
+            round_duration_sec: 300,
+            min_round_age_sec: 30,
+            min_shares: dec!(1),
+            max_shares: dec!(10_000),
+            order_log_path: None,
+            trade_log_path: None,
+            position_log_path: None,
+            execution_policy_path: None,
+            event_driven_eval: true,
+            ..Default::default()
+        };
+        core_cfg.positions.exit.min_time_left_sec = 180;
+        let mut c = Core::new(core_cfg);
+        let cfg = c.config().engine_config();
+        let mut eng = Engine::new(cfg.clone());
+        crate::strategies::test_support::host_disabled(&mut eng, cfg.trend, cfg.spread_arb);
+        let loaded = load_lua_package(&package_dir("late_favorite")).expect("package must load");
+        let adapter = LuaEngineAdapter::new(loaded.strategy, loaded.tunables)
+            .declare(loaded.holds_to_settlement, loaded.gate_exemptions)
+            .declare_atomic_batch(loaded.atomic_batch)
+            .declare_trailing_exit(loaded.trailing_exit)
+            .declare_entry_maker(loaded.entry_maker);
+        eng.register_user_strategy(
+            Box::new(adapter),
+            format!("lua:{}", package_dir("late_favorite").display()),
+        )
+        .expect("package registers");
+        assert!(eng.set_strategy_enabled("late_favorite", true));
+        c.enable_engine(eng);
+
+        let r1_start = start_ms(1);
+        if feed_spot {
+            // 10m+ warmup of 1s spot ticks through r0 into r1 (opening around 100_000,
+            // then dipping sharply inside r1's late window so DOWN at 0.82 clears edge >= 0.10).
+            for s_idx in -620..=-1 {
+                let ts = r1_start + s_idx * 1000 + 200;
+                let px = dec!(100_000) + Decimal::from(s_idx.abs() % 5) * dec!(10);
+                c.engine_on_data(
+                    DataEvent::Spot {
+                        asset: "BTC".into(),
+                        price: px,
+                        now_ms: ts,
+                        trade_time: Some(ts),
+                    },
+                    ts,
+                );
+            }
+        }
+        c.engine_on_data(
+            DataEvent::RoundMarkets {
+                markets: markets(1),
+                now_ms: r1_start + 1_000,
+            },
+            r1_start + 1_000,
+        );
+        if feed_spot {
+            for sec in 0..=215 {
+                let ts = r1_start + sec * 1000 + 200;
+                let px = if sec < 180 {
+                    dec!(100_000) + Decimal::from(sec % 3) * dec!(10)
+                } else {
+                    // Drop -250 USD over 35s -> strong negative momentum & high Digital BS P(DOWN)
+                    dec!(100_000) - Decimal::from((sec - 179) * 8)
+                };
+                c.engine_on_data(
+                    DataEvent::Spot {
+                        asset: "BTC".into(),
+                        price: px,
+                        now_ms: ts,
+                        trade_time: Some(ts),
+                    },
+                    ts,
+                );
+            }
+        }
+        let eval_ms = at(1, 85_000) + 250; // time_left = 85s (< 180 kernel gate, inside 20..120s)
+        c.book_snapshot(
+            "BTC-up-1",
+            vec![(dec!(0.17), dec!(500))],
+            vec![(dec!(0.18), dec!(500))],
+            eval_ms,
+        );
+        c.book_snapshot(
+            "BTC-down-1",
+            vec![(dec!(0.81), dec!(500))],
+            vec![(dec!(0.82), dec!(500))],
+            eval_ms,
+        );
+        c.engine_on_data(
+            DataEvent::Book {
+                token_id: "BTC-down-1".into(),
+                bids: vec![(dec!(0.81), dec!(500))],
+                asks: vec![(dec!(0.82), dec!(500))],
+                now_ms: eval_ms,
+            },
+            eval_ms,
+        );
+        c.engine_evaluate(eval_ms);
+        let row = c
+            .strategy_stats()
+            .into_iter()
+            .find(|s| s["name"] == "late_favorite")
+            .expect("late_favorite stats row");
+        (
+            row["ordersPlaced"].as_u64().unwrap_or(0),
+            row["gateExemptedTiming"].as_u64().unwrap_or(0),
+            row["blockedTiming"].as_u64().unwrap_or(0),
+        )
+    };
+
+    let (placed_no_spot, _, _) = run_scenario(false);
+    assert_eq!(
+        placed_no_spot, 0,
+        "without DataEvent::Spot, late_favorite places 0 orders"
+    );
+    let (placed_with_spot, exempted_timing, blocked_timing) = run_scenario(true);
+    assert!(
+        placed_with_spot >= 1,
+        "with DataEvent::Spot feeding BTC sec1 klines, late_favorite must enter via timing exemption"
+    );
+    assert!(exempted_timing >= 1, "must record gate_exempted_timing");
+    assert_eq!(
+        blocked_timing, 0,
+        "must not be blocked by min_time_left=180"
+    );
+}

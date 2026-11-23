@@ -27,6 +27,7 @@ import {
 import { usePanelStore } from '@/stores/panel'
 import { useExecutionPolicyStore } from '@/stores/execution-policy'
 import { isConfigGate } from '@/lib/safety'
+import { clonePlain } from '@/lib/clone-plain'
 import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
 import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
@@ -68,7 +69,7 @@ function loadEditorFromSection(doc: ExecutionPolicySectionDoc | null): void {
   editMaxBudgetUsd.value = doc?.maxBudgetUsd ?? ''
   editMinEquityUsd.value = doc?.minEquityUsd ?? ''
   editMaxPositionsPerAsset.value = String(doc?.maxPositionsPerAsset ?? 1)
-  editRules.value = (doc?.rules ?? []).map((r) => structuredClone(r))
+  editRules.value = clonePlain(doc?.rules ?? [])
   editDirty.value = false
 }
 

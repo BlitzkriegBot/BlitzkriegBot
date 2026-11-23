@@ -12,7 +12,7 @@ import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
 
 const props = defineProps<{
-  /** 编辑中的规则（已 structuredClone，本地可变）。 */
+  /** 编辑中的规则（已 clonePlain，本地可变）。 */
   draft: PolicyRuleView
   /** null = 新建；否则是被编辑规则的在列下标。 */
   index: number | null

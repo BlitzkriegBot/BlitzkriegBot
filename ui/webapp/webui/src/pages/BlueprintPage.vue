@@ -35,6 +35,7 @@ import {
   NODE_SPECS, nodeSpec, defaultParams, edgeFamily, isValueProducer,
   starterBlueprint, toBlueprintDoc, parseBlueprintDoc,
 } from '@/lib/blueprint'
+import { clonePlain } from '@/lib/clone-plain'
 import type { BlueprintDoc, BlueprintNodeType, BpNode, BpEdge, NodeFamily } from '@/lib/blueprint'
 import { highlightLua } from '@/lib/lua-highlight'
 import { usePanelStore } from '@/stores/panel'
@@ -215,7 +216,7 @@ function loadStarter(): void {
   for (const n of starter.nodes) {
     const id = nextId()
     idMap.set(n.id, id)
-    bpNodes.value.push({ id, type: n.type, params: structuredClone(n.params) })
+    bpNodes.value.push({ id, type: n.type, params: clonePlain(n.params) })
     addNodes([{ id, type: 'bp', position: { x: 80, y }, data: { bpType: n.type } }])
     y += 110
   }
@@ -465,7 +466,7 @@ async function preloadPackage(name: string): Promise<void> {
       if (!n || typeof n.id !== 'string' || seen.has(n.id)) continue
       if (!NODE_SPECS.some((s) => s.type === n.type)) continue
       seen.add(n.id)
-      nodes.push({ id: n.id, type: n.type, params: structuredClone(n.params ?? {}) })
+      nodes.push({ id: n.id, type: n.type, params: clonePlain(n.params ?? {}) })
     }
     const knownIds = new Set(nodes.map((n) => n.id))
     clearCanvas() // 去抖编译：清空后的拒绝会被 350ms 内的下一次编译覆盖

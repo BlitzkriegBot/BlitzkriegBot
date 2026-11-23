@@ -287,7 +287,10 @@ fn price_cap_rejects_above_086_and_accepts_075() {
             _ => None,
         }
     };
-    let c = a.find_candidates(&StrategyCtx::new(&m, SLOT, 55, now_ms + 3000, &in_band));
+    // now_ms + 3 s is 57 s left — pass the same number the kernel's
+    // floor((expires-now)/1000) would, so freshness (end_sec - time_left)
+    // agrees with the wall clock the books were stamped with.
+    let c = a.find_candidates(&StrategyCtx::new(&m, SLOT, 57, now_ms + 3000, &in_band));
     assert_eq!(
         c.len(),
         1,

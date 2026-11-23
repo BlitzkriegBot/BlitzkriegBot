@@ -412,7 +412,6 @@ function bk_evaluate()
     local max_round_sec = int_param(params, "max_round_sec", 300)
 
     local tl = round.time_left_sec
-    local now_ms = round.now_ms or (bk.now_ms and bk.now_ms()) or 0
     local dur_sec = infer_dur_sec(slot_max_tl[round.slot])
     local held = held_index()
 
@@ -443,8 +442,15 @@ function bk_evaluate()
                 local open_rec = bmap and bmap[end_sec - dur_sec] or nil
                 local spot_open = open_rec and open_rec.price or nil
 
+                -- Freshness on the whole-second round clock only: end_sec - time_left_sec
+                -- equals the unix second the kernel already exposes (time_left_sec is
+                -- floor((expires - now) / 1000)). The host can then skip quiet
+                -- millisecond ticks. 5 000 ms → 5 s, the same cutoff on every
+                -- second boundary the event-driven path evaluates.
+                local now_sec = end_sec - tl
+                local max_age_sec = math.floor(max_spot_age_ms / 1000)
                 if spot ~= nil and by_sec ~= nil and spot_open ~= nil and spot_open > 0
-                    and (now_ms - spot.close_ms) <= max_spot_age_ms then
+                    and (now_sec - (spot.close_sec or 0)) <= max_age_sec then
                     local spot_now = spot.price
                     local sig120 = realized_sigma(by_sec, spot.close_sec, 120, 10)
                     local sig300 = realized_sigma(by_sec, spot.close_sec, 300, 10)

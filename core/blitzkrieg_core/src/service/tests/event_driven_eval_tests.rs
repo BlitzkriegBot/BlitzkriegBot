@@ -10,11 +10,18 @@
 //! counters — while the event-driven kernel calls Lua a small fraction as
 //! often.
 //!
+//! The package under test is the post-#150 late_favorite (btc_only, 0.75–0.86
+//! cap, Digital-BS `min_edge`, 1-second spot bars, `max_round_sec` 300). Its
+//! entry file must not mention `now_ms` — freshness uses `end_sec -
+//! time_left_sec` against `spot.close_sec`, so the event-driven path engages.
+//!
 //! The feed exercises each reason a real evaluation must run: book changes
-//! with millisecond jitter, a window edge (`time_left_sec` 120 / 45) that is
+//! with millisecond jitter, a window edge (`time_left_sec` 120) that is
 //! crossed while NO book changes, a book that goes stale inside the window
 //! (and a fresh one that ends the gap), a fill (ledger + positions push),
-//! and a round rollover.
+//! a round rollover, and the 20 s floor (maker `breaks`). A BTC 1-second
+//! spot series is pre-rolled so sigma / strike / momentum / freshness have
+//! data; a late jump gives the BS edge room to clear the 10 ¢ floor.
 
 use super::*;
 use crate::engine::{DataEvent, Engine};
@@ -110,6 +117,8 @@ fn core_with(package: &str, event_driven: bool, overrides: &[(&str, &str)]) -> C
 enum Feed {
     Round(i64),
     Book(String, Decimal),
+    /// Binance-style 1-second BTC tick; closes the previous sec1 bar.
+    Spot(Decimal),
 }
 
 /// Deterministic jitter (LCG) so book arrivals land on arbitrary
@@ -163,9 +172,10 @@ fn up_ask(asset: &str, round: i64, tl_ms: i64) -> Option<Decimal> {
 fn schedule(windows: &[(i64, i64)]) -> Vec<(i64, Feed)> {
     let mut out = Vec::new();
     let mut rng = Lcg(0x5eed);
-    // The first round's markets arrive with the feed; the second's at its
-    // start (the rollover).
-    out.push((windows[0].0, Feed::Round(0)));
+    // The first round must be announced near its start so late_favorite can
+    // infer duration (it only accepts 300 s when it has seen time_left ≥ 240).
+    // The second arrives at its start (the rollover).
+    out.push((start_ms(0) + 1_000, Feed::Round(0)));
     for &(from, to) in windows {
         let s = start_ms(1);
         if s >= from && s < to {
@@ -188,8 +198,32 @@ fn schedule(windows: &[(i64, i64)]) -> Vec<(i64, Feed)> {
             }
         }
     }
+    // 1-second BTC spot from 700 s before round 0 (sigma lookback is 600 s)
+    // through the last window, with a late jump so the BS fair price clears
+    // the 10 ¢ edge at the 0.82 touch.
+    let first = windows[0].0;
+    let last = windows.iter().map(|w| w.1).max().unwrap_or(first);
+    let mut t = start_ms(0) - 700_000;
+    while t < last {
+        out.push((t, Feed::Spot(btc_spot_px(t))));
+        t += 1_000;
+    }
     out.sort_by_key(|(t, _)| *t);
     out
+}
+
+/// Quiet ~100_000 with a 1-dollar oscillation (so realized sigma is not zero),
+/// then a 2 % jump once time-left is inside 150 s of a 300 s round — enough
+/// for N(d) to clear `min_edge` 0.10 at a 0.82 ask.
+fn btc_spot_px(t: i64) -> Decimal {
+    let start = start_ms(0);
+    let sec = t.div_euclid(1000);
+    let base = dec!(100_000) + Decimal::from(sec.rem_euclid(3) - 1);
+    if t >= start + (ROUND_MS - 150_000) {
+        base + dec!(2000)
+    } else {
+        base
+    }
 }
 
 fn apply(c: &mut Core, ts: i64, feed: &Feed) {
@@ -210,6 +244,17 @@ fn apply(c: &mut Core, ts: i64, feed: &Feed) {
                     bids: vec![(*ask - dec!(0.01), dec!(600))],
                     asks: vec![(*ask, dec!(600))],
                     now_ms: ts,
+                },
+                ts,
+            );
+        }
+        Feed::Spot(px) => {
+            c.engine_on_data(
+                DataEvent::Spot {
+                    asset: "BTC".into(),
+                    price: *px,
+                    now_ms: ts,
+                    trade_time: Some(ts),
                 },
                 ts,
             );
@@ -273,6 +318,14 @@ fn drive(package: &str, overrides: &[(&str, &str)]) -> Driven {
     let (mut placed_every, mut placed_event) = (Vec::new(), Vec::new());
     let mut idx = 0usize;
     let mut end = 0;
+    // Ingest the 700 s spot warmup (and the opening Round) before the 10 ms
+    // cadence starts, so sigma/strike are already on the book at the first tick.
+    let first = windows[0].0;
+    while idx < feed.len() && feed[idx].0 <= first {
+        apply(&mut every, feed[idx].0, &feed[idx].1);
+        apply(&mut event, feed[idx].0, &feed[idx].1);
+        idx += 1;
+    }
     for &(from, to) in &windows {
         let mut now = from;
         while now < to {
@@ -358,5 +411,22 @@ fn clock_reading_package_keeps_every_tick_evaluation() {
     assert!(
         !c.live_event_eval_engaged(),
         "lua_momentum reads bk.now_ms → no event-driven skipping"
+    );
+}
+
+/// The post-#150 package no longer mentions `now_ms`, so event-driven
+/// evaluation engages (and the 10 ms path stays optional).
+#[test]
+fn late_favorite_source_is_clock_safe() {
+    let code = std::fs::read_to_string(package_dir("late_favorite").join("strategy.lua"))
+        .expect("strategy.lua");
+    assert!(
+        !blitzkrieg_lua_runtime::lua_strategy::source_reads_wall_clock(&code),
+        "late_favorite must not read the millisecond clock"
+    );
+    let c = core_with("late_favorite", true, &[]);
+    assert!(
+        c.live_event_eval_engaged(),
+        "new late_favorite is clock-safe → event-driven path on"
     );
 }

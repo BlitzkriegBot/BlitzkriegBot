@@ -575,6 +575,17 @@ struct ReplayFastPath {
     /// this flag covers already rides its own deadline in `tick`.
     /// `i64::MAX` = nothing scheduled.
     fast_next_exit_deadline_ms: i64,
+    /// Event-driven live evaluation: `Engine::inputs_fingerprint` as read
+    /// just before the last real Lua evaluation (after the host pushes).
+    live_eval_fingerprint: u64,
+    /// Event-driven live evaluation: the first instant a book crosses the
+    /// freshness limit, as known at the last real evaluation (`i64::MAX` =
+    /// none).
+    live_next_stale_ms: i64,
+    /// Event-driven live evaluation: the last real evaluation produced
+    /// strategy exits or pair declarations/refusals — the next cycle must be
+    /// real (those emissions are not part of the staged candidate set).
+    live_force_eval: bool,
 }
 
 /// F4: what a fill-driven full close changed, so a later FAILED status for the
@@ -843,6 +854,7 @@ mod tests {
     mod balance_trust_749_tests;
     mod books_mirror_tests;
     mod boot_carrier_gate_tests;
+    mod event_driven_eval_tests;
     mod exit_reason_table_tests;
     mod expiry_fallback_tests;
     mod fee_quote_tests;

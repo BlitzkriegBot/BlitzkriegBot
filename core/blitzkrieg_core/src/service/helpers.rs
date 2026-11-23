@@ -70,6 +70,10 @@ pub(super) struct CoreStats {
     /// "successfully" blind).
     pub(super) unified_mappings: u64,
     pub(super) evaluations: u64,
+    /// Cycles that actually called the strategies' `evaluate` (Lua). Equals
+    /// `evaluations` on the every-tick path; the event-driven live path and
+    /// the replay fast path skip quiet cycles. Host diagnostic only.
+    pub(super) lua_evaluations: u64,
     pub(super) signals: u64,
     pub(super) place_rejected: u64,
     /// Entries rejected by a configured per-strategy cap (P-1.1).

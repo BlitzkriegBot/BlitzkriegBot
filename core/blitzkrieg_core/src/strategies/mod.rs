@@ -407,6 +407,22 @@ pub trait EngineStrategy: Send + Sync {
         false
     }
 
+    /// Whether this strategy's output can change with the millisecond clock
+    /// alone (no new book/top/spot/round input, same whole second). The
+    /// live kernel's event-driven evaluation skips the Lua call on quiet
+    /// ticks only when EVERY enabled strategy answers `false`. Default
+    /// `true`: an adapter that does not declare keeps the every-tick cycle.
+    fn reads_wall_clock(&self) -> bool {
+        true
+    }
+
+    /// A revision of inputs the strategy reads from OUTSIDE the engine's
+    /// own methods (a shared hot-parameter cell). The event-driven cycle
+    /// re-evaluates when it changes. Default 0: nothing external.
+    fn input_revision(&self) -> u64 {
+        0
+    }
+
     /// The strategy's own verdict on the trailing stop, as a THREE-STATE
     /// declaration: `None` = follow the kernel-wide value (`risk.setExit`
     /// trailingEnabled, the operator's lever); `Some(true)` = this strategy

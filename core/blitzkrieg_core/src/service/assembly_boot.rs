@@ -972,6 +972,10 @@ impl Core {
                 fast_last_eval_ms: 0,
                 // Issue #390 (nofast): 0 = due on the first tick.
                 fast_next_exit_deadline_ms: 0,
+                // Event-driven live evaluation: first cycle is always real.
+                live_eval_fingerprint: u64::MAX,
+                live_next_stale_ms: 0,
+                live_force_eval: true,
             },
             pair_chase_attempts: HashMap::new(),
             #[cfg(test)]

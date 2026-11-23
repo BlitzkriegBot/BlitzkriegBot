@@ -883,6 +883,7 @@ impl Engine {
         &mut self,
         registry: Option<std::sync::Arc<crate::registry::ParamRegistry>>,
     ) {
+        self.bump_inputs();
         self.hot_params = registry.clone();
         for s in &mut self.strategies {
             s.strategy.set_hot_params(registry.clone());
@@ -900,6 +901,7 @@ impl Engine {
     /// least one instance heard it; `false` = nothing hosted under that
     /// name, the backtester refuses the counterfactual.
     pub fn apply_string_params(&mut self, strategy: &str, overrides: &[(String, String)]) -> bool {
+        self.bump_inputs();
         let mut applied = false;
         for s in &mut self.strategies {
             if s.strategy.name() == strategy {
@@ -1020,6 +1022,7 @@ impl Engine {
     /// strategy off across restarts, remove it from every account's set
     /// (the panel's per-account 启用按钮 / `account.strategies.set`).
     pub fn set_strategy_enabled(&mut self, name: &str, enabled: bool) -> bool {
+        self.bump_inputs();
         let mut found = false;
         for s in &mut self.strategies {
             if s.strategy.name() == name {
@@ -1042,6 +1045,7 @@ impl Engine {
         strategy: Box<dyn EngineStrategy>,
         source: String,
     ) -> Result<String, String> {
+        self.bump_inputs();
         self.register_scoped_strategy(strategy, source, blitzkrieg_market_api::DEFAULT_ACCOUNT_ID)
     }
 
@@ -1055,6 +1059,7 @@ impl Engine {
         source: String,
         account_id: &str,
     ) -> Result<String, String> {
+        self.bump_inputs();
         let name = strategy.name().to_string();
         if self
             .strategies
@@ -1151,6 +1156,7 @@ impl Engine {
     /// name must stop being assignable (an assignment rebuild would find no
     /// source and warn-skip).
     pub fn unregister_user_strategy(&mut self, name: &str) -> Result<bool, String> {
+        self.bump_inputs();
         let Some(idx) = self
             .strategies
             .iter()
@@ -1174,6 +1180,7 @@ impl Engine {
     /// re-instantiate it; only `unregister_user_strategy` — the physical
     /// unload — drops the source).
     pub fn unregister_strategy_all_scopes(&mut self, name: &str) -> Result<bool, String> {
+        self.bump_inputs();
         if self
             .strategies
             .iter()
@@ -1264,6 +1271,7 @@ impl Engine {
         held: &[String],
         build: &mut ScopeBuilder<'_>,
     ) -> Vec<String> {
+        self.bump_inputs();
         let mut kept_exits_only: Vec<String> = Vec::new();
         // 1. Demote removed-and-held.
         for s in &mut self.strategies {

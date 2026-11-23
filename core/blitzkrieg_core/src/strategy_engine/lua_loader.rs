@@ -1001,6 +1001,19 @@ impl EngineStrategy for LuaEngineAdapter {
         self.holds_to_settlement
     }
 
+    fn reads_wall_clock(&self) -> bool {
+        self.inner.reads_wall_clock()
+    }
+
+    fn input_revision(&self) -> u64 {
+        // The registry swaps a fresh Arc into the cell on every write; the
+        // pointer identity of the current value is the revision.
+        self.params_cell
+            .as_ref()
+            .map(|cell| Arc::as_ptr(&cell.load_full()) as usize as u64)
+            .unwrap_or(0)
+    }
+
     fn wants_trailing_exit(&self) -> Option<bool> {
         self.trailing_exit
     }

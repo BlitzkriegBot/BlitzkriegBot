@@ -18,6 +18,97 @@ impl Core {
             || now_ms - self.fast_path.fast_last_eval_ms >= FAST_EVAL_FALLBACK_MS
     }
 
+    /// Event-driven live evaluation: whether this live/dry kernel may skip
+    /// the Lua call on a quiet tick at all — the switch is on, no replay
+    /// scheduling owns the cycle, shadow evolution is off (its cadence rides
+    /// real evaluations), and every enabled strategy is clock-safe.
+    pub(crate) fn live_event_eval_engaged(&self) -> bool {
+        self.config.event_driven_eval
+            && !self.replay_sched()
+            && !self.shadow_evolution.is_enabled()
+            && self
+                .engine
+                .as_ref()
+                .is_some_and(|e| e.clock_safe_for_event_eval())
+    }
+
+    /// Event-driven live evaluation: whether THIS cycle must call Lua. Must
+    /// be asked after the cycle's host pushes (equity, accounts, positions,
+    /// pair views) landed in the engine. True when an engine input changed
+    /// since the last real evaluation, the unix second moved on (every
+    /// integer-second round-clock field a strategy reads — `time_left_sec`,
+    /// the slot, the age — can only change at a second boundary: round
+    /// starts and expiries are whole seconds), a book crossed the freshness
+    /// limit, or the last real evaluation emitted exits / pair declarations.
+    fn live_eval_due(&self, now_ms: i64) -> bool {
+        let fp = self
+            .engine
+            .as_ref()
+            .map(|e| e.inputs_fingerprint())
+            .unwrap_or(u64::MAX);
+        let second = |t: i64| t.saturating_sub(1).div_euclid(1000);
+        self.fast_path.live_force_eval
+            || fp != self.fast_path.live_eval_fingerprint
+            || second(now_ms) != second(self.fast_path.fast_last_eval_ms)
+            || now_ms >= self.fast_path.live_next_stale_ms
+    }
+
+    /// The per-cycle host pushes every evaluation (real or replayed) makes
+    /// before the engine judges anything: the account books, trading and
+    /// freeze switches, venue bindings, the held-position view and the pair
+    /// views. Shared by the event-driven gate so its fingerprint sees THIS
+    /// cycle's values.
+    fn push_engine_cycle_inputs(&mut self, now_ms: i64) {
+        let held_view = self.held_position_view();
+        let pair_views = self.cycle_pair_views();
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        engine.set_equity_usd(self.accounts.active_ledger().balance());
+        for a in self.accounts.account_list() {
+            let id = a.id.as_str();
+            let equity = self
+                .accounts
+                .ledger_of(&a.id)
+                .map(|l| l.balance())
+                .unwrap_or_default();
+            engine.set_account_equity(id, equity);
+            engine.set_account_trading(id, a.trading_enabled);
+            engine.set_account_venue(id, &a.venue);
+            let blocked = self.account_gates.get(id).is_some_and(|g| {
+                g.blocked && g.expires_at_ms.is_none_or(|expires| now_ms < expires)
+            });
+            engine.set_account_frozen(id, blocked);
+        }
+        engine.set_positions_view(held_view);
+        engine.set_pair_views_snapshot(pair_views);
+    }
+
+    /// RFC 568 阶段一：本周期每策略的配对簿视图快照（owner 过滤在 Core 侧做完
+    /// —— 实例主账户 + arb 腿账户白名单）。
+    fn cycle_pair_views(&self) -> Vec<crate::pair::PairView> {
+        self.engine
+            .as_ref()
+            .map(|e| {
+                e.hosted()
+                    .iter()
+                    .filter(|s| s.enabled)
+                    .map(|s| {
+                        let mut accounts: HashSet<String> = HashSet::new();
+                        accounts.insert(s.account_id.clone());
+                        if let Some(ls) = s.strategy.arb_leg_accounts() {
+                            accounts.extend(ls.iter().cloned());
+                        }
+                        (s.strategy.name().to_string(), accounts)
+                    })
+                    .collect::<Vec<(String, HashSet<String>)>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|(name, accounts)| self.pair_views_for(&name, &accounts))
+            .collect()
+    }
+
     pub fn engine_evaluate(&mut self, now_ms: i64) -> usize {
         if self.engine.is_none() {
             return 0;
@@ -62,6 +153,18 @@ impl Core {
                 return orders;
             }
         }
+        // Event-driven live evaluation: the same quiet-cycle replay on the
+        // live/dry kernel, gated by the input fingerprint + whole-second
+        // clock instead of the replay scheduler's virtual deadlines.
+        let live_gated = self.live_event_eval_engaged();
+        if live_gated {
+            self.push_engine_cycle_inputs(now_ms);
+            if !self.live_eval_due(now_ms)
+                && let Some(orders) = self.engine_replay_cycle_with(now_ms, true)
+            {
+                return orders;
+            }
+        }
         if self.replay_sched() {
             // A real evaluation consumes the wake; the timing boundary is
             // recomputed after the engine borrow ends (below).
@@ -87,27 +190,7 @@ impl Core {
         // 侧做完 —— 实例主账户 + arb 腿账户白名单，与 holdings 视图拓宽同
         // 形）。也在引擎借用打开前构建；策略层经 `bk.arb.pairs()` 只读
         // （最终一致，附注 2）。
-        let pair_views: Vec<crate::pair::PairView> = self
-            .engine
-            .as_ref()
-            .map(|e| {
-                e.hosted()
-                    .iter()
-                    .filter(|s| s.enabled)
-                    .map(|s| {
-                        let mut accounts: HashSet<String> = HashSet::new();
-                        accounts.insert(s.account_id.clone());
-                        if let Some(ls) = s.strategy.arb_leg_accounts() {
-                            accounts.extend(ls.iter().cloned());
-                        }
-                        (s.strategy.name().to_string(), accounts)
-                    })
-                    .collect::<Vec<(String, HashSet<String>)>>()
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|(name, accounts)| self.pair_views_for(&name, &accounts))
-            .collect();
+        let pair_views = self.cycle_pair_views();
         let engine = self.engine.as_mut().expect("engine present");
         // #202: the equity-relative sizing is a percentage of the account, and
         // the account is the ledger — pushed here, once per cycle, so a ticket
@@ -139,6 +222,15 @@ impl Core {
         engine.set_positions_view(held_view);
         // 视图落引擎的 per-cycle 快照（evaluate 的 ctx 构造从这取）。
         engine.set_pair_views_snapshot(pair_views);
+        // Event-driven live evaluation: the inputs this real evaluation sees
+        // (read after the pushes, before Lua — placements this cycle makes
+        // bump the epoch and so force one more real evaluation).
+        self.fast_path.live_eval_fingerprint = engine.inputs_fingerprint();
+        self.fast_path.live_next_stale_ms = engine.next_book_stale_ms(now_ms).unwrap_or(i64::MAX);
+        if !replay_sched {
+            self.fast_path.fast_last_eval_ms = now_ms;
+        }
+        self.stats.lua_evaluations += 1;
         let orders = engine.evaluate(now_ms);
         // Replay fast path: recompute when the round-timing verdict can next
         // flip — quiet ticks skip the Lua call until then (or the fallback
@@ -186,6 +278,8 @@ impl Core {
         // 借用结束后 —— 与 poison_alerts 的先收后发同一模式）。
         let pair_refusals = engine.take_pair_refusals();
         let pair_declarations = engine.take_pair_declarations();
+        self.fast_path.live_force_eval =
+            !drained_exits.is_empty() || !pair_refusals.is_empty() || !pair_declarations.is_empty();
         for (name, alert) in poison_alerts {
             self.emit(Event::RiskAlert {
                 code: CoreErrorCode::Internal,
@@ -906,6 +1000,16 @@ impl Core {
     /// while it is enabled), and the eval-call health counters (host
     /// diagnostic, exempt host fields).
     pub(super) fn engine_replay_cycle(&mut self, now_ms: i64) -> Option<usize> {
+        self.engine_replay_cycle_with(now_ms, false)
+    }
+
+    /// [`Self::engine_replay_cycle`] with the event-driven live variant:
+    /// `live` additionally folds the replayed cycle's blocked verdicts into
+    /// the gate tallies and logs its honoured exemptions — the two per-cycle
+    /// side effects the every-tick live path produces after its Lua call
+    /// (`tally_blocked` / `take_exemptions`), which the replay report never
+    /// carried and so the replay variant keeps leaving alone.
+    pub(super) fn engine_replay_cycle_with(&mut self, now_ms: i64, live: bool) -> Option<usize> {
         let held_view = self.held_position_view();
         let staged = self
             .engine
@@ -936,7 +1040,14 @@ impl Core {
                     e.set_account_frozen(id, blocked);
                 }
                 e.set_positions_view(held_view);
-                e.replay_candidates(now_ms)
+                let staged = e.replay_candidates(now_ms);
+                if live && staged.is_some() {
+                    e.tally_blocked();
+                    for rec in e.take_exemptions() {
+                        tracing::info!(target: "strategy", "{}", rec.audit_line());
+                    }
+                }
+                staged
             })
             .unwrap_or_else(|| Some(Vec::new()))?;
         let orders = staged;

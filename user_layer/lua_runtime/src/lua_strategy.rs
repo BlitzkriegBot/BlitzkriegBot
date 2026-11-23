@@ -51,6 +51,27 @@ pub struct LuaStrategy {
     state: Arc<Mutex<BkState>>,
     modes: Vec<StrategyMode>,
     health: Arc<Mutex<LuaHealth>>,
+    /// Whether the entry script can observe the millisecond wall clock
+    /// (`bk.now_ms()` or `round.now_ms`), judged from its source text. The
+    /// sandbox strikes `load`/`require`/`debug`, so the entry file is the
+    /// whole program; dynamic indexing of `bk` (`bk[...]`) is counted as a
+    /// possible clock read. Read by the host's event-driven evaluation: a
+    /// script that never reads the clock below whole seconds produces the
+    /// same output on every tick between two input changes.
+    reads_wall_clock: bool,
+}
+
+/// Conservative source scan behind [`LuaStrategy::reads_wall_clock`]: any
+/// mention of `now_ms` (the `bk.now_ms()` call and the `RoundInfo.now_ms`
+/// field share the name), a dynamic `bk[` index, or the stdlib thesis-death
+/// default (its quote-timeout leg compares `now_ms` against the book's
+/// timestamp — opted into by `BK_THESIS_DEATH_ENABLE` or called directly)
+/// counts as a clock read.
+pub fn source_reads_wall_clock(code: &str) -> bool {
+    code.contains("now_ms")
+        || code.contains("bk[")
+        || code.contains("thesis_death_default")
+        || code.contains("BK_THESIS_DEATH_ENABLE")
 }
 
 impl std::fmt::Debug for LuaStrategy {
@@ -95,7 +116,13 @@ impl LuaStrategy {
             state,
             modes,
             health: Arc::new(Mutex::new(LuaHealth::default())),
+            reads_wall_clock: source_reads_wall_clock(code),
         })
+    }
+
+    /// See the field: whether this script may read the millisecond clock.
+    pub fn reads_wall_clock(&self) -> bool {
+        self.reads_wall_clock
     }
 
     /// The one-shot poison alert (§6.3): the core emits it as a single

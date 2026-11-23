@@ -18,6 +18,7 @@ impl Engine {
             pending_tokens: HashSet::new(),
             last_candidates: Vec::new(),
             candidates_stable: false,
+            inputs_epoch: 0,
             last_time_left_sec: 0,
             last_blocked: Vec::new(),
             last_exemptions: Vec::new(),
@@ -61,11 +62,13 @@ impl Engine {
     /// 族的行与读数的回落），不是「当前选中的网格」—— per-account 写入改它就
     /// 是跨账户串味的来源。
     pub fn anchor_scanner_grid(&mut self, venue: &str, duration_sec: i64) {
+        self.bump_inputs();
         self.scanner.anchor_grid(venue, duration_sec);
     }
 
     /// 整体替换网格池 —— 启动回填（进程默认族 + 每个账户锚定的族）。
     pub fn set_scanner_grids(&mut self, families: impl IntoIterator<Item = (String, i64)>) {
+        self.bump_inputs();
         self.scanner.set_grids(families);
     }
 
@@ -97,6 +100,7 @@ impl Engine {
     /// double-place legs onto the first deployment's accounts. Unconfigured
     /// (= None) fans out as None everywhere.
     pub fn set_arb_leg_config(&mut self, cfg: Option<crate::account::CrossVenueArbConfig>) {
+        self.bump_inputs();
         self.arb_leg_config = cfg.clone();
         for s in &mut self.strategies {
             let scope_cfg = match (&cfg, s.account_id.as_str()) {
@@ -126,6 +130,7 @@ impl Engine {
     /// #427: record one confirmed cross-venue mapping (last write wins per
     /// event id). Called by the host when a `UnifiedMapping` event arrives.
     pub fn put_unified_mapping(&mut self, event: blitzkrieg_market_api::unified::UnifiedEvent) {
+        self.bump_inputs();
         self.unified_mappings.insert(event.id.clone(), event);
     }
 
@@ -134,6 +139,7 @@ impl Engine {
     /// `unified.revoke` so strategies stop seeing the event immediately.
     /// Removing an unknown id is a no-op.
     pub fn remove_unified_mapping(&mut self, event_id: &str) {
+        self.bump_inputs();
         self.unified_mappings.remove(event_id);
     }
 
@@ -154,6 +160,9 @@ impl Engine {
     /// absolute budget back in would silently restore the fixed lot #202 is
     /// about.
     pub fn set_equity_usd(&mut self, equity: Decimal) {
+        if self.equity_usd != equity {
+            self.bump_inputs();
+        }
         self.equity_usd = equity;
     }
 
@@ -162,13 +171,17 @@ impl Engine {
     /// included — its value mirrors `set_equity_usd`). A scope without a push
     /// sizes against zero: fail-closed, no ticket.
     pub fn set_account_equity(&mut self, account: &str, equity: Decimal) {
-        self.equity_by_account.insert(account.to_string(), equity);
+        if self.equity_by_account.insert(account.to_string(), equity) != Some(equity) {
+            self.bump_inputs();
+        }
     }
 
     /// Mirror one account's trading switch (account book fact). OFF = the
     /// scope contributes no entry candidates; its exits keep flowing.
     pub fn set_account_trading(&mut self, account: &str, enabled: bool) {
-        self.trading_by_account.insert(account.to_string(), enabled);
+        if self.trading_by_account.insert(account.to_string(), enabled) != Some(enabled) {
+            self.bump_inputs();
+        }
     }
 
     /// Mirror one account's freeze (account-scoped kill switch). A frozen
@@ -176,14 +189,22 @@ impl Engine {
     /// exits flowing — so a venue outage that freezes account A no longer
     /// stops account B from trading. Service-owned fact, engine only reads.
     pub fn set_account_frozen(&mut self, account: &str, frozen: bool) {
-        self.frozen_by_account.insert(account.to_string(), frozen);
+        if self.frozen_by_account.insert(account.to_string(), frozen) != Some(frozen) {
+            self.bump_inputs();
+        }
     }
 
     /// Mirror one account's venue binding (`account.venue.set`). Empty string
     /// = unbound (may trade any venue's tokens).
     pub fn set_account_venue(&mut self, account: &str, venue: &str) {
-        self.venue_by_account
-            .insert(account.to_string(), venue.to_string());
+        if self
+            .venue_by_account
+            .insert(account.to_string(), venue.to_string())
+            .as_deref()
+            != Some(venue)
+        {
+            self.bump_inputs();
+        }
     }
 
     /// #932: record one token's declared venue minimum order size (a
@@ -191,6 +212,7 @@ impl Engine {
     /// stops declaring must not leave a stale floor behind. Tokens never
     /// declared here keep the configured band (#933 semantics).
     pub fn set_venue_min_shares(&mut self, token_id: &str, min: Option<Decimal>) {
+        self.bump_inputs();
         match min {
             Some(m) => {
                 self.venue_min_shares.insert(token_id.to_string(), m);
@@ -293,6 +315,9 @@ impl Engine {
     /// pushes by design: a cycle's view is the book as of its own start, the
     /// same consistency the books and equity in that ctx have.
     pub fn set_positions_view(&mut self, positions: Vec<HeldPosition>) {
+        if self.positions_view != positions {
+            self.bump_inputs();
+        }
         self.positions_view = positions;
     }
 
@@ -302,6 +327,9 @@ impl Engine {
     /// pushes by design（最终一致，附注 2）：a cycle's view is the book as
     /// of its own start.
     pub fn set_pair_views_snapshot(&mut self, views: Vec<crate::pair::PairView>) {
+        if self.pair_views_snapshot != views {
+            self.bump_inputs();
+        }
         self.pair_views_snapshot = views;
     }
 
@@ -373,6 +401,7 @@ impl Engine {
     }
 
     pub fn set_config(&mut self, cfg: EngineConfig) {
+        self.bump_inputs();
         self.scanner.set_config(cfg.scanner.clone());
         // RFC-645 A-2 (决议④): the ONE marshal runs HERE, at the dispatch
         // site — every hosted strategy receives the same projection bytes the
@@ -394,6 +423,7 @@ impl Engine {
     /// whole change — and it remains the global ceiling that per-strategy
     /// overrides are clamped by, which is what makes it safe to move at runtime.
     pub fn set_share_band(&mut self, min_shares: Decimal, max_shares: Decimal) {
+        self.bump_inputs();
         self.cfg.min_shares = min_shares;
         self.cfg.max_shares = max_shares;
     }
@@ -444,6 +474,7 @@ impl Engine {
     /// Feed one market-data event. Returns tokens whose confirmed trend broke so
     /// the caller can cancel their resting bids.
     pub fn on_data(&mut self, ev: DataEvent) -> Vec<(String, Decimal)> {
+        self.bump_inputs();
         match ev {
             DataEvent::Book {
                 token_id,
@@ -992,6 +1023,7 @@ impl Engine {
     /// 统一给定（批式拉取一次请求一个时钟）。返回聚合的趋势断裂供调用方
     /// 撤单（与 [`Engine::on_data`] 的返回语义相同）。
     pub fn on_data_books(&mut self, books: &[BatchBook], now_ms: i64) -> Vec<(String, Decimal)> {
+        self.bump_inputs();
         for (token_id, bids, asks) in books {
             let b = match self.books.get_mut(token_id) {
                 Some(b) => b,

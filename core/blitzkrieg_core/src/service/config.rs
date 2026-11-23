@@ -499,6 +499,18 @@ pub struct CoreConfig {
     /// keeps the historic every-tick behaviour on every path. Default
     /// `false`.
     pub replay_scheduling: bool,
+    /// Event-driven engine evaluation on the live/dry kernel (the
+    /// operator's choice: evaluate only when market data changes). A quiet
+    /// maintenance tick skips the Lua call and re-runs the standing
+    /// candidates of the last real evaluation through the same kernel gates
+    /// (`engine_replay_cycle`). A real evaluation still runs on every engine
+    /// input change, every whole second (the round clock strategies read),
+    /// every book freshness expiry, and after any cycle whose strategies
+    /// emitted exits or pair declarations. Only engaged while every enabled
+    /// strategy declares it never reads the millisecond clock. Ignored by
+    /// replays (they keep `replay_scheduling`). Default `true`; `false`
+    /// restores the every-tick Lua call.
+    pub event_driven_eval: bool,
     /// Issue #991/#1002: what an unverifiable-expiry fallback close books.
     /// `Receivable` (default) is the #991 behaviour: the fallback notional is
     /// booked as a claim in the settlement receivable pool — estimated money
@@ -689,6 +701,8 @@ impl Default for CoreConfig {
             // Issue #390: replay maintenance scheduling off by default — the
             // live kernel stays every-tick on every path.
             replay_scheduling: false,
+            // Event-driven live evaluation on by default (see the field).
+            event_driven_eval: true,
             // Issue #991/#1002: the #684 cash model stays the default — the
             // operator's receivable model is opt-in, so no existing
             // deployment (or test) changes behaviour without naming the

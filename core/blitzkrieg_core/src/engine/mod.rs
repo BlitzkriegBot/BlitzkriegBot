@@ -407,6 +407,13 @@ pub struct Engine {
     /// cycle) is exactly the state a quiet-tick replay reproduces. Unstable
     /// phases fall back to real evaluations until the output settles.
     candidates_stable: bool,
+    /// Event-driven evaluation (live/dry kernel): bumped by every engine
+    /// input the strategies can observe — data events, configuration and
+    /// strategy-set mutators, pending-token changes, and the per-cycle host
+    /// pushes (equity, account switches, positions, pair views) when their
+    /// value changes. Between two equal readings plus the same whole second,
+    /// a clock-safe strategy sees identical inputs.
+    inputs_epoch: u64,
     /// E25 (#331): `time_left_sec` of the most recent evaluate cycle — the
     /// arbitration physics projection reads it (`effective_stop_pct`).
     last_time_left_sec: i64,
@@ -571,6 +578,53 @@ pub struct PairDeclaration {
 }
 
 impl Engine {
+    /// See `inputs_epoch`.
+    fn bump_inputs(&mut self) {
+        self.inputs_epoch = self.inputs_epoch.wrapping_add(1);
+    }
+
+    /// Event-driven evaluation: a fingerprint of everything an evaluation
+    /// reads besides the clock — the engine's own input epoch folded with
+    /// each hosted strategy's external revision (the hot-param cell a
+    /// registry can swap without an engine call).
+    pub fn inputs_fingerprint(&self) -> u64 {
+        let mut fp = self.inputs_epoch;
+        for s in &self.strategies {
+            fp = fp
+                .rotate_left(7)
+                .wrapping_add(s.strategy.input_revision())
+                .wrapping_add(u64::from(s.enabled));
+        }
+        fp
+    }
+
+    /// Event-driven evaluation: true when every ENABLED strategy declared it
+    /// does not read the millisecond clock (`EngineStrategy::reads_wall_clock`),
+    /// so its output can only move with an input change or a whole-second
+    /// round-clock tick. Any clock reader keeps the every-tick cycle.
+    pub fn clock_safe_for_event_eval(&self) -> bool {
+        self.strategies
+            .iter()
+            .filter(|s| s.enabled)
+            .all(|s| !s.strategy.reads_wall_clock())
+    }
+
+    /// Event-driven evaluation: the first instant after `now_ms` at which a
+    /// held book crosses the freshness limit (`max_orderbook_stale_ms`) —
+    /// the one collection input that moves with the millisecond clock alone.
+    pub fn next_book_stale_ms(&self, now_ms: i64) -> Option<i64> {
+        let stale = self.cfg.max_orderbook_stale_ms;
+        if stale <= 0 {
+            return None;
+        }
+        self.books
+            .values()
+            .filter(|b| !b.is_empty())
+            .map(|b| b.timestamp().saturating_add(stale).saturating_add(1))
+            .filter(|t| *t > now_ms)
+            .min()
+    }
+
     /// Default-scope convenience: the service layer calls
     /// `note_scoped_order_placed`; tests and legacy callers use this.
     pub fn note_order_placed(&mut self, token_id: &str) {
@@ -585,6 +639,9 @@ impl Engine {
     /// An empty map clears every binding (all instances back to the unbound,
     /// whole-table dispatch).
     pub fn set_strategy_round_families(&mut self, families: HashMap<String, i64>) {
+        if families != self.strategy_families {
+            self.bump_inputs();
+        }
         self.strategy_families = families;
         for s in &mut self.strategies {
             s.round_family_sec = self
@@ -599,6 +656,9 @@ impl Engine {
     /// and again on every `round_duration.set` / reset so a live switch
     /// immediately re-scopes each account's hosted strategies.
     pub fn set_account_round_durations(&mut self, durations: HashMap<String, i64>) {
+        if durations != self.account_round_durations {
+            self.bump_inputs();
+        }
         self.account_round_durations = durations;
     }
 
@@ -640,8 +700,12 @@ impl Engine {
     /// Mark a (scope, token) pair as having a live entry order this round
     /// (suppresses repeats).
     pub fn note_scoped_order_placed(&mut self, account: &str, token_id: &str) {
-        self.pending_tokens
-            .insert((account.to_string(), token_id.to_string()));
+        if self
+            .pending_tokens
+            .insert((account.to_string(), token_id.to_string()))
+        {
+            self.bump_inputs();
+        }
     }
 
     /// Release the repeat-suppression on a token whose entry order reached a
@@ -650,17 +714,23 @@ impl Engine {
     /// leg that ended its order is exactly the gap a strategy may need to top
     /// up this same round. No-op for a token that never had an order.
     pub fn release_pending_token(&mut self, token_id: &str) {
-        self.pending_tokens.remove(&(
+        if self.pending_tokens.remove(&(
             blitzkrieg_market_api::DEFAULT_ACCOUNT_ID.to_string(),
             token_id.to_string(),
-        ));
+        )) {
+            self.bump_inputs();
+        }
     }
 
     /// Scope-aware release used by the service layer: the order carried an
     /// account_id, so the release targets exactly that scope's suppression.
     pub fn release_scoped_pending_token(&mut self, account: &str, token_id: &str) {
-        self.pending_tokens
-            .remove(&(account.to_string(), token_id.to_string()));
+        if self
+            .pending_tokens
+            .remove(&(account.to_string(), token_id.to_string()))
+        {
+            self.bump_inputs();
+        }
     }
 
     /// The release above, scoped to the strategy that placed the order: a
@@ -685,8 +755,13 @@ impl Engine {
                 && s.strategy.holds_to_settlement()
         });
         if is_holder {
-            self.pending_tokens
-                .remove(&(account.to_string(), token_id.to_string()))
+            let lifted = self
+                .pending_tokens
+                .remove(&(account.to_string(), token_id.to_string()));
+            if lifted {
+                self.bump_inputs();
+            }
+            lifted
         } else {
             false
         }

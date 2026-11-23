@@ -632,21 +632,26 @@ impl super::StoreApi for SqliteStore {
         Ok(())
     }
 
-    /// #77: mirror the open-position book into SQLite — one `positions` row
-    /// per open position, upserted by id, all in one transaction. The table is
-    /// (re)ensured idempotently on every call (migration v2 dropped the
-    /// runtime tables from the baseline schema, so `CREATE TABLE IF NOT
-    /// EXISTS` here is the only guarantee its container exists). The byte-
-    /// identical JSONL write in [`crate::service::persistence::persist_positions`]
-    /// stays; this write is the additional StoreApi landing. A failure comes
-    /// back as `Err` at the call site, which logs it and keeps the round
-    /// running — the in-memory book stays the source of truth either way.
+    /// #77 / DRE-12: mirror the open-position book into SQLite — one
+    /// `positions` row per open position, upserted on the official
+    /// `(account_id, position_id)` key, all in one transaction. The table
+    /// uses the official `db/schema.rs` columns (`account_id`, `position_id`,
+    /// `payload_json`, `open`, `updated_at_ms`); this writer must never
+    /// create a competing `id` / `payload` table. `CREATE TABLE IF NOT
+    /// EXISTS` with those official columns is idempotent: v2 dropped the
+    /// table, and a leftover official table (production) is left alone.
+    /// Rows that were open but are no longer in the book are marked
+    /// `open = 0`; history is never deleted. The byte-identical JSONL write
+    /// in [`crate::service::persistence::persist_positions`] stays; this
+    /// write is the additional StoreApi landing. A failure comes back as
+    /// `Err` at the call site, which logs it and keeps the round running —
+    /// the in-memory book stays the source of truth either way.
     fn save_positions(&self, positions: &[OpenPosition]) -> Result<bool, CoreError> {
         let payloads: Vec<(String, String, String)> = positions
             .iter()
             .map(|p| {
                 serde_json::to_string(p)
-                    .map(|payload| (p.id.clone(), p.account_id.as_str().to_owned(), payload))
+                    .map(|payload| (p.account_id.as_str().to_owned(), p.id.clone(), payload))
             })
             .collect::<Result<Vec<_>, serde_json::Error>>()
             .map_err(|e| {
@@ -655,14 +660,19 @@ impl super::StoreApi for SqliteStore {
                     format!("save_positions: serialize failed ({e})"),
                 )
             })?;
+        let now_ms = crate::db::now_ms();
         let mut conn = self.risk.db().lock();
+        // Official schema only. Never create a conflicting (id, payload) table.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS positions (
-                id           TEXT PRIMARY KEY,
-                account_id   TEXT NOT NULL,
-                payload      TEXT NOT NULL,
-                updated_at_ms INTEGER NOT NULL
-            )",
+              account_id    TEXT NOT NULL,
+              position_id   TEXT NOT NULL,
+              payload_json  TEXT NOT NULL,
+              open          INTEGER NOT NULL,
+              updated_at_ms INTEGER NOT NULL,
+              PRIMARY KEY (account_id, position_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_positions_account ON positions(account_id, open);",
         )
         .map_err(|e| {
             CoreError::new(
@@ -676,12 +686,29 @@ impl super::StoreApi for SqliteStore {
                 format!("save_positions: transaction begin failed ({e})"),
             )
         })?;
-        for (id, account_id, payload) in &payloads {
+        // Close vanished book rows first, then upsert the current open set,
+        // so a still-open id is marked closed and reopened in the same
+        // transaction. An empty book just closes every open row.
+        tx.execute(
+            "UPDATE positions SET open = 0, updated_at_ms = ?1 WHERE open != 0",
+            rusqlite::params![now_ms],
+        )
+        .map_err(|e| {
+            CoreError::new(
+                CoreErrorCode::Internal,
+                format!("save_positions: close-mark failed ({e})"),
+            )
+        })?;
+        for (account_id, position_id, payload) in &payloads {
             tx.execute(
-                "INSERT OR REPLACE INTO positions
-                        (id, account_id, payload, updated_at_ms)
-                     VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![id, account_id, payload, crate::db::now_ms()],
+                "INSERT INTO positions
+                        (account_id, position_id, payload_json, open, updated_at_ms)
+                     VALUES (?1, ?2, ?3, 1, ?4)
+                     ON CONFLICT(account_id, position_id) DO UPDATE SET
+                        payload_json = excluded.payload_json,
+                        open = 1,
+                        updated_at_ms = excluded.updated_at_ms",
+                rusqlite::params![account_id, position_id, payload, now_ms],
             )
             .map_err(|e| {
                 CoreError::new(
@@ -1422,10 +1449,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// #77: save_positions mirrors the open-position book — one `positions`
-    /// row per position, upserted by id (repeat saves stay one row), account
-    /// ids isolated, payloads deserialize back to an equal OpenPosition, and
-    /// an empty set still ensures the table without touching any row.
+    /// #77 / DRE-12: save_positions mirrors the open-position book onto the
+    /// official schema — one `positions` row per position, upserted by
+    /// `(account_id, position_id)` (repeat saves stay one row), account ids
+    /// isolated, payloads deserialize back to an equal OpenPosition. Rows
+    /// that leave the open book are marked `open = 0`; an empty book closes
+    /// every open row and never deletes history.
     #[test]
     fn save_positions_mirrors_the_open_book() {
         use crate::account::AccountId;
@@ -1467,15 +1496,15 @@ mod tests {
         let b = make("a2", "bob");
         assert!(store.save_positions(&[a.clone(), b.clone()]).unwrap());
 
-        let rows: Vec<(String, String)> = store
+        let rows: Vec<(String, String, i64)> = store
             .risk
             .db()
-            .with_connection(|conn| -> rusqlite::Result<Vec<(String, String)>> {
-                let mut stmt = conn.prepare("SELECT id, account_id FROM positions ORDER BY id")?;
-                let rows: Vec<(String, String)> = stmt
-                    .query_map([], |r| -> rusqlite::Result<(String, String)> {
-                        Ok((r.get(0)?, r.get(1)?))
-                    })?
+            .with_connection(|conn| -> rusqlite::Result<Vec<(String, String, i64)>> {
+                let mut stmt = conn.prepare(
+                    "SELECT position_id, account_id, open FROM positions ORDER BY position_id",
+                )?;
+                let rows: Vec<(String, String, i64)> = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(rows)
             })
@@ -1483,10 +1512,10 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ("a1".to_string(), "alice".to_string()),
-                ("a2".to_string(), "bob".to_string())
+                ("a1".to_string(), "alice".to_string(), 1),
+                ("a2".to_string(), "bob".to_string(), 1)
             ],
-            "exactly one row per position, keyed by id"
+            "exactly one official-schema row per position, both open"
         );
 
         // Idempotent re-save of a1 with a changed price: still one row per id,
@@ -1501,21 +1530,44 @@ mod tests {
                 conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0))
             })
             .unwrap();
-        assert_eq!(count, 2, "upsert by id never duplicates");
+        assert_eq!(count, 2, "upsert by official key never duplicates");
+        let rows_after: Vec<(String, String, i64)> = store
+            .risk
+            .db()
+            .with_connection(|conn| -> rusqlite::Result<Vec<(String, String, i64)>> {
+                let mut stmt = conn.prepare(
+                    "SELECT position_id, account_id, open FROM positions ORDER BY position_id",
+                )?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .unwrap();
+        assert_eq!(
+            rows_after,
+            vec![
+                ("a1".to_string(), "alice".to_string(), 1),
+                ("a2".to_string(), "bob".to_string(), 0)
+            ],
+            "bob left the open book and must be marked closed, not deleted"
+        );
         let payload: String = store
             .risk
             .db()
             .with_connection(|conn| {
-                conn.query_row("SELECT payload FROM positions WHERE id = 'a1'", [], |r| {
-                    r.get(0)
-                })
+                conn.query_row(
+                    "SELECT payload_json FROM positions WHERE position_id = 'a1'",
+                    [],
+                    |r| r.get(0),
+                )
             })
             .unwrap();
         let back: OpenPosition = serde_json::from_str(&payload).unwrap();
         assert_eq!(back.current_price, dec!(150));
         assert_eq!(back.account_id, AccountId::from("alice"));
 
-        // An empty set: the table is ensured, no row is touched.
+        // An empty book: history stays, every previously open row is closed.
         assert!(store.save_positions(&[]).unwrap());
         let count: i64 = store
             .risk
@@ -1525,6 +1577,132 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 2, "empty save must not delete existing rows");
+        let still_open: i64 = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM positions WHERE open != 0", [], |r| {
+                    r.get(0)
+                })
+            })
+            .unwrap();
+        assert_eq!(still_open, 0, "empty book marks every open row closed");
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Existing databases already carry the official `positions` schema
+    /// (`db/schema.rs`: account_id, position_id, payload_json, open,
+    /// updated_at_ms). The #77 writer must upsert those columns — it must
+    /// not invent a competing `id` / `payload` table. A historical closed
+    /// row stays in place (open=0) when the open book is mirrored.
+    #[test]
+    fn save_positions_works_on_an_existing_official_schema_database() {
+        use crate::account::AccountId;
+        use crate::exit_policy::ExitState;
+        use crate::model::{OrderRole, SignalDirection};
+        use crate::position::CashFlows;
+
+        let (store, dir) = temp_store();
+        store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS positions (
+                      account_id    TEXT NOT NULL,
+                      position_id   TEXT NOT NULL,
+                      payload_json  TEXT NOT NULL,
+                      open          INTEGER NOT NULL,
+                      updated_at_ms INTEGER NOT NULL,
+                      PRIMARY KEY (account_id, position_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_positions_account ON positions(account_id, open);",
+                )
+            })
+            .unwrap();
+        // A historical closed row must survive the mirror (never delete history).
+        store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                conn.execute(
+                    "INSERT INTO positions
+                        (account_id, position_id, payload_json, open, updated_at_ms)
+                     VALUES ('alice', 'old', '{}', 0, 1)",
+                    [],
+                )
+            })
+            .unwrap();
+
+        let now = crate::db::now_ms();
+        let pos = OpenPosition {
+            id: "a1".to_string(),
+            strategy: "spread_arb".into(),
+            asset: "BTC".into(),
+            token_id: "tok".into(),
+            condition_id: "cond".into(),
+            entry_price: dec!(100),
+            current_price: dec!(101),
+            prev_price: dec!(100),
+            shares: dec!(10),
+            cost_usd: dec!(1000),
+            was_maker_entry: true,
+            entry_fee_pct: dec!(5),
+            entry_role: OrderRole::Pending,
+            exit_role: OrderRole::Pending,
+            direction: SignalDirection::Up,
+            target_exit_price: None,
+            entered_at_ms: now,
+            expires_at_ms: now + 3_600_000,
+            account_id: AccountId::from("alice"),
+            venue: "kalshi".into(),
+            partner_token_id: "partner".into(),
+            last_book_ts: now,
+            round_duration_sec: 0,
+            round_slot: 0,
+            state: ExitState::new(dec!(100), now),
+            flows: CashFlows::default(),
+        };
+        assert!(store.save_positions(std::slice::from_ref(&pos)).unwrap());
+
+        let rows: Vec<(String, String, i64)> = store
+            .risk
+            .db()
+            .with_connection(|conn| -> rusqlite::Result<Vec<(String, String, i64)>> {
+                let mut stmt = conn.prepare(
+                    "SELECT account_id, position_id, open FROM positions ORDER BY position_id",
+                )?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("alice".to_string(), "a1".to_string(), 1),
+                ("alice".to_string(), "old".to_string(), 0),
+            ],
+            "official columns, historical closed row preserved, new row open=1"
+        );
+        let payload: String = store
+            .risk
+            .db()
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT payload_json FROM positions WHERE account_id = 'alice' AND position_id = 'a1'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        let back: OpenPosition = serde_json::from_str(&payload).unwrap();
+        assert_eq!(back.id, "a1");
+        assert_eq!(back.account_id, AccountId::from("alice"));
+        assert_eq!(back.current_price, dec!(101));
 
         drop(store);
         let _ = std::fs::remove_dir_all(dir);

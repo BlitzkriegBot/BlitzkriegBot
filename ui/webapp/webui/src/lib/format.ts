@@ -80,12 +80,79 @@ export function signedPct(v: unknown, digits = 1, fallback = '—'): string {
   return `${sign}${Math.abs(n).toFixed(digits)}%`
 }
 
+/** Finite number or null. Empty string, NaN, and Infinity are not prices. */
+export function finiteNumber(v: unknown): number | null {
+  if (v === undefined || v === null || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
 /** Price on a 0..1 prediction market → cents with 1 decimal. */
 export function cents(v: unknown, fallback = '—'): string {
-  const n = Number(v)
-  if (!Number.isFinite(n)) return fallback
+  const n = finiteNumber(v)
+  if (n === null) return fallback
   return `${(n * 100).toFixed(1)}¢`
 }
+
+/**
+ * Implied UP/DOWN mid spread in cents: max(0, up + down − 1) × 100.
+ * Either mid missing → null (caller renders —). Never NaN.
+ */
+export function binarySpreadCents(up: unknown, down: unknown): number | null {
+  const u = finiteNumber(up)
+  const d = finiteNumber(down)
+  if (u === null || d === null) return null
+  // Tenth of a cent matches formatSpreadCents / toFixed(1) and kills 0.51+0.51 fp dust.
+  return Math.round(Math.max(0, u + d - 1) * 1000) / 10
+}
+
+/** Format a value already in cents, or — when not a finite number. */
+export function formatSpreadCents(centsValue: unknown, fallback = '—'): string {
+  const n = finiteNumber(centsValue)
+  if (n === null) return fallback
+  return `${n.toFixed(1)}¢`
+}
+
+/**
+ * Book touch spread. If either best bid or best ask is missing, return
+ * fallback — never 0.0¢ for a one-sided book (that would invent a tight market).
+ * `spread` is in the same 0..1 units as bestBid / bestAsk when present.
+ */
+export function bookSpreadText(
+  bestBid: unknown,
+  bestAsk: unknown,
+  spread?: unknown,
+  fallback = '—',
+): string {
+  const bid = finiteNumber(bestBid)
+  const ask = finiteNumber(bestAsk)
+  if (bid === null || ask === null) return fallback
+  const s = spread === undefined || spread === null || spread === ''
+    ? ask - bid
+    : finiteNumber(spread)
+  if (s === null) return fallback
+  return cents(s)
+}
+
+/**
+ * One-sided (or two-touch) quote when a mid is unreliable.
+ * Never fabricates a mid (L1). Missing book → fallback.
+ */
+export function oneSidedQuoteText(
+  bestBid: unknown,
+  bestAsk: unknown,
+  fallback = '—',
+): string {
+  const bid = finiteNumber(bestBid)
+  const ask = finiteNumber(bestAsk)
+  if (bid !== null && ask !== null) return `买一 ${cents(bid)} · 卖一 ${cents(ask)}`
+  if (ask !== null) return `卖一 ${cents(ask)}`
+  if (bid !== null) return `买一 ${cents(bid)}`
+  return fallback
+}
+
+/** Label under an unreliable mid: this is a book touch, not a trade price. */
+export const NOT_A_TRADE_PRICE_LABEL = '不能作为成交价'
 
 export function duration(sec: unknown, fallback = '—'): string {
   const s = Math.floor(Number(sec))

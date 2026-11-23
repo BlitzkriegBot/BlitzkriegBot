@@ -16,7 +16,7 @@ import SegmentedControl from '@/components/ui/segmented/SegmentedControl.vue'
 import EmptyState from '@/components/ui/empty/EmptyState.vue'
 import BookDepth from '@/components/charts/BookDepth.vue'
 import RollingNumber from '@/components/ui/roll/RollingNumber.vue'
-import { cents, signedPct } from '@/lib/format'
+import { bookSpreadText, cents, finiteNumber, signedPct } from '@/lib/format'
 import { priceCardId } from '@/lib/round-id'
 
 const props = defineProps<{
@@ -46,7 +46,7 @@ const depthMetrics = computed(() => {
   return {
     bestBid: s.bestBid,
     bestAsk: s.bestAsk,
-    spread: s.spread,
+    spreadText: bookSpreadText(s.bestBid, s.bestAsk, s.spread),
     obi: s.obi,
     bidDepth: sum(s.bids),
     askDepth: sum(s.asks),
@@ -89,9 +89,9 @@ const depthMetrics = computed(() => {
     >
       <span>买一 <span class="num text-up"><RollingNumber :value="depthMetrics.bestBid != null ? cents(depthMetrics.bestBid) : '—'" /></span></span>
       <span>卖一 <span class="num text-down"><RollingNumber :value="depthMetrics.bestAsk != null ? cents(depthMetrics.bestAsk) : '—'" /></span></span>
-      <span>点差 <span class="num"><RollingNumber :value="depthMetrics.spread != null ? cents(depthMetrics.spread) : '—'" /></span></span>
+      <span>点差 <span class="num"><RollingNumber :value="depthMetrics.spreadText" /></span></span>
       <span>盘口失衡 OBI <span class="num" :class="(depthMetrics.obi ?? 0) >= 0 ? 'text-up' : 'text-down'"><RollingNumber :value="depthMetrics.obi != null ? signedPct(depthMetrics.obi * 100, 1) : '—'" /></span></span>
-      <span class="text-faint-fg">累计买深 <span class="num text-fg"><RollingNumber :value="depthMetrics.bidDepth.toFixed(1)" /></span> · 卖深 <span class="num text-fg"><RollingNumber :value="depthMetrics.askDepth.toFixed(1)" /></span> 份</span>
+      <span class="text-faint-fg">累计买深 <span class="num text-fg"><RollingNumber :value="finiteNumber(depthMetrics.bidDepth) != null ? depthMetrics.bidDepth.toFixed(1) : '—'" /></span> · 卖深 <span class="num text-fg"><RollingNumber :value="finiteNumber(depthMetrics.askDepth) != null ? depthMetrics.askDepth.toFixed(1) : '—'" /></span> 份</span>
     </div>
     <div class="mt-2">
       <BookDepth :side="activeSide" :height="168" />

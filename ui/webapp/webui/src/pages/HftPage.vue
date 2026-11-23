@@ -1333,6 +1333,7 @@ const journalOpen = ref(false)
          的 visiblePrices（Loading 门清空 + venue 过滤的唯一出口）。 -->
     <PriceGrid
       :visible-prices="visiblePrices"
+      :visible-books="visibleBooks"
       :venue-unbound="venueUnbound"
       :venue-loading="venueLoading"
       :active-venue="activeVenue"

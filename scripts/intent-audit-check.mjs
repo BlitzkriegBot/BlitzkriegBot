@@ -244,7 +244,16 @@ async function main() {
       '--no-strategy-dir', '--round-sec', String(ROUND_SEC),
       '--min-round-age', '0', '--min-time-left', '0',
     ];
-    const proc = spawn(CORE, args, { stdio: ['ignore', 'ignore', 'pipe'], cwd: temp });
+    // child-guard only substitutes a cwd-local sqlite when BLITZKRIEG_DB_PATH
+    // is unset. A leftover shell export (an isolate DB with a 300s account
+    // anchor) would otherwise be inherited; install_engine seeds the grid
+    // pool from core.config() after the SQLite overlay, so the 3600s probe
+    // market would be off-pool and this gate would go red with zero orders.
+    const proc = spawn(CORE, args, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      cwd: temp,
+      env: { BLITZKRIEG_DB_PATH: join(temp, 'data', 'blitzkrieg.sqlite') },
+    });
     await waitForSocket(sock, { timeoutMs: 10000 });
     const client = await CoreClient.connect({ socketPath: sock });
     await client.request('core.ready');

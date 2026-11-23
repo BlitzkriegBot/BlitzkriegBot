@@ -116,13 +116,21 @@ impl CoreConfig {
     /// [`CoreConfig::allow_zero_strategies`] is the acknowledged opt-out.
     pub fn install_engine(&self, core: &mut Core) -> Result<(), String> {
         core.enable_engine(crate::engine::Engine::new(self.engine_config()));
-        core.seed_scanner_grids(self);
+        // Grid-pool membership and per-account anchors must come from Core's
+        // config — the SQLite overlay's destination — not from `self`.
+        // Session boot clones CoreConfig before `Core::new`; `install_risk_db`
+        // then writes `account_round_durations` into `core.config()` only.
+        // Seeding from `self` left the pool at the process default, so every
+        // overlaid family was admitted as `NoMarkets`. The same source of
+        // truth also covers re-assembly after `round_duration.set`.
+        let live = core.config().clone();
+        core.seed_scanner_grids(&live);
         // #1170 (方案 A): push the parsed family bindings into the engine
         // BEFORE the strategy packages load — registration stamps each scope
         // from the engine's table, so every load/reload/rebuild inherits the
         // binding without another push.
         core.apply_strategy_round_families(&self.strategy_round_families);
-        core.apply_account_round_durations(&self.account_round_durations);
+        core.apply_account_round_durations(&live.account_round_durations);
         self.load_strategy_dir(core);
         self.load_lua_strategy_dir(core);
         for name in &self.enabled_strategies {

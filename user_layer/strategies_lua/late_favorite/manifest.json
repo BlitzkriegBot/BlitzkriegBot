@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "bb7f902132369c7247f034a6b16dc7d0c9364d155ec89e15052ba87e64671cbe",
+  "sha256": "805454e572305e666d7624cb854490b0636c0adfa6bcab67a52c84c5e0ceab2c",
   "author": "BlitzkriegBot",
   "description": "Near-settlement favorite filtered by Digital Black-Scholes fair-value edge, conservative multi-horizon realized spot volatility, and 15s spot momentum. With 20-120 seconds left, buy BTC side whose touch is inside 0.75-0.86 when fair - (ask + taker_fee) >= min_edge (default 0.10) and spot momentum aligns; hold to settlement. One attempt per condition per round; a fill or cancel is not re-entered.",
   "holds_to_settlement": true,

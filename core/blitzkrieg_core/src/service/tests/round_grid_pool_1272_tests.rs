@@ -235,3 +235,83 @@ fn a_round_write_survives_a_restart_with_the_same_account_grid() {
         "the restarted pool still carries the process default family"
     );
 }
+
+/// Session boot clones `CoreConfig` before `Core::new`. The SQLite overlay
+/// (`install_risk_db`) writes `account_round_durations` into Core's config
+/// only. #1272's restart test re-installs from `core.config().clone()` — a
+/// clone that already carries the overlay — so it never saw this split.
+/// This pins the production call shape: `install_engine` is invoked with
+/// the pre-overlay session clone, and the DB-overlaid 300s anchor must
+/// still enter the grid pool.
+#[test]
+fn db_overlaid_per_account_anchor_enters_the_pool_through_install_engine() {
+    let dir = std::env::temp_dir().join(format!(
+        "bk-grid-pool-db-anchor-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db_path = dir.join("store.sqlite");
+    let db = crate::risk::account_store::AccountRiskDb::open(&db_path).expect("db opens");
+    db.save_setting(
+        "default",
+        crate::risk::account_store::ROUND_DURATION_SETTING,
+        Some("300"),
+    )
+    .expect("anchor row");
+
+    let session_cfg = CoreConfig {
+        dry_seed_balance: dec!(1000),
+        auto_exits_enabled: false,
+        allowed_round_secs: vec![300, 900],
+        default_round_duration_sec: 900,
+        round_duration_sec: 900,
+        min_round_age_sec: 0,
+        trade_log_path: None,
+        order_log_path: None,
+        position_log_path: None,
+        allow_zero_strategies: true,
+        engine_enabled: true,
+        ..Default::default()
+    };
+    // Empty `rounds`: the account book's declarations do not carry 300.
+    // The only 300s source is the DB overlay, matching production.
+    let book = crate::account::AccountLedgers::new(
+        vec![account("default", "polymarket", vec![])],
+        crate::model::default_account_id(),
+    );
+    let mut core = Core::with_account_book(session_cfg.clone(), book);
+    core.open_account_risk_db(&db_path)
+        .expect("SQLite overlay applies");
+
+    assert_eq!(
+        core.config()
+            .account_round_durations
+            .get("default")
+            .copied(),
+        Some(300),
+        "the overlay landed in Core.config (the readout source of truth)"
+    );
+    assert!(
+        !session_cfg.account_round_durations.contains_key("default"),
+        "the session clone is still pre-overlay"
+    );
+
+    session_cfg
+        .install_engine(&mut core)
+        .expect("install_engine");
+
+    let scanner = core.engine().expect("engine").scanner();
+    let keys = scanner.grid_keys();
+    assert!(
+        keys.contains(&("polymarket".to_string(), 300)),
+        "DB-overlaid 300s anchor must be in the pool: {keys:?}"
+    );
+    assert!(
+        scanner.admits_family("polymarket", 300),
+        "DB-overlaid 300s family must be admitted: {keys:?}"
+    );
+}

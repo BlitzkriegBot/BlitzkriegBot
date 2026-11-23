@@ -29,16 +29,16 @@ description: 独立交易者的 TradingOS —— Market-Agnostic Core、Risk-Fir
 </section>
 
 <section class="bb-sec" id="late-favorite">
-  <p class="bb-eyebrow">First strategy we will recommend for live</p>
+  <p class="bb-eyebrow">First recommended strategy for live</p>
   <h2 class="bb-h2">late_favorite</h2>
-  <p class="bb-card-lead">Polymarket BTC 5 分钟和 15 分钟，结算前 45–120 秒，用 taker 买入卖价 0.80–0.90 的一边，持有到结算。这是目前唯一一组在未看过的窗口上同时达到胜率 ≥ 80% 和盈亏比 ≥ 1.2 的出厂参数。</p>
+  <p class="bb-card-lead">Polymarket BTC 5 分钟市场（<code>btc_only=1</code>，<code>max_round_sec=300</code>），结算前 20–120 秒、卖价 0.75–0.86 内，按 Digital Black-Scholes 公允概率边际 <code>fair − (ask + fee) ≥ 0.10</code>、保守多尺度已实现波动率 <code>max(σ120, σ300, σ600)</code> 与 15 秒 Binance 现货同向动量过滤，用 taker 买入并持有到结算。</p>
   <ul class="bb-list">
-    <li>决策窗口 2026-09-26 至 09-30：351 笔，胜率 97.72%，盈亏比 6.74，净利 +382.40 美元，最大回撤 15.67 美元</li>
-    <li>同一规则在已经看过的 2026-10-12 至 10-26：1,510 笔，胜率 99.8% 左右，盈亏比远高于 1.2</li>
-    <li>四个资产一起做，在 09-26 至 09-30 也过线（2,740 笔，87.88%，1.208），但在 10-19 至 10-26 是 1.182，没过</li>
-    <li>挂买一的 maker 版本在决策窗口盈亏比 0.83，没有采用</li>
+    <li><strong>未使用样本外留出集（2026-11-13 至 11-22，9 天，2,590 市场）</strong>：225 笔，胜率 84.00%，PF 1.375，单笔均盈/均亏 +$2.06 / −$7.86，净利 +$106.06，最大回撤 $46.70（+2 秒延迟 / +1 美分滑点压力测试：169 笔，胜率 84.62%，PF 1.354）；同窗未过滤 0.80–0.90 基线 PF 仅 0.811（−$456.34）</li>
+    <li><strong>样本外验证集（2026-10-26 至 11-05，10 天，2,855 市场）</strong>：272 笔，胜率 86.03%，PF 1.543，净利 +$162.10，最大回撤 $24.60（压力 PF 1.414）；已见窗（11-05 至 11-13，8 天）：243 笔，胜率 84.36%，PF 1.349（压力 PF 1.201）</li>
+    <li><strong>训练集（2026-09-12 至 09-26 + 09-30 至 10-26，40 天，11,520 市场）</strong>：1,125 笔，胜率 87.82%，PF 1.781，净利 +$852.20，最大回撤 $36.10（压力 PF 1.458）</li>
+    <li><strong>为什么限制价格上限与单资产</strong>：旧版未过滤 0.80–0.90 在全量磁带上全窗负期望（PF 0.81–0.88），0.88–0.90 档保本胜率高达 89.7%（单笔亏损可吞掉 8–10 笔盈利），且四币同时开仓会在反转轮次造成同向连亏；15 分钟轮在压力测试下 PF 仅 1.013，默认不启用</li>
   </ul>
-  <p class="bb-card-foot">数字来自结算真值回放，不是实盘。每个市场只用最新 200 笔成交，卖价按打印加最多 1 美分，每笔 10 股。实盘结果会不同。进程的 <code>DRY_RUN</code> 默认是 true；启用 <code>late_favorite</code> 不会把它关掉。先在 dry-run 里打开：<code>--enable-strategy late_favorite</code>。详见 <a href="./late-favorite">late_favorite</a>。</p>
+  <p class="bb-card-foot">以上为 Polymarket 全量历史成交通道（cursor 翻到底）与 Binance 1s 现货对齐结算真值的回放结果（及 dry-run 对齐说明），每笔固定 10 股并扣除 <code>0.07×p×(1−p)</code> taker 手续费。回测与 dry-run 均不构成未来实盘收益保证；队列位置、滑点、链上结算 TWAP 与基差波动会导致实盘差异。进程 <code>DRY_RUN</code> 默认保持 <code>true</code>，启用 <code>--enable-strategy late_favorite</code> 不会关闭 dry-run，是否开启实盘与风控阈值均由用户自行决策。详见 <a href="./late-favorite">late_favorite</a>。</p>
 </section>
 
 <section class="bb-sec bb-brands">

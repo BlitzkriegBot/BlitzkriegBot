@@ -194,3 +194,68 @@ async fn a_set_reply_carries_written_and_read_back() {
     );
     let _ = std::fs::remove_dir_all(env_path.parent().unwrap());
 }
+
+/// Isolated set/get of execution-policy *rules* (not budget / risk thresholds).
+/// The panel save path must hand the kernel the same JSON the operator entered;
+/// this fixture is a throwaway account and does not touch production settings.
+#[tokio::test]
+async fn rules_set_persists_and_reads_back_identically() {
+    let (core, registry, peer, env_path) = policy_fixture_with_accounts(&["acct-clone-rt"]).await;
+    let set = r#"{"jsonrpc":"2.0","id":1,"method":"execution_policy.set","params":{"accountId":"acct-clone-rt","rules":[{"name":"skip_when_two_open","priority":10,"enabled":true,"when":{"field":"open_positions","op":">=","value":2},"then":{"action":"skip"},"reason":"fixture only"}]}}"#;
+    let v = rpc(&core, &registry, &peer, set.into()).await;
+    assert!(v.get("error").is_none(), "set answers: {v}");
+    let res = v.get("result").expect("success reply");
+    assert_eq!(res["accountId"], "acct-clone-rt");
+    let written_rules = res
+        .get("written")
+        .and_then(|w| w.get("rules"))
+        .expect("written.rules");
+    let read_back_rules = res
+        .get("readBack")
+        .and_then(|w| w.get("rules"))
+        .expect("readBack.rules");
+    assert_eq!(
+        written_rules, read_back_rules,
+        "written and reloaded rules must match: {res}"
+    );
+    // Follow-up get — the same document the panel reloads after save.
+    let got = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":2,"method":"execution_policy.get","params":{"accountId":"acct-clone-rt"}}"#
+            .into(),
+    )
+    .await;
+    assert!(got.get("error").is_none(), "get answers: {got}");
+    let get_rules = got
+        .get("result")
+        .and_then(|r| r.get("rules"))
+        .expect("get result.rules");
+    assert_eq!(
+        get_rules, read_back_rules,
+        "get must return the persisted rules: {got}"
+    );
+    // Semantic identity with what the operator entered (op may be normalized).
+    let entered = serde_json::json!([{
+        "name": "skip_when_two_open",
+        "priority": 10,
+        "enabled": true,
+        "when": { "field": "open_positions", "op": ">=", "value": 2 },
+        "then": { "action": "skip" },
+        "reason": "fixture only"
+    }]);
+    assert_eq!(get_rules[0]["name"], entered[0]["name"]);
+    assert_eq!(get_rules[0]["priority"], entered[0]["priority"]);
+    assert_eq!(get_rules[0]["enabled"], entered[0]["enabled"]);
+    assert_eq!(get_rules[0]["reason"], entered[0]["reason"]);
+    assert_eq!(get_rules[0]["when"]["field"], entered[0]["when"]["field"]);
+    assert_eq!(get_rules[0]["when"]["value"], entered[0]["when"]["value"]);
+    let op = get_rules[0]["when"]["op"].as_str().unwrap_or("");
+    assert!(
+        op == ">=" || op == "ge",
+        "op should be the entered >= or the wire alias ge, got {op}"
+    );
+    assert_eq!(get_rules[0]["then"]["action"], entered[0]["then"]["action"]);
+    let _ = std::fs::remove_dir_all(env_path.parent().unwrap());
+}

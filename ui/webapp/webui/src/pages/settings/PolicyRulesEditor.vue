@@ -9,6 +9,7 @@ import { ref } from 'vue'
 import type { ExecutionPolicyPreviewDoc, PolicyRuleView, PolicyThenView } from '@/api/client'
 import { Plus, RotateCcw, Save } from 'lucide-vue-next'
 import { dateTime } from '@/lib/format'
+import { clonePlain } from '@/lib/clone-plain'
 import Badge from '@/components/ui/badge/Badge.vue'
 import Button from '@/components/ui/button/Button.vue'
 import PolicyRuleBuilder from './PolicyRuleBuilder.vue'
@@ -52,10 +53,10 @@ function startAddRule(): void {
 
 /** 深拷贝一条规则进编辑缓冲。规则对象来自内核应答（经 v-model 的响应式
  *  代理），structuredClone 遇 Proxy 抛 DataCloneError —— 「编辑」按钮
- *  因此静默无反应（issue #411）；JSON 往返对 JSON-able 的 PolicyRuleView
- *  足够，且把代理还原成普通对象。 */
+ *  因此静默无反应（issue #411）。统一走 clonePlain，与保存前的
+ *  loadEditorFromSection 同一条路径。 */
 function cloneRule(r: PolicyRuleView): PolicyRuleView {
-  return JSON.parse(JSON.stringify(r)) as PolicyRuleView
+  return clonePlain(r)
 }
 
 function startEditRule(i: number): void {

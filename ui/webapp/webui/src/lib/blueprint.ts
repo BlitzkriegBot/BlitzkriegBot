@@ -12,6 +12,8 @@
  * shape the compiler reads — it adds no new concept and never gates anything.
  */
 
+import { clonePlain } from './clone-plain'
+
 /** The eight node types the v1 compiler accepts (blueprint.rs NodeKind). */
 export type BlueprintNodeType =
   | 'data_source'
@@ -200,7 +202,7 @@ export function parseBlueprintDoc(raw: string): { doc: BlueprintDoc } | { error:
     if (!n || typeof n.id !== 'string' || n.id === '' || seen.has(n.id)) continue
     if (!NODE_SPECS.some((s) => s.type === n.type)) continue
     seen.add(n.id)
-    nodes.push({ id: n.id, type: n.type as BlueprintNodeType, params: structuredClone(n.params ?? {}) })
+    nodes.push({ id: n.id, type: n.type as BlueprintNodeType, params: clonePlain(n.params ?? {}) })
   }
   if (nodes.length === 0) return { error: 'nodes 里没有可识别的节点（类型必须在 8 种白名单内、id 非空且不重复）。' }
   const edges: BpEdge[] = []

@@ -4,12 +4,14 @@
  * 沿用 lifecycle 的能力闸）与网络诊断（内核拨测出网路径，读法在 lib/net-check.ts）。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import {
   RefreshCw, ShieldCheck, TerminalSquare, Play, RotateCw, Square, Info, Server, Network,
 } from 'lucide-vue-next'
-import { api, type CommandDoc, type NetCheckDoc } from '@/api/client'
+import { api, type CommandDoc } from '@/api/client'
 import { readNetCheck } from '@/lib/net-check'
 import { usePanelStore } from '@/stores/panel'
+import { useNetCheckStore } from '@/stores/net-check'
 import { controlState, exitNotice } from '@/lib/lifecycle'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
@@ -70,53 +72,14 @@ function askRestart(): void {
 }
 
 // ── 网络诊断 ────────────────────────────────────────────────────────────────
-const netDoc = ref<NetCheckDoc | null>(null)
+const net = useNetCheckStore()
+const { netDoc, netErr, netBusy } = storeToRefs(net)
+const { probeNet } = net
 /** 读法（标签、计数、空/探测中/失败三态）全部来自 lib/net-check.ts。 */
 const netView = computed(() => readNetCheck(netDoc.value))
-const netErr = ref<string | null>(null)
-const netBusy = ref(false)
-/** 探测在网关侧后台跑；这里只轮询缓存，直到 `probing` 落下。 */
-let netTimer: ReturnType<typeof setTimeout> | null = null
 
-function scheduleNetPoll(): void {
-  if (netTimer !== null) {
-    clearTimeout(netTimer)
-    netTimer = null
-  }
-  if (netDoc.value?.probing) {
-    netTimer = setTimeout(() => void loadNet(), 1200)
-  }
-}
-
-async function loadNet(): Promise<void> {
-  try {
-    netDoc.value = await api.netCheck()
-    // 「面板调不到网关」与「内核没应答探测」是两件事，分开报：前者是这一行，
-    // 后者是 netView.hint（网关把内核的错误原样带在 error 里）。
-    netErr.value = null
-  } catch (e) {
-    netErr.value = e instanceof Error ? e.message : String(e)
-  }
-  scheduleNetPoll()
-}
-
-async function probeNet(): Promise<void> {
-  netBusy.value = true
-  try {
-    netDoc.value = await api.probeNetCheck()
-    netErr.value = null
-  } catch (e) {
-    netErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    netBusy.value = false
-    scheduleNetPoll()
-  }
-}
-
-onMounted(() => void loadNet())
-onUnmounted(() => {
-  if (netTimer !== null) clearTimeout(netTimer)
-})
+onMounted(() => { net.startWatching() })
+onUnmounted(() => { net.stopWatching() })
 
 const netBadge = computed(() => {
   switch (netView.value.tone) {

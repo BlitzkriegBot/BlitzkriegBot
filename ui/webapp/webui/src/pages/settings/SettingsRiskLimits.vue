@@ -11,11 +11,12 @@
  * 徽标会变成「命令行/热改」，这是内核 LimitSource::Flag 的如实呈现。
  */
 import { computed, onMounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { RefreshCw, Save, ShieldCheck } from 'lucide-vue-next'
 import {
-  api,
   type RiskBound, type RiskLimitsDoc,
 } from '@/api/client'
+import { useRiskLimitsStore } from '@/stores/risk-limits'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
@@ -23,9 +24,8 @@ import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
 import Switch from '@/components/ui/switch/Switch.vue'
 
-const riskDoc = ref<RiskLimitsDoc | null>(null)
-const riskErr = ref<string | null>(null)
-const riskBusy = ref(false)
+const limits = useRiskLimitsStore()
+const { riskDoc, riskErr, riskBusy } = storeToRefs(limits)
 const riskSaving = ref(false)
 
 /** 本卡片是「生效风控」一张表单：账户级限额 + 退出纪律 + 账户生效参数（#params 插槽）
@@ -39,16 +39,8 @@ defineExpose({
 })
 
 async function loadRisk(): Promise<void> {
-  riskBusy.value = true
-  try {
-    riskDoc.value = await api.riskLimits()
-    riskErr.value = riskDoc.value.error ?? null
-    if (riskDoc.value && !riskDoc.value.error) syncBuffers(riskDoc.value)
-  } catch (e) {
-    riskErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    riskBusy.value = false
-  }
+  const doc = await limits.load()
+  if (doc && !doc.error) syncBuffers(doc)
 }
 
 /** 来源词表：出厂/环境变量/命令行或热改，与内核 LimitSource 一致（去 TOML 后只允许 flag/env/default）。 */

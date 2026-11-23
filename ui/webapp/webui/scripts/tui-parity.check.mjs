@@ -154,7 +154,11 @@ check('WebUI nav is a known tab set (six, seven with evolution, eight with decis
 if (webuiIds.includes('blueprint')) {
   check('WebUI blueprint → page exists and reaches the kernel blueprint.* IPC', () => {
     const page = read('src', 'pages', 'BlueprintPage.vue')
-    assert.ok(page.includes('api.blueprintCompile'), 'BlueprintPage does not call api.blueprintCompile')
+    const draft = read('src', 'stores', 'blueprint-draft.ts')
+    // issue 129: compile debounce lives in the blueprint-draft store; save
+    // stays on the page (it is a user-triggered write, not a poll).
+    assert.ok(page.includes('useBlueprintDraftStore'), 'BlueprintPage does not use the blueprint-draft store')
+    assert.ok(draft.includes('api.blueprintCompile'), 'blueprint-draft store does not call api.blueprintCompile')
     assert.ok(page.includes('api.blueprintSave'), 'BlueprintPage does not call api.blueprintSave')
   })
   // 导入闭环（导出的镜像）：导入必须走粘贴 + 共享的 parseBlueprintDoc 校验，

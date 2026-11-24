@@ -76,74 +76,72 @@ jobs:
     needs: fast-gates
     if: success() && github.event.pull_request.number != ''
     runs-on: bk-gate
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Check R6 manual-approval boundary
+      - name: Check R6 boundary and squash-merge via Gitea API
         env:
           GITEA_CRED: ${{ secrets.GITEACRED }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          GITEA_API: http://192.168.0.153:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot
         run: |
-          # Gitea/act runner does not export $GITHUB_OUTPUT, so step outputs are
-          # passed through temp files instead (same runner container, persists).
-          PR_NUM=${{ github.event.pull_request.number }}
-          FILES=$(curl -s -u "$GITEA_CRED" "http://192.168.0.153:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}/files")
-          R6_HIT=$(echo "$FILES" | jq -r '.[] | select(.filename | test("ledger|RiskGate|risk.gate|\\.env|live|credential|secret")) | .filename' | head -1)
+          set -euo pipefail
+
+          if [ -z "${GITEA_CRED}" ]; then
+            echo "ERROR: secrets.GITEACRED is empty" >&2
+            exit 1
+          fi
+
+          PR_JSON=$(curl -sfS -u "$GITEA_CRED" "${GITEA_API}/pulls/${PR_NUM}")
+          PR_STATE=$(printf '%s' "$PR_JSON" | jq -r '.state // ""')
+          PR_DRAFT=$(printf '%s' "$PR_JSON" | jq -r '.draft // false')
+          PR_MERGEABLE=$(printf '%s' "$PR_JSON" | jq -r '.mergeable // false')
+          PR_TITLE=$(printf '%s' "$PR_JSON" | jq -r '.title // ""')
+          HEAD_SHA=$(printf '%s' "$PR_JSON" | jq -r '.head.sha // ""')
+
+          if [ "$PR_STATE" != "open" ]; then
+            echo "skipped: PR #${PR_NUM} state is '${PR_STATE}'"
+            exit 0
+          fi
+          if [ "$PR_DRAFT" = "true" ]; then
+            echo "skipped: PR #${PR_NUM} is draft"
+            exit 0
+          fi
+          if [ "$PR_MERGEABLE" != "true" ]; then
+            echo "skipped: PR #${PR_NUM} is not mergeable (conflict or check pending) — manual rebase required"
+            exit 0
+          fi
+
+          FILES_JSON=$(curl -sfS -u "$GITEA_CRED" "${GITEA_API}/pulls/${PR_NUM}/files")
+          R6_HIT=$(printf '%s' "$FILES_JSON" | jq -r '.[] | select(.filename | test("ledger|RiskGate|risk\.gate|\.env|live|credential|secret")) | .filename' | head -n 1)
           if [ -n "$R6_HIT" ]; then
-            echo "R6 boundary touched: $R6_HIT -> skip auto-merge"
-            echo "true" > /tmp/auto-merge-skip
-          else
-            echo "false" > /tmp/auto-merge-skip
+            echo "skipped: R6 manual-approval boundary touched (${R6_HIT})"
+            exit 0
           fi
 
-      - name: Checkout main and rebase PR branch
-        if: success()
-        env:
-          GITEA_CRED: ${{ secrets.GITEACRED }}
-        run: |
-          # Skip when check-r6 wrote "true" to the temp file (R6 boundary hit).
-          if [ "$(cat /tmp/auto-merge-skip 2>/dev/null)" = "true" ]; then
-            echo "skipped: R6 manual-approval boundary touched"
-            exit 0
-          fi
-          git config --global user.name "ceer_quant"
-          git config --global user.email "ceer_quant@users.noreply.github.com"
-          PR_NUM=${{ github.event.pull_request.number }}
-          REPO_DIR=/tmp/bk-auto-merge-$$
-          git clone "http://$GITEA_CRED@192.168.0.153:3000/BlitzkriegBot/BlitzkriegBot.git" "$REPO_DIR"
-          cd "$REPO_DIR"
-          git checkout main
-          git pull origin main
-          git fetch origin pull/${PR_NUM}/head:pr-branch
-          git checkout pr-branch
-          if git rebase main; then
-            echo "true" > /tmp/auto-merge-rebase-ok
-            git push origin pr-branch
-          else
-            echo "false" > /tmp/auto-merge-rebase-ok
-            git checkout -b "auto-merge/${PR_NUM}-${{ github.sha }}"
-            git add -A 2>/dev/null || true
-            git commit -m "chore(auto-merge): rebase conflict for PR #${PR_NUM}" 2>/dev/null || true
-            git push origin "auto-merge/${PR_NUM}-${{ github.sha }}"
-            curl -s -X PATCH -u "$GITEA_CRED" -H "Content-Type: application/json" \
-              -d "{\"head\":\"auto-merge/${PR_NUM}-${{ github.sha }}\"}" \
-              "http://192.168.0.153:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}"
-          fi
-          rm -rf "$REPO_DIR"
+          PAYLOAD=$(jq -n \
+            --arg title "${PR_TITLE} (#${PR_NUM})" \
+            --arg msg "Auto-merge PR #${PR_NUM} via gate CI" \
+            --arg sha "$HEAD_SHA" \
+            '{do: "squash", merge_title_field: $title, merge_message_field: $msg, head_commit_id: $sha, delete_branch_after_merge: true}')
 
-      - name: Squash merge via Gitea API
-        if: success()
-        env:
-          GITEA_CRED: ${{ secrets.GITEACRED }}
-        run: |
-          # Only squash-merge when not skipped AND rebase succeeded.
-          if [ "$(cat /tmp/auto-merge-skip 2>/dev/null)" = "true" ]; then
-            echo "skipped: R6 manual-approval boundary touched"
-            exit 0
-          fi
-          if [ "$(cat /tmp/auto-merge-rebase-ok 2>/dev/null)" != "true" ]; then
-            echo "skipped: rebase did not succeed"
-            exit 0
-          fi
-          PR_NUM=${{ github.event.pull_request.number }}
-          curl -s -X POST -u "$GITEA_CRED" -H "Content-Type: application/json" \
-            -d '{"merge_style":"squash","commit_message":"Auto-merge PR #${PR_NUM} via gate CI"}' \
-              "http://192.168.0.153:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}/merge"
+          RESP_FILE=$(mktemp)
+          trap 'rm -f "$RESP_FILE"' EXIT
+          HTTP_CODE=$(curl -sS -o "$RESP_FILE" -w '%{http_code}' -X POST \
+            -u "$GITEA_CRED" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "${GITEA_API}/pulls/${PR_NUM}/merge")
+
+          case "$HTTP_CODE" in
+            200|204)
+              echo "auto-merged PR #${PR_NUM} via squash (HTTP ${HTTP_CODE})"
+              ;;
+            405|409)
+              echo "skipped: Gitea refused merge (HTTP ${HTTP_CODE}): $(cat "$RESP_FILE")"
+              exit 0
+              ;;
+            *)
+              echo "ERROR: merge API failed (HTTP ${HTTP_CODE}): $(cat "$RESP_FILE")" >&2
+              exit 1
+              ;;
+          esac

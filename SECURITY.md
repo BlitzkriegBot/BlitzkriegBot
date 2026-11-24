@@ -12,7 +12,7 @@
 
 Instead, please report them via GitHub Security Advisories:
 
-1. Go to the [Security tab](https://github.com/ceer-quant/BlitzkriegBot/security/advisories)
+1. Go to the [Security tab](https://github.com/BlitzkriegBot/BlitzkriegBot/security/advisories)
 2. Click "Report a vulnerability"
 3. Fill out the form with details
 

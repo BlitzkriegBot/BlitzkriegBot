@@ -102,7 +102,7 @@ export default defineConfig(async () => {
       },
       ...Array.from(groups, ([dir, items]) => ({ text: dir, collapsed: true, items })),
     ],
-    socialLinks: [{ icon: 'github', link: 'https://github.com/ceer-quant/BlitzkriegBot' }],
+    socialLinks: [{ icon: 'github', link: 'https://github.com/BlitzkriegBot/BlitzkriegBot' }],
     footer: {
       message:
         '🎵Song Engine | 🪨 Stone Backtester | 🦄 PonyYiDan UI Kit<br />Build Once, Trade Everywhere. 让个人拥有机构级的交易能力。',

@@ -17,7 +17,7 @@ node --version
 ## 2. 拉取代码
 
 ```bash
-git clone https://github.com/ceer-quant/BlitzkriegBot.git
+git clone https://github.com/BlitzkriegBot/BlitzkriegBot.git
 cd BlitzkriegBot
 ```
 

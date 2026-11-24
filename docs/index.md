@@ -17,7 +17,7 @@ description: 独立交易者的 TradingOS —— Market-Agnostic Core、Risk-Fir
     <div class="bb-actions">
       <a class="bb-btn bb-btn-brand" href="./getting-started">立即开始</a>
       <a class="bb-btn" href="#architecture">查看架构</a>
-      <a class="bb-btn" href="https://github.com/ceer-quant/BlitzkriegBot" target="_blank" rel="noreferrer">GitHub</a>
+      <a class="bb-btn" href="https://github.com/BlitzkriegBot/BlitzkriegBot" target="_blank" rel="noreferrer">GitHub</a>
     </div>
   </div>
   <div class="bb-hero-shot">

@@ -79,28 +79,29 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check R6 manual-approval boundary
-        id: check-r6
         env:
           GITEA_CRED: ${{ secrets.GITEACRED }}
         run: |
+          # Gitea/act runner does not export $GITHUB_OUTPUT, so step outputs are
+          # passed through temp files instead (same runner container, persists).
           PR_NUM=${{ github.event.pull_request.number }}
           FILES=$(curl -s -u "$GITEA_CRED" "http://localhost:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}/files")
           R6_HIT=$(echo "$FILES" | jq -r '.[] | select(.filename | test("ledger|RiskGate|risk.gate|\\.env|live|credential|secret")) | .filename' | head -1)
           if [ -n "$R6_HIT" ]; then
             echo "R6 boundary touched: $R6_HIT -> skip auto-merge"
-            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "true" > /tmp/auto-merge-skip
           else
-            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "false" > /tmp/auto-merge-skip
           fi
 
       - name: Checkout main and rebase PR branch
-        id: rebase
-        if: steps.check-r6.outputs.skip == 'false'
+        if: success() && [ "$(cat /tmp/auto-merge-skip 2>/dev/null)" = "false" ]
         env:
           GITEA_CRED: ${{ secrets.GITEACRED }}
         run: |
           git config --global user.name "ceer_quant"
           git config --global user.email "ceer_quant@users.noreply.github.com"
+          PR_NUM=${{ github.event.pull_request.number }}
           REPO_DIR=/tmp/bk-auto-merge-$$
           git clone "http://$GITEA_CRED@localhost:3000/BlitzkriegBot/BlitzkriegBot.git" "$REPO_DIR"
           cd "$REPO_DIR"
@@ -109,10 +110,10 @@ jobs:
           git fetch origin pull/${PR_NUM}/head:pr-branch
           git checkout pr-branch
           if git rebase main; then
-            echo "rebase_ok=true" >> $GITHUB_OUTPUT
+            echo "true" > /tmp/auto-merge-rebase-ok
             git push origin pr-branch
           else
-            echo "rebase_conflict=true" >> $GITHUB_OUTPUT
+            echo "false" > /tmp/auto-merge-rebase-ok
             git checkout -b "auto-merge/${PR_NUM}-${{ github.sha }}"
             git add -A 2>/dev/null || true
             git commit -m "chore(auto-merge): rebase conflict for PR #${PR_NUM}" 2>/dev/null || true
@@ -124,10 +125,11 @@ jobs:
           rm -rf "$REPO_DIR"
 
       - name: Squash merge via Gitea API
-        if: steps.check-r6.outputs.skip == 'false' && steps.rebase.outputs.rebase_ok == 'true'
+        if: success() && [ "$(cat /tmp/auto-merge-skip 2>/dev/null)" = "false" ] && [ "$(cat /tmp/auto-merge-rebase-ok 2>/dev/null)" = "true" ]
         env:
           GITEA_CRED: ${{ secrets.GITEACRED }}
         run: |
+          PR_NUM=${{ github.event.pull_request.number }}
           curl -s -X POST -u "$GITEA_CRED" -H "Content-Type: application/json" \
             -d '{"merge_style":"squash","commit_message":"Auto-merge PR #${PR_NUM} via gate CI"}' \
             "http://localhost:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}/merge"

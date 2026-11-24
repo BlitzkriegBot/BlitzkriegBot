@@ -64,10 +64,25 @@ impl Core {
             self.rewire_hot_params(now_ms());
             // Record the operator's intent: the next boot replays this set.
             // `None` (backtests, most tests) writes nothing.
-            if let Some(path) = &self.config.strategy_state_path {
-                crate::strategy_state::save(
+            //
+            // #188 (R7.1 L4): the mirror's failure is surfaced, never
+            // swallowed. The toggle itself already took effect on the live
+            // engine, so this is not an error the caller can undo — it is a
+            // divergence between the running core and what the next boot
+            // replays, reported at ERROR because silence is precisely how the
+            // two carriers drifted apart before.
+            if let Some(path) = &self.config.strategy_state_path
+                && let Err(e) = crate::strategy_state::save(
                     std::path::Path::new(path),
                     &self.enabled_strategy_names(),
+                )
+            {
+                tracing::error!(
+                    path = %path,
+                    error = %e,
+                    "strategy state mirror NOT written after a global toggle — the \
+                     running enabled-set and the next boot's replay have diverged; \
+                     SQLite account_settings.strategies remains the authority"
                 );
             }
         }
@@ -174,10 +189,24 @@ impl Core {
         // persisting` runs): the boot migrates the state file ONLY while the
         // default account has no `strategies` key, so a stale state file
         // would otherwise re-import a set the operator already emptied.
+        //
+        // #188 (R7.1 L4): the SQLite row above is the authority and it has
+        // already committed — this mirror failing does NOT roll it back, so
+        // the honest report is an ERROR naming the divergence, not a warn
+        // that scrolls away. The scoped write itself still succeeded.
         if *id == crate::account::default_account_id()
             && let Some(state_path) = self.config.strategy_state_path.as_deref()
+            && let Err(e) = crate::strategy_state::save(std::path::Path::new(state_path), &set)
         {
-            crate::strategy_state::save(std::path::Path::new(state_path), &set);
+            tracing::error!(
+                path = %state_path,
+                account = %id,
+                error = %e,
+                "strategy state mirror NOT written after a scoped toggle — the SQLite \
+                 account_settings.strategies row IS committed and authoritative; the \
+                 legacy mirror is now stale and a boot with no strategies row would \
+                 replay the old set"
+            );
         }
         // Engine rebuild over the new set: removed-and-flat scopes drop,
         // removed-and-held scopes demote exits-only, added scopes

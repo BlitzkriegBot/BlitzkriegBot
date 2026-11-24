@@ -186,7 +186,19 @@ impl CoreConfig {
                     }
                 }
             }
-            crate::strategy_state::save(std::path::Path::new(path), &enabled);
+            if let Err(e) = crate::strategy_state::save(std::path::Path::new(path), &enabled) {
+                // #188 (R7.1 L4): a mirror that cannot be written is a
+                // divergence the operator must hear about — the boot used the
+                // set this line failed to record, so the NEXT boot replays a
+                // stale one. SQLite stays the authority; the boot continues.
+                tracing::error!(
+                    path = %path,
+                    error = %e,
+                    "strategy state mirror NOT written at boot — the persisted \
+                     enabled-set is now stale relative to what this core is running; \
+                     SQLite account_settings.strategies remains the authority"
+                );
+            }
         }
         // ④ 统一映射：install_engine 换掉了整个 Engine（插件切换、进化重
         // 注册），Engine 内存里的 confirmed 映射会一起丢 —— 账本是唯一真值

@@ -25,7 +25,8 @@ fn boot_applies_assignments_and_migrates_the_implicit_default_once() {
     )
     .expect("fixture");
     let state_path = dir.join("strategy-state.json");
-    crate::strategy_state::save(&state_path, &["spread_arb".into(), "trend_follow".into()]);
+    crate::strategy_state::save(&state_path, &["spread_arb".into(), "trend_follow".into()])
+        .expect("fixture writes");
 
     let mut c = Core::with_account_book(
         CoreConfig {
@@ -137,7 +138,7 @@ fn boot_keeps_the_production_default_enablement_shape_byte_identical() {
     // the file's key must WIN (the migration never overrides an explicit
     // key, and the strategy-state.json read must not leak onto scopes).
     let state_path = dir.join("strategy-state.json");
-    crate::strategy_state::save(&state_path, &["trend_follow".into()]);
+    crate::strategy_state::save(&state_path, &["trend_follow".into()]).expect("fixture writes");
 
     let mut c = Core::with_account_book(
         CoreConfig {

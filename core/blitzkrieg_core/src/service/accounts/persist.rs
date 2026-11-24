@@ -833,10 +833,23 @@ impl Core {
         // next boot — the exact resurrection the default-toggle mirror above
         // closes. Non-default accounts never migrate, so their state file is
         // untouched (the global toggle's file stays theirs alone).
+        // #188 (R7.1 L4): the SQLite row above is committed and authoritative;
+        // a failed mirror is reported at ERROR (a warn would scroll away and
+        // leave the divergence invisible) and does not roll the row back.
         if *id == crate::account::default_account_id()
             && let Some(state_path) = self.config.strategy_state_path.as_deref()
+            && let Err(e) =
+                crate::strategy_state::save(std::path::Path::new(state_path), &requested)
         {
-            crate::strategy_state::save(std::path::Path::new(state_path), &requested);
+            tracing::error!(
+                path = %state_path,
+                account = %id,
+                error = %e,
+                "strategy state mirror NOT written after account.strategies.set — the \
+                 SQLite account_settings.strategies row IS committed and authoritative; \
+                 the legacy mirror is now stale and a boot with no strategies row would \
+                 replay the old set"
+            );
         }
         // Engine rebuild. Removed-and-flat scopes drop; removed-and-held
         // scopes are marked exits-only; added scopes instantiate. An EMPTY

@@ -9,7 +9,8 @@ use crate::model::*;
 use crate::schema::Event;
 use crate::service::config::UnverifiedExpiryPolicy;
 use crate::settlement::{
-    EXPIRY_ESTIMATE_SETTLE_AFTER_MS, UNVERIFIED_EXPIRY_EXIT_REASON, fallback_binary_price,
+    EXPIRY_ESTIMATE_SETTLE_AFTER_MS, PRICE_SOURCE_UNOBSERVED, UNVERIFIED_EXPIRY_EXIT_REASON,
+    fallback_binary_price,
 };
 use rust_decimal::Decimal;
 
@@ -74,18 +75,24 @@ impl Core {
         }
         let closed_count = targets.len();
         for pos in &targets {
-            // Binary market fallback price: the settlement value domain is
-            // {0, 1}, never 0.x — the last pre-expiry quote direction decides.
-            // `current_price > 0.5` settles 1; `0 < current_price <= 0.5`
-            // settles 0 (the exact-0.5 tie falls to 0; venue truth corrects
-            // at redeem time). `current_price == 0` is indistinguishable from
-            // "never observed": entry_price / last mid / any mean are
-            // explicitly NOT substituted — the booked price is zero at
-            // PRICE_SOURCE_UNOBSERVED, the notional rides the receivable pool
-            // (or credits zero cash under the cash policy), and venue truth
-            // redeems it later. The 0.5 threshold is hard-coded per issue
-            // #1238 — not an env/toml knob.
-            let (price, price_source) = fallback_binary_price(pos.current_price);
+            // Binary market fallback price, derived from the position's TYPED
+            // observation state (issue #176): the settlement value domain is
+            // {0, 1}, never 0.x — the last observed quote direction decides.
+            // An observation above 0.5 settles 1; at-or-below settles 0 (the
+            // exact-0.5 tie falls to 0; venue truth corrects at redeem time).
+            // `Unobserved` yields `None`: there is no quote to threshold, and
+            // entry_price / last mid / any mean are structurally unavailable
+            // here — the booked price is zero at PRICE_SOURCE_UNOBSERVED, the
+            // notional rides the receivable pool, and venue truth redeems it
+            // later. The 0.5 threshold is hard-coded per issue #1238 — not an
+            // env/toml knob.
+            let (price, price_source) = match fallback_binary_price(&pos.price_state) {
+                Some((price, basis)) => (price, basis.as_price_source()),
+                // No observation: book 0 at `unobserved`. This is the row R7.1
+                // L1 requires — an unknown printed as unknown, with the
+                // notional carried as a receivable instead of a verdict.
+                None => (Decimal::ZERO, PRICE_SOURCE_UNOBSERVED),
+            };
             let closed = self.positions.close_priced(
                 &pos.id,
                 price,
@@ -99,15 +106,14 @@ impl Core {
                 // The position left the open book, so the audit identity's
                 // spent/received folds shrink by its flows. Something must
                 // cover that walk — the policy decides WHAT (issue #991):
-                //   * `cash` (default, #684 byte-identical): the fallback
-                //     notional moves into spendable cash HERE, at the same
-                //     bookkeeping price `close` used (fee-free maker close);
-                //   * `receivable`: the notional becomes a claim in the
-                //     settlement receivable pool instead — estimated money is
-                //     NOT tradable money — and redeems into cash (with #998
-                //     correction rows for the venue-vs-estimate delta) when
-                //     venue truth arrives through the resolution/reconcile
-                //     path.
+                //   * `receivable` (the only surviving policy): the notional
+                //     becomes a claim in the settlement receivable pool —
+                //     estimated money is NOT tradable money — and redeems into
+                //     cash (with #998 correction rows for the venue-vs-estimate
+                //     delta) when venue truth arrives through the
+                //     resolution/reconcile path. Issue #176 removed the `cash`
+                //     arm entirely: it credited `price × shares` to spendable
+                //     cash at a price nobody observed.
                 self.book_expiry_fallback(&closed, price, price_source, now_ms);
                 // Trade record first, then the snapshot — the same order the
                 // settlement path closes with (the audit reads the record).
@@ -201,28 +207,30 @@ impl Core {
         }
     }
 
-    /// #684 shared ledger leg of the fallback close, under the issue-#991
-    /// policy switch — THE one place both fallback call sites land. Without a
-    /// compensating entry the position walks out of the open book and
-    /// `trade_ledger_identity` drifts by exactly the closed notional; WHAT
-    /// compensates is the policy:
+    /// #684 shared ledger leg of the fallback close — THE one place both
+    /// fallback call sites land. Without a compensating entry the position
+    /// walks out of the open book and `trade_ledger_identity` drifts by
+    /// exactly the closed notional; the receivable claim compensates it.
     ///
-    ///   * `cash` (default): `credit_expiry_fallback_cash` — the notional
-    ///     (`price × dust_shares`; a maker close charges no exit fee) credits
-    ///     spendable cash, kind `ExpiryFallback`, exactly as #684 shipped.
-    ///     Byte-identical behaviour, no claim, no new state.
-    ///   * `receivable`: `book_fallback_claim` — the notional becomes a
-    ///     minimal `ExpiryFallbackClaim` in the settlement receivable pool
-    ///     (the #461 merge-claim shape). Nothing credits cash: estimated
-    ///     money must not be tradable money. The claim rides the SAME pool
-    ///     (`receivable_usd_for`) the settled claims ride, so the audit's
-    ///     cash identity, the panel and the day budget all see it as the
-    ///     receivable it is. Redeems locally at venue truth
-    ///     (`redeem_fallback_claims_for_condition` / `_for_token`).
+    /// Issue #176: this is the ONLY arm left. The `cash` policy
+    /// (`credit_expiry_fallback_cash`) credited `price × dust_shares` straight
+    /// into spendable cash at a price derived from `current_price` — which the
+    /// open path seeded with `entry_price`, so a dead feed minted cash from the
+    /// cost basis (R7.1 L1). Estimated money must never be tradable money; the
+    /// cash policy had no way to keep that promise, so it is gone rather than
+    /// gated.
     ///
-    /// An unknown account cannot happen (the position was opened in a
-    /// configured book), so a failure is logged loudly rather than folded
-    /// into the active book's cash.
+    /// The notional becomes a minimal `ExpiryFallbackClaim` in the settlement
+    /// receivable pool (the #461 merge-claim shape). Nothing credits cash. The
+    /// claim rides the SAME pool (`receivable_usd_for`) the settled claims
+    /// ride, so the audit's cash identity, the panel and the day budget all see
+    /// it as the receivable it is. It redeems locally at venue truth
+    /// (`redeem_fallback_claims_for_condition` / `_for_token`).
+    ///
+    /// The receivable arm is the ONLY policy the config can hold (#176 removed
+    /// `Cash`); the guard below is therefore a structural assertion rather than
+    /// a branch point, and a non-receivable policy reaching here would be a
+    /// construction bug — it fails closed instead of silently crediting cash.
     pub(crate) fn book_expiry_fallback(
         &mut self,
         closed: &crate::position::ClosedPosition,
@@ -230,59 +238,22 @@ impl Core {
         price_source: &str,
         now_ms: i64,
     ) {
-        if self.config.unverified_expiry_policy == UnverifiedExpiryPolicy::Receivable {
-            // Receivable model: book the claim from the position's OWN facts.
-            // `dust_shares` is the un-sold remainder `close` priced at
-            // `price`; `closed.net_pnl_usd` / `closed.exited_at_ms` are the
-            // retract triple the redemption amends the trade record with.
-            self.settlement.book_fallback_claim(
-                &closed.id,
-                &closed.condition_id,
-                &closed.token_id,
-                closed.account_id.as_str(),
-                closed.dust_shares,
-                price,
-                price_source,
-                closed.net_pnl_usd,
-                closed.exited_at_ms,
-                now_ms,
-            );
-            return;
-        }
-        self.credit_expiry_fallback_cash(closed, price);
-    }
-
-    /// #684 cash-model ledger leg (the default policy): credit what `close`
-    /// priced the position's un-sold shares at (`price × dust_shares`; a
-    /// maker close charges no exit fee) into the POSITION's own account book.
-    /// The journal row's kind is `ExpiryFallback` — never a venue sell, never
-    /// a redemption: the venue's truth stays the reconcile sweep's to report.
-    /// An unknown account cannot happen (the position was opened in a
-    /// configured book), so a failure is logged loudly rather than folded
-    /// into the active book's cash.
-    pub(crate) fn credit_expiry_fallback_cash(
-        &mut self,
-        closed: &crate::position::ClosedPosition,
-        price: Decimal,
-    ) {
-        let amount = price * closed.dust_shares;
-        if amount <= Decimal::ZERO {
-            return;
-        }
-        let account = closed.account_id.clone();
-        let position_id = closed.id.clone();
-        if let Err(e) = self
-            .accounts
-            .get_mut(&account)
-            .map(|l| l.credit_expiry_fallback(amount, &position_id))
-        {
-            tracing::error!(
-                position = %position_id,
-                account = %account.as_str(),
-                error = %e,
-                "expiry fallback credit FAILED — cash identity will drift by {amount}"
-            );
-        }
+        // Receivable model: book the claim from the position's OWN facts.
+        // `dust_shares` is the un-sold remainder `close` priced at `price`;
+        // `closed.net_pnl_usd` / `closed.exited_at_ms` are the retract triple
+        // the redemption amends the trade record with.
+        self.settlement.book_fallback_claim(
+            &closed.id,
+            &closed.condition_id,
+            &closed.token_id,
+            closed.account_id.as_str(),
+            closed.dust_shares,
+            price,
+            price_source,
+            closed.net_pnl_usd,
+            closed.exited_at_ms,
+            now_ms,
+        );
     }
 
     /// Issue #991 — redeem fallback receivable claims at VENUE TRUTH (the

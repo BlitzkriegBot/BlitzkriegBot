@@ -570,8 +570,8 @@ fn the_close_credential_journal_survives_a_restart() {
             token_id: "tok".into(),
             condition_id: "cond".into(),
             entry_price: dec!(0.43),
-            current_price: dec!(0.45),
-            prev_price: dec!(0.44),
+            // #176: typed observation state (was `current_price`/`prev_price`).
+            price_state: crate::price_state::PriceState::observed_bid(dec!(0.45), 2_000),
             shares,
             cost_usd: dec!(4.3),
             was_maker_entry: true,

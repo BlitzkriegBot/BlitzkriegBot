@@ -948,9 +948,9 @@ fn realized_only_config_ignores_unrealized_loss() {
     );
 }
 
-/// #464 edge: a position with no mark (`current_price = 0`) contributes
-/// nothing — a missing quote must never be read as an infinite loss (or an
-/// infinite gain).
+/// #464 edge: a position with no mark (issue #176: `PriceState::Unobserved`,
+/// previously `current_price = 0`) contributes nothing — a missing quote must
+/// never be read as an infinite loss (or an infinite gain).
 #[test]
 fn a_zero_mark_contributes_no_unrealized_pnl() {
     let cfg = PositionConfig {
@@ -969,7 +969,7 @@ fn a_zero_mark_contributes_no_unrealized_pnl() {
         .find(|p| p.id == id)
         .unwrap()
         .clone();
-    held.current_price = Decimal::ZERO;
+    held.price_state = crate::price_state::PriceState::Unobserved;
     pm.restore_open(vec![held], None);
     assert_eq!(pm.unrealized_pnl_usd(), Decimal::ZERO);
     assert!(!pm.daily_loss_tripped_for("default"));

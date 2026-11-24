@@ -97,6 +97,9 @@ pub mod order_db;
 pub mod pair;
 pub mod position;
 pub mod position_db;
+/// #176: the typed price-observation state — "never quoted" as a first-class
+/// state, so the entry price can never masquerade as a market observation.
+pub mod price_state;
 /// 环境差异排查探针（任务二 1-3）：SNTP 时钟偏差 / tick 断流 / spot 失效。
 /// 只观测：日志 + 计数器；NTP 网络任务仅生产 `server::run()` 启动。
 pub mod probe;

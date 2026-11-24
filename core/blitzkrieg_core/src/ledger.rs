@@ -39,12 +39,13 @@ pub enum JournalKind {
     Merge,
     /// A settled position's redemption payout confirmed on-chain.
     Redemption,
-    /// #684: an expired, never-answered position closed at its fallback price
-    /// (last known mid, else entry). NOT a venue event — no sell fill happened
-    /// and no verdict was received; the credit is the bookkeeping entry that
-    /// keeps the cash identity whole after the position leaves the open book
-    /// without a settlement claim. The kind is what keeps it from ever reading
-    /// as a venue payout (the reconcile sweep still owns the venue's truth).
+    /// #684: an expired, never-answered position closed at its fallback price.
+    ///
+    /// Issue #176 DELETED the producer: the credit it used to carry was
+    /// spendable cash invented from an estimated settlement price (R7.1 L1).
+    /// The variant stays only because pre-#176 journal files are append-only
+    /// evidence (R3) — replay must still read those rows verbatim instead of
+    /// dropping or re-labelling them. No code path writes a new one.
     ExpiryFallback,
     /// A wallet-level venue cash row (MAKER_REBATE / REWARD, #388).
     Cashflow,
@@ -554,23 +555,6 @@ impl Ledger {
         }
     }
 
-    /// #684: credit the fallback notional of an expired, never-answered
-    /// position closed WITHOUT a settlement claim. The position's cash identity
-    /// walks out of the open book when it closes (`spent`/`received` folds
-    /// shrink by its flows); the settlement path covers that walk with a
-    /// `receivable` claim and merge with `credit_merge` — this path has no
-    /// claim, so the fallback notional moves into spendable cash here instead.
-    /// The amount is the same value `close` priced the un-sold shares at
-    /// (`exit_price × dust_shares`, fee-free: a maker close charges no exit
-    /// fee), so the trade ledger and the cash ledger stay on one number.
-    /// kind = `ExpiryFallback`, `ref` = the position id.
-    pub fn credit_expiry_fallback(&mut self, amount_usd: Decimal, position_id: &str) {
-        if amount_usd <= Decimal::ZERO {
-            return;
-        }
-        self.apply(JournalKind::ExpiryFallback, amount_usd, position_id);
-    }
-
     /// Credit the collateral of MERGED share-pairs (task 2.2): one complete
     /// UP+DOWN pair of a condition merges on-chain into $1.00 of USDC — the
     /// collection channel of pair-discount arbitrage (@almach: 12,570 merges,
@@ -1047,8 +1031,11 @@ mod tests {
         l.release("o1"); // no cash movement, no row
         // Zero-delta set_balance is a silent no-op (no flood of realign rows):
         l.set_balance(dec!(150));
-        l.credit_expiry_fallback(dec!(2), "hft-1"); // #684 fallback close
-        l.credit_expiry_fallback(Decimal::ZERO, "hft-1"); // no row: zero is a no-op
+        // Issue #176 deleted the expiry-fallback CASH credit: an unverified
+        // expiry no longer touches the balance at all (the receivable claim
+        // rides SettlementBook instead). `JournalKind::ExpiryFallback` survives
+        // only so pre-#176 journal files still replay — see
+        // `legacy_expiry_fallback_rows_still_replay` below.
         let rows = l.journal_snapshot();
         let sum = rows.iter().fold(Decimal::ZERO, |a, r| a + r.amount);
         assert_eq!(sum, l.balance(), "balance == Σ journal.amount");
@@ -1087,11 +1074,47 @@ mod tests {
                 JournalKind::Cashflow,
                 JournalKind::Realign,
                 JournalKind::Reset,
-                JournalKind::ExpiryFallback,
             ]
         );
         // The zero/negative rows really were skipped:
-        assert_eq!(rows.len(), 10);
+        assert_eq!(rows.len(), 9);
+    }
+
+    /// Issue #176: `JournalKind::ExpiryFallback` no longer has a producer —
+    /// the spendable-cash fallback credit was deleted (R7.1 L1: no fabricated
+    /// settlement payout). The VARIANT stays because journal files written by
+    /// pre-#176 builds are append-only evidence (R3) and replay must keep
+    /// reading them without inventing or dropping rows. This test pins both
+    /// halves: the legacy spelling deserializes, and a replay adopts it as the
+    /// opening balance exactly like any other row.
+    #[test]
+    fn legacy_expiry_fallback_rows_still_replay() {
+        let legacy = [
+            // A pre-#176 trail: seed, buy fill, then the deleted cash fallback.
+            // The wire shape is camelCase (`atMs`, `balanceAfter`); `ref` is the
+            // renamed `ref_` field.
+            r#"{"atMs":1,"kind":"seed","amount":100,"balanceAfter":100,"ref":"boot"}"#,
+            r#"{"atMs":2,"kind":"buy_fill","amount":-30,"balanceAfter":70,"ref":"o1"}"#,
+            r#"{"atMs":3,"kind":"expiry_fallback","amount":2,"balanceAfter":72,"ref":"hft-1","feeSource":""}"#,
+        ];
+        let rows: Vec<JournalEntry> = legacy
+            .iter()
+            .map(|line| serde_json::from_str(line).expect("legacy row parses"))
+            .collect();
+        assert_eq!(rows[2].kind, JournalKind::ExpiryFallback);
+        assert_eq!(rows[2].amount, dec!(2));
+        let mut replayed = Ledger::new();
+        replayed.replay_journal(rows);
+        assert_eq!(replayed.balance(), dec!(72), "the tail row is the balance");
+        // The replayed lines are adopted verbatim — no rewrite, no drop.
+        let kept = replayed.journal_snapshot();
+        assert_eq!(kept.len(), 3);
+        assert_eq!(
+            kept[2].kind,
+            JournalKind::ExpiryFallback,
+            "replay preserves the legacy kind (never re-labels it)"
+        );
+        assert_eq!(kept[2].ref_, "hft-1");
     }
 
     /// Clamped fills still satisfy the identity because the row records the

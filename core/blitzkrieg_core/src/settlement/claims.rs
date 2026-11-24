@@ -133,12 +133,14 @@ pub struct ExpiryFallbackClaim {
     /// Shares written off at close (`closed.dust_shares` — the un-sold
     /// remainder `close()` priced at the fallback price).
     pub shares: Decimal,
-    /// The bookkeeping price the close booked (`price_source` says which of
-    /// "current" / "entry_fallback" it was): the receivable's booked amount is
-    /// `fallback_price × shares`.
+    /// The bookkeeping price the close booked (`price_source` names its basis:
+    /// `"binary_threshold"` for a real observation, `"unobserved"` when no
+    /// quote ever arrived, in which case this is zero): the receivable's
+    /// booked amount is `fallback_price × shares`.
     pub fallback_price: Decimal,
     pub created_at_ms: i64,
-    /// The close's `price_source` spelling ("current" | "entry_fallback") —
+    /// The close's `price_source` spelling (`"binary_threshold"` |
+    /// `"unobserved"`; issue #176 deleted `"current"` / `"entry_fallback"`) —
     /// carried so the redemption's correction row can name what the estimate
     /// was based on. Additive field.
     pub price_source: String,

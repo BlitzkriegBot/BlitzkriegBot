@@ -52,21 +52,27 @@ impl PositionManager {
     }
 
     /// The open positions' unrealized PnL (USD, negative = paper loss), each
-    /// position marked `(current_price − entry_price) × shares` off its last
-    /// known reference price. Positions with no shares, no mark (`current_price
-    /// ≤ 0`) or an absurd share count contribute 0 — never a fabricated profit
-    /// or loss.
+    /// position marked `(mark − entry_price) × shares` off its last observed
+    /// price. Positions with no shares or NO OBSERVATION contribute 0 — never a
+    /// fabricated profit or loss.
     ///
-    /// `ponytail:` the mark is the LAST KNOWN price: `current_price` is
-    /// refreshed from live books per tick, but a book that has gone quiet
-    /// leaves the last value standing and there is no staleness gate on it
-    /// (Issue #464 considered one; upgrade path = a `last_book_ts`-age check
-    /// here, which `OpenPosition` already carries).
+    /// Issue #176: `Unobserved` contributes nothing. Before the typed price
+    /// state the mark was seeded from `entry_price`, so an unquoted position
+    /// read as exactly flat — an invented "the market has not moved" claim.
+    /// Contributing zero here is the honest version of the same arithmetic:
+    /// there is no mark, so there is no unrealized number to add.
+    ///
+    /// `ponytail:` the mark is the LAST OBSERVED price: it is refreshed from
+    /// live books per tick, but a book that has gone quiet leaves the last
+    /// observation standing and there is no staleness gate on it (Issue #464
+    /// considered one; upgrade path = a `last_book_ts`-age check here, which
+    /// `OpenPosition` already carries). The observation's own `at_ms` now makes
+    /// that age readable when someone needs it.
     pub fn unrealized_pnl_usd(&self) -> Decimal {
         self.open
             .iter()
-            .filter(|p| p.shares > Decimal::ZERO && p.current_price > Decimal::ZERO)
-            .map(|p| (p.current_price - p.entry_price) * p.shares)
+            .filter(|p| p.shares > Decimal::ZERO)
+            .filter_map(|p| p.mark().map(|m| (m - p.entry_price) * p.shares))
             .sum()
     }
 
@@ -76,9 +82,8 @@ impl PositionManager {
     pub fn unrealized_pnl_usd_for(&self, account: &str) -> Decimal {
         self.open
             .iter()
-            .filter(|p| p.account_id.as_str() == account)
-            .filter(|p| p.shares > Decimal::ZERO && p.current_price > Decimal::ZERO)
-            .map(|p| (p.current_price - p.entry_price) * p.shares)
+            .filter(|p| p.account_id.as_str() == account && p.shares > Decimal::ZERO)
+            .filter_map(|p| p.mark().map(|m| (m - p.entry_price) * p.shares))
             .sum()
     }
 

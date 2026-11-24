@@ -512,16 +512,25 @@ pub struct CoreConfig {
     /// restores the every-tick Lua call.
     pub event_driven_eval: bool,
     /// Issue #991/#1002: what an unverifiable-expiry fallback close books.
-    /// `Receivable` (default) is the #991 behaviour: the fallback notional is
-    /// booked as a claim in the settlement receivable pool — estimated money
-    /// is not spendable money — and the claim redeems into cash (with
-    /// #998-style correction rows for any venue-vs-fallback delta) when
-    /// venue truth arrives. `Cash` keeps the #684 behaviour, byte-identical:
-    /// the fallback notional is credited to spendable cash at close time
-    /// (`Ledger::credit_expiry_fallback`). Read ONCE at boot
-    /// (`BK_UNVERIFIED_EXPIRY_POLICY=cash|receivable`); NOT hot-reloadable —
-    /// a policy switch changes what already-booked journal rows mean, so it
-    /// takes a restart (documented in `.env.example`).
+    ///
+    /// Issue #176: there is exactly ONE value left, `Receivable` — the
+    /// fallback notional is booked as a claim in the settlement receivable pool
+    /// (estimated money is not spendable money) and redeems into cash, with
+    /// #998-style correction rows for any venue-vs-fallback delta, when venue
+    /// truth arrives.
+    ///
+    /// The former `Cash` arm credited `price × dust_shares` to spendable cash
+    /// at close time, where `price` came from `current_price` — a field the
+    /// open path seeded with `entry_price`. A dead feed therefore converted the
+    /// COST BASIS into spendable cash (R7.1 L1). The arm is deleted, not
+    /// defaulted-away: `BK_UNVERIFIED_EXPIRY_POLICY=cash` now FAILS THE BOOT
+    /// (see [`UnverifiedExpiryPolicy::parse`]) instead of silently becoming
+    /// `receivable`, because a silent downgrade would be R7.1 L4 (静默降级) —
+    /// the operator asked for one accounting model and got another.
+    ///
+    /// Read ONCE at boot; NOT hot-reloadable — a policy switch changes what
+    /// already-booked journal rows mean, so it takes a restart (documented in
+    /// `.env.example`).
     pub unverified_expiry_policy: UnverifiedExpiryPolicy,
     /// Issue #991 boundary 1: how old a fallback receivable claim may get
     /// (ms from `created_at_ms`) before the kernel warns that the venue still
@@ -532,16 +541,19 @@ pub struct CoreConfig {
     pub receivable_max_age_ms: i64,
 }
 
-/// Issue #991/#1002: the two complete models an unverifiable-expiry close can
-/// book under. `serde` spells it lowercase on the wire (`"cash"` /
-/// `"receivable"`); the env value parses through
-/// [`UnverifiedExpiryPolicy::parse`].
+/// Issue #991/#1002: the complete model an unverifiable-expiry close books
+/// under. `serde` spells it lowercase on the wire (`"receivable"`); the env
+/// value parses through [`UnverifiedExpiryPolicy::parse`].
+///
+/// Issue #176: this enum is a ONE-VARIANT enum on purpose. The `Cash` variant
+/// is gone, so no `match` anywhere can grow a cash arm back, and the type
+/// system — not a runtime branch — is what guarantees estimated money never
+/// becomes spendable money. Keeping the named type (rather than deleting it and
+/// its config field) preserves the wire spelling `unverifiedExpiryPolicy`,
+/// the env key, and every journal row already written under it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UnverifiedExpiryPolicy {
-    /// #684 behaviour, unchanged: the fallback close credits spendable cash
-    /// immediately at the bookkeeping price.
-    Cash,
     /// Issue #991: the fallback close books a receivable claim; cash moves
     /// only when venue truth redeems the claim (reconcile/resolution path),
     /// with correction rows for the delta.
@@ -550,24 +562,70 @@ pub enum UnverifiedExpiryPolicy {
 }
 
 impl UnverifiedExpiryPolicy {
-    /// Parse the env spelling. Accepts the two documented values only — an
-    /// unknown value is a boot-time error, never a silent fall-back to cash
-    /// (a typo'd policy must not quietly change the accounting model).
-    pub fn parse(s: &str) -> Option<Self> {
+    /// Parse the env spelling. Accepts the one documented value only — an
+    /// unknown value is a boot-time error, never a silent fall-back (a typo'd
+    /// policy must not quietly change the accounting model).
+    ///
+    /// Issue #176: `"cash"` is REJECTED rather than ignored. An operator who
+    /// still has `BK_UNVERIFIED_EXPIRY_POLICY=cash` configured is running a
+    /// deployment whose stated accounting model no longer exists; mapping it to
+    /// `receivable` would change where their estimated money lands without
+    /// telling them (R7.1 L4). Failing the boot makes them read the change.
+    ///
+    /// Because the enum has one variant, a rejection produces no policy value
+    /// at all — the caller must abort.
+    pub fn parse(s: &str) -> Result<Self, PolicyParseError> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "cash" => Some(Self::Cash),
-            "receivable" => Some(Self::Receivable),
-            _ => None,
+            "receivable" => Ok(Self::Receivable),
+            "cash" => Err(PolicyParseError::RemovedCash),
+            other => Err(PolicyParseError::Unknown(other.to_string())),
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Cash => "cash",
             Self::Receivable => "receivable",
         }
     }
 }
+
+/// Why [`UnverifiedExpiryPolicy::parse`] refused a value (issue #176).
+///
+/// Both spellings are boot-time errors; they are distinguished only so the
+/// message can tell the operator WHY `cash` stopped being a valid answer
+/// instead of lumping it in with a typo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyParseError {
+    /// `cash` was a real value and was REMOVED by issue #176 (it credited
+    /// estimated money — derived from `current_price`, which could be the entry
+    /// price — to spendable cash: R7.1 L1). Named apart so the boot message can
+    /// say so.
+    RemovedCash,
+    /// Anything else: a typo or an unsupported value.
+    Unknown(String),
+}
+
+impl std::fmt::Display for PolicyParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RemovedCash => write!(
+                f,
+                "\"cash\" was removed by issue #176 (R7.1 L1): it credited an \
+                 estimate derived from the position mark to spendable cash, and \
+                 a dead feed could make that mark the entry price. \
+                 Estimated money is never tradable money — use \"receivable\", \
+                 which books a claim and redeems it at venue truth"
+            ),
+            Self::Unknown(v) => write!(
+                f,
+                "{v:?} is not a known policy — expected \"receivable\" \
+                 (\"cash\" was removed by issue #176)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PolicyParseError {}
 
 /// Issue #991 boundary 1: the shipped aging bound — 48 hours. A venue that
 /// has not answered a settlement query in 48h is structurally silent (the
@@ -704,9 +762,10 @@ impl Default for CoreConfig {
             // Event-driven live evaluation on by default (see the field).
             event_driven_eval: true,
             // Issue #991/#1002/#1273: unverifiable expiry books a receivable
-            // claim by default — estimated money is not spendable cash until
-            // venue truth redeems it. `Cash` (#684 byte-identical behaviour)
-            // stays opt-in via BK_UNVERIFIED_EXPIRY_POLICY=cash.
+            // claim — estimated money is not spendable cash until venue truth
+            // redeems it. Issue #176 removed the other arm (`Cash`, #684), so
+            // this is the only value; `BK_UNVERIFIED_EXPIRY_POLICY=cash` now
+            // fails the boot instead of selecting it.
             unverified_expiry_policy: UnverifiedExpiryPolicy::Receivable,
             // Issue #991 boundary 1: the shipped 48h aging bound.
             receivable_max_age_ms: RECEIVABLE_MAX_AGE_MS_DEFAULT,

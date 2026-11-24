@@ -124,8 +124,8 @@ fn held(id: &str) -> crate::position::OpenPosition {
         token_id: "tok".into(),
         condition_id: "cond".into(),
         entry_price: dec!(0.4),
-        current_price: dec!(0.4),
-        prev_price: dec!(0.4),
+        // #176: typed observation state (was `current_price`/`prev_price`).
+        price_state: crate::price_state::PriceState::observed_bid(dec!(0.4), 1),
         shares: dec!(10),
         cost_usd: dec!(4),
         was_maker_entry: true,

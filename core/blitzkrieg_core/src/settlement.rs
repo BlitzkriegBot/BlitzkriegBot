@@ -183,7 +183,10 @@ enum JournalLine {
         shares: Decimal,
         #[serde(with = "crate::decimal")]
         fallback_price: Decimal,
-        /// "current" | "entry_fallback" — what the estimate was based on.
+        /// `"binary_threshold"` (a real book observation thresholded into the
+        /// binary `{0, 1}` domain) | `"unobserved"` (no quote ever arrived, the
+        /// booked price is 0). Issue #176 deleted the `"current"` /
+        /// `"entry_fallback"` spellings; rows written before it still replay.
         #[serde(default)]
         price_source: String,
         /// The trade record's net at close (the retract-amend match leg).

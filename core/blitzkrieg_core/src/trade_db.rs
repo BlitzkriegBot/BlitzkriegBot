@@ -96,11 +96,14 @@ pub struct TradeRecord {
     /// auditors can see what was booked before the venue's truth arrived.
     #[serde(default, with = "crate::decimal::opt")]
     pub original_fallback_price: Option<Decimal>,
-    /// Issue #1002 (additive): the fallback close's price basis — `"current"`
-    /// (last known mid) or `"entry_fallback"` (dead feed, entry price). Empty
-    /// on venue closes and on rows written before the field existed; the
-    /// trade-log JSONL is append-only, so serde(default) keeps every
-    /// pre-#1002 line loadable without migration.
+    /// Issue #1002 / #176 (additive): the fallback close's price basis —
+    /// `"binary_threshold"` (a real book observation thresholded into the
+    /// binary `{0, 1}` domain) or `"unobserved"` (no quote ever arrived, the
+    /// booked price is 0 and the notional rides the receivable pool). Issue
+    /// #176 deleted the `"entry_fallback"` basis itself. Empty on venue closes
+    /// and on rows written before the field existed; the trade-log JSONL is
+    /// append-only, so serde(default) keeps every pre-#1002 line loadable
+    /// without migration.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub price_source: String,
 }

@@ -252,12 +252,12 @@ pub(crate) struct Args {
     /// trading?" must not depend on someone having thought to configure it.
     pub(crate) orderbook_stale_echo: Vec<String>,
     /// Issue #991/#1002 — the unverifiable-expiry policy in force
-    /// (`BK_UNVERIFIED_EXPIRY_POLICY`: "cash" | "receivable", default cash).
-    /// Read ONCE at boot; NOT hot-reloadable — a policy switch changes what
-    /// already-booked journal rows mean, so it takes a restart. The echo names
-    /// it unconditionally: "which accounting model did this boot arm?" must be
-    /// answerable from the boot log alone (the same posture as the freshness
-    /// echo).
+    /// (`BK_UNVERIFIED_EXPIRY_POLICY`: `receivable` only; #176 removed `cash`
+    /// and the boot refuses that spelling). Read ONCE at boot; NOT
+    /// hot-reloadable — a policy switch changes what already-booked journal
+    /// rows mean, so it takes a restart. The echo names it unconditionally:
+    /// "which accounting model did this boot arm?" must be answerable from the
+    /// boot log alone (the same posture as the freshness echo).
     pub(crate) unverified_expiry_policy: blitzkrieg_core::service::UnverifiedExpiryPolicy,
     /// Issue #991 boundary 1 — how old a fallback receivable may get (ms)
     /// before the aging warn fires (`BK_RECEIVABLE_MAX_AGE_MS`, default 48h;

@@ -1,5 +1,29 @@
 use super::*;
 
+/// The price a book actually OBSERVES, with its provenance (issue #176).
+///
+/// The ladder is [`reference_price`]'s, and for the same reason: a best bid is
+/// the strongest reference, a two-sided mid is the fallback, and a book with
+/// neither yields `None`. The difference this function makes is that it reports
+/// WHICH rung answered, so the observation can carry its own provenance instead
+/// of every price looking equally strong.
+///
+/// `None` covers two distinct situations that the caller must not conflate with
+/// a quote: no book at all, and a book whose usable prices are zero (a
+/// one-sided book — `BookView::from_book` zeroes its mid so the F6 phantom
+/// `(0 + ask)/2` cannot come back through here). Neither is an observation, and
+/// neither may ever be replaced by the entry price.
+fn observe_from_book(book: Option<&BookView>) -> Option<(Decimal, PriceSource)> {
+    let b = book?;
+    if b.best_bid > Decimal::ZERO {
+        return Some((b.best_bid, PriceSource::LastBid));
+    }
+    if b.mid_price > Decimal::ZERO {
+        return Some((b.mid_price, PriceSource::BookMid));
+    }
+    None
+}
+
 impl PositionManager {
     /// Fold the accrued flows back into the display/audit fields of an open
     /// position: the fee rate is a VIEW of the fee actually charged, and the
@@ -27,20 +51,32 @@ impl PositionManager {
         }
     }
 
-    /// Update a single position's exit state AND its `current_price` from a book.
+    /// Update a single position's exit state AND its price state from a book.
     /// This is what makes the UI's unrealized PnL move; it must run independently
     /// of whether automated exits are enabled.
     ///
-    /// F6: `current_price` is a REFERENCE valuation (bid, else two-sided mid,
-    /// else the stale value) — the dashboard may keep showing it. It is never
-    /// again a substitute for an executable quote: exit decisions and SELL fills
-    /// price off `executable_bid`, which is zero when no bid quotes.
+    /// F6: the mark is a REFERENCE valuation (bid, else two-sided mid, else the
+    /// previously observed value) — the dashboard may keep showing it. It is
+    /// never again a substitute for an executable quote: exit decisions and
+    /// SELL fills price off `executable_bid`, which is zero when no bid quotes.
+    ///
+    /// Issue #176: a tick only ever writes an OBSERVATION. With no book (or a
+    /// book that carries no usable price) the state is left exactly as it was —
+    /// `Unobserved` stays `Unobserved`, and an old observation keeps its own
+    /// `at_ms`, so its age stays legible instead of being refreshed into a
+    /// fake "just quoted". Nothing here can write the entry price.
     fn valuate_one(pos: &mut OpenPosition, book: Option<&BookView>, now_ms: i64, cfg: &ExitConfig) {
         update_exit_state(&mut pos.state, pos.entry_price, book, now_ms, cfg);
-        let val = reference_price(book, pos.current_price);
-        if val > Decimal::ZERO && pos.current_price != val {
-            pos.prev_price = pos.current_price;
-            pos.current_price = val;
+        // Issue #176: only a real book observation may write the price state.
+        // The book's OWN receive time is the observation clock — never the
+        // caller's `now`; a `0` timestamp means "no clock recorded" and stays 0
+        // (unknown age, a different statement from age zero).
+        if let Some((price, source)) = observe_from_book(book) {
+            pos.price_state = PriceState::Observed {
+                price,
+                source,
+                at_ms: book.map(|b| b.timestamp).unwrap_or(0),
+            };
         }
         // Track the freshness of the last book the valuation actually saw: the
         // SNAPSHOT's own receive time when the caller supplies one (backtest /
@@ -119,22 +155,25 @@ impl PositionManager {
     }
 
     /// Issue #390 (replay scheduling): refresh ONLY the display reference
-    /// marks — `current_price` / `prev_price` / `last_book_ts` — without
-    /// touching the exit state (the counter ratchet in particular). The base
-    /// kernel's every-tick valuate advances these marks on every tick and its
-    /// ladder runs right after, so a consumer priced off `current_price`
-    /// between the two passes sees the fresh mark; the merged replay pass
-    /// keeps that ordering visible by refreshing marks separately:
+    /// marks — the price state and `last_book_ts` — without touching the exit
+    /// state (the counter ratchet in particular). The base kernel's every-tick
+    /// valuate advances these marks on every tick and its ladder runs right
+    /// after, so a consumer priced off the mark between the two passes sees the
+    /// fresh observation; the merged replay pass keeps that ordering visible by
+    /// refreshing marks separately:
     ///
     ///   * on a SKIP tick, only dirty tokens — the base advanced every mark
     ///     from the same (unchanged) book a quiet re-run would read, so
     ///     refreshing just the tokens whose book changed reproduces it;
     ///   * on a RUN tick, every position — the ladder's own state update
     ///     runs after this and must observe the same marks the base's
-    ///     valuate fed it (strategy-signal exits price off `current_price`).
+    ///     valuate fed it (strategy-signal exits price off the mark).
     ///
     /// Deliberately NOT the ladder's `valuate_one`: that would advance the
     /// counter ratchet the interval backfill already owns.
+    ///
+    /// Issue #176: a mark is written only from a real observation, exactly as
+    /// `valuate_one` does — an unquoted token stays `Unobserved`.
     pub fn refresh_marks(
         &mut self,
         books: &dyn Fn(&str) -> Option<BookView>,
@@ -147,10 +186,12 @@ impl PositionManager {
                 continue;
             }
             let book = books(&pos.token_id);
-            let val = reference_price(book.as_ref(), pos.current_price);
-            if val > Decimal::ZERO && pos.current_price != val {
-                pos.prev_price = pos.current_price;
-                pos.current_price = val;
+            if let Some((price, source)) = observe_from_book(book.as_ref()) {
+                pos.price_state = PriceState::Observed {
+                    price,
+                    source,
+                    at_ms: book.as_ref().map(|b| b.timestamp).unwrap_or(0),
+                };
             }
             if let Some(b) = book {
                 pos.last_book_ts = if b.timestamp > 0 { b.timestamp } else { now_ms };
@@ -357,7 +398,7 @@ impl PositionManager {
                 book: book
                     .as_ref()
                     .map(|b| b as &dyn crate::exit_policy::BookScalarView),
-                fallback_price: Some(pos.current_price),
+                fallback_price: pos.price_state.price(),
                 time_left_sec,
                 hold_sec,
                 state: &pos.state,
@@ -394,12 +435,15 @@ impl PositionManager {
             let held_exit = |reason: Option<ExitReason>| {
                 // What the exit was JUDGED on is the stop's own reference
                 // whenever there is one (#225): a bid-less book whose ask
-                // collapsed can only be judged on that ask, and `current_price`
-                // never moved off the entry there — reporting it would have said
+                // collapsed can only be judged on that ask, and the mark never
+                // moved off the entry there — reporting it would have said
                 // "flat" about the one case this report exists for. With no stop
                 // reference (#267) the profit side's own judgement is what fired,
-                // and `current_price` is the reference it read.
-                let judged = stop_reference.map_or(pos.current_price, |r| r.price);
+                // and the mark is the reference it read. With NO observation at
+                // all there is nothing to name, and `mid` reports 0 — the same
+                // "not a number to trade" spelling a zero bid already uses
+                // (issue #176: never fabricate one from the entry price).
+                let judged = stop_reference.map_or(pos.mark_or_zero(), |r| r.price);
                 SuppressedStopEvent {
                     cause: hold_cause,
                     reason,

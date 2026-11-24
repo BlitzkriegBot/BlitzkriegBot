@@ -1134,9 +1134,16 @@ impl Core {
                 // #427: the Venue column — a field read off the position.
                 venue: p.venue.clone(),
                 entry_price: p.entry_price,
-                current_price: p.current_price,
+                // Issue #176: the panel's mark. An unobserved position renders
+                // `0`, the "no mark" spelling the pages already gate on — never
+                // the entry price, which would draw a fake flat line for a
+                // token nobody has quoted.
+                current_price: p.mark_or_zero(),
                 shares: p.shares,
-                unrealized_pct: pnl_pct(p.current_price, p.entry_price),
+                unrealized_pct: p
+                    .mark()
+                    .map(|m| pnl_pct(m, p.entry_price))
+                    .unwrap_or(Decimal::ZERO),
                 high_pnl_pct: p.high_pnl_pct(),
                 was_maker_entry: p.was_maker_entry,
                 entered_at_ms: p.entered_at_ms,

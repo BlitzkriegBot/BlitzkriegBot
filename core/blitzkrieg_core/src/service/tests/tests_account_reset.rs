@@ -535,8 +535,8 @@ fn seed_closed_trade(c: &mut Core, account: &str, id: &str, net: Decimal) {
         token_id: "tok".into(),
         condition_id: "cond".into(),
         entry_price: Decimal::ONE / Decimal::from(2),
-        current_price: exit_price,
-        prev_price: Decimal::ONE / Decimal::from(2),
+        // #176: typed observation state (was `current_price`/`prev_price`).
+        price_state: crate::price_state::PriceState::observed_bid(exit_price, 0),
         shares: Decimal::from(10),
         cost_usd: Decimal::from(5),
         was_maker_entry: true,

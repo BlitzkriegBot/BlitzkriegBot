@@ -48,6 +48,11 @@ mod views;
 pub use config::*;
 pub(crate) use helpers::*;
 pub use views::*;
+// #186: `ORDERS_DEFAULT_LIMIT` is the wire handler's bound; the two pure page
+// helpers below it back the pagination tests, so they are test-only here.
+pub(crate) use settlement_orders::ORDERS_DEFAULT_LIMIT;
+#[cfg(test)]
+pub(crate) use settlement_orders::{orders_page_keeps, orders_page_window};
 // #824 cycle 2: the venue-credential predicates moved into engine_cycle (their
 // only consumer); surfaced here so the integration tree keeps a public handle.
 pub use engine_cycle::{venue_credentials_missing, venue_credentials_ready};

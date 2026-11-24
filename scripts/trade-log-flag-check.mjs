@@ -37,7 +37,11 @@ async function runCore(extra, sock, work) {
   await rpc(sock, 'books.snapshot', { tokenId: 'tok', bids: [{ price: 0.95, size: 100 }], asks: [{ price: 0.99, size: 100 }] });
   await rpc(sock, 'positions.exit', {});
   await sleep(600);
-  const trades = await rpc(sock, 'trades.history', { limit: 0 });
+  // #186: `limit: 0` no longer means "uncapped" — the handler resolves a zero
+  // to its default page (50), so it is no longer a way to ask for the whole
+  // log. This gate only ever records one trade, but the ask is written out
+  // explicitly rather than leaning on a sentinel that changed meaning.
+  const trades = await rpc(sock, 'trades.history', { limit: 100 });
   p.kill('SIGTERM');
   await sleep(300);
   return (trades?.trades || []).length;

@@ -831,6 +831,7 @@ mod tests_fail_closed;
 mod tests_feed_reuse;
 mod tests_grid_pool_boot;
 mod tests_hot_reload;
+mod tests_pagination_bounds;
 mod tests_read_envelopes;
 mod tests_risk_rounds;
 mod tests_risk_rounds_carrier;

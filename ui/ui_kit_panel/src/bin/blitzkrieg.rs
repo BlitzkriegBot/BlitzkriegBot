@@ -14,12 +14,12 @@
 use blitzkrieg_ui_kit::core::doctor;
 use blitzkrieg_ui_kit::core::net_check::{render_json, render_text};
 use blitzkrieg_ui_kit::gateway::{
-    discover_binary, Dispatcher, StartOutcome, Supervisor, SupervisorConfig,
+    Dispatcher, StartOutcome, Supervisor, SupervisorConfig, discover_binary,
 };
-use blitzkrieg_ui_kit::web::{WebServer, PANEL_CREDENTIALS_MISSING};
-use blitzkrieg_ui_kit::{resolve_socket_path, IpcClient};
+use blitzkrieg_ui_kit::web::{PANEL_CREDENTIALS_MISSING, WebServer};
+use blitzkrieg_ui_kit::{IpcClient, resolve_socket_path};
 use blitzkrieg_ui_panel::{
-    parse_args_from, run_panel, run_panel_with_dispatcher, stop_stack, PanelArgs, Tab,
+    PanelArgs, Tab, parse_args_from, run_panel, run_panel_with_dispatcher, stop_stack,
 };
 use std::io::IsTerminal;
 use std::os::unix::fs::PermissionsExt;
@@ -649,7 +649,7 @@ async fn run_core_subcommand(raw_args: Vec<String>) -> std::io::Result<()> {
     // orphaned, still serving its socket (the exact shape the orphaned readonly
     // cores in unified-launcher-check exposed). With the streams registered
     // first, a signal that early is caught and routed through supervisor.stop().
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sigterm = signal(SignalKind::terminate())?;
 
@@ -784,7 +784,9 @@ async fn run_doctor_subcommand(args: Vec<String>) -> std::process::ExitCode {
                 println!("  --socket <path>  the core to ask (default: the resolved socket path)");
                 println!("  --json           print the report as JSON, for scripts");
                 println!();
-                println!("exit codes: 0 within tolerance · 1 findings need attention · 2 no core answered");
+                println!(
+                    "exit codes: 0 within tolerance · 1 findings need attention · 2 no core answered"
+                );
                 return std::process::ExitCode::SUCCESS;
             }
             other => {
@@ -1132,7 +1134,9 @@ async fn run_update_subcommand(args: Vec<String>) -> std::process::ExitCode {
             "blitzkrieg: update: --install is not available in this build — install ships with \
              the release pipeline (VERSIONING.md 0.2.5)."
         );
-        eprintln!("  Until then: blitzkrieg upgrade (builds from source, verifies, keeps a rollback point).");
+        eprintln!(
+            "  Until then: blitzkrieg upgrade (builds from source, verifies, keeps a rollback point)."
+        );
         return std::process::ExitCode::FAILURE;
     }
 
@@ -1248,7 +1252,7 @@ async fn run_unified(args: Vec<String>) -> std::io::Result<()> {
     if !cli.use_tui {
         let d_signal = dispatcher.clone();
         tokio::spawn(async move {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
             let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT listener");
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM listener");
             tokio::select! {
@@ -1326,7 +1330,14 @@ async fn run_unified(args: Vec<String>) -> std::io::Result<()> {
         let pass =
             std::env::var("BLITZKRIEG_PANEL_PASSWORD").expect("panel credentials checked above");
 
-        let mut server = WebServer::with_shared_gateway(client, 0, dispatcher.clone());
+        // #186: the snapshot window is a page, not "everything" — `0` reads as
+        // uncapped on the wire and re-sent the whole trade log on every poll.
+        // Full history is the panel's paged `GET /api/trades` depth path.
+        let mut server = WebServer::with_shared_gateway(
+            client,
+            blitzkrieg_ui_kit::core::ipc_client::DEFAULT_SNAPSHOT_TRADE_LIMIT,
+            dispatcher.clone(),
+        );
         server.set_panel_credentials(Some(user), Some(pass));
         server.set_allowed_origins(allowed_origins);
 

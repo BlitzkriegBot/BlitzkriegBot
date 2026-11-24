@@ -81,8 +81,24 @@ pub(crate) async fn handle_order(
             }
         }
         method::ORDER_LIST => {
-            let orders = core.lock().await.list_orders();
-            Ok(serde_json::json!({ "orders": orders }))
+            // #186: the tracked-order table only grows, so the reply is a page.
+            // `total` rides along because a bare `orders` array cannot say
+            // whether it is the whole table or a truncated window — and the
+            // caller's job here is to find ghost orders, which a silent
+            // truncation would hide.
+            //
+            // Absent / 0 `limit` = the default page (not "everything": the
+            // wire never gets to ask for an unbounded read). An explicit large
+            // `limit` is honoured up to `ORDERS_DEFAULT_LIMIT` so nothing that
+            // worked before can ask for more than the default and quietly get
+            // less; `offset` pages back from the newest end.
+            let limit = match params.get("limit").and_then(|v| v.as_u64()) {
+                None | Some(0) => crate::service::ORDERS_DEFAULT_LIMIT,
+                Some(n) => (n as usize).min(crate::service::ORDERS_DEFAULT_LIMIT),
+            };
+            let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let (orders, total) = core.lock().await.list_orders_window(limit, offset);
+            Ok(serde_json::json!({ "orders": orders, "total": total }))
         }
         method::ORDER_CANCEL_REMAINING => {
             typed(params, |p: CancelRemainingParams| {

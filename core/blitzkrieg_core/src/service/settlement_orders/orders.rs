@@ -1,8 +1,64 @@
 use super::*;
 
+/// Rows one `orders.list` reply carries when the caller names no window
+/// (#186). The order table only grows — "one row per order ever placed, never
+/// removed" — so an unbounded reply is a lateness bug waiting for a long
+/// session, not a completeness feature.
+pub(crate) const ORDERS_DEFAULT_LIMIT: usize = 500;
+
+/// The index window one page of tracked orders covers (#186).
+///
+/// `all()` is oldest-first, so the newest rows are at the tail: the window is
+/// cut off the end, exactly like the trades page (`trade_db::read_page`).
+/// `offset` walks back from the newest end; `limit == 0` means uncapped.
+/// `offset` past the oldest row is an empty window, not an error — the same
+/// end-of-log signal the trades page uses.
+pub(crate) fn orders_page_window(total: usize, limit: usize, offset: usize) -> (usize, usize) {
+    let end = total.saturating_sub(offset);
+    let start = if limit == 0 {
+        0
+    } else {
+        end.saturating_sub(limit)
+    };
+    (start, end)
+}
+
+/// Whether tracked order `index` belongs in the answered page (#186): inside
+/// the window, or still live wherever it sits.
+///
+/// The second half is not an optimisation. `orders.force_close` only accepts a
+/// live order (`sweeps.rs` answers "already terminal" otherwise), and the
+/// ghost an operator wants to force-close after a venue outage is exactly the
+/// OLD live row a newest-first window drops first. Paging it away would hide
+/// the one row this list exists to act on. Live orders number in the tens
+/// (`ome.rs` keeps `live_by_submitted` at O(live) for the same reason); what
+/// grows without bound is terminal history, and that is the half being paged.
+pub(crate) fn orders_page_keeps(index: usize, window: (usize, usize), live: bool) -> bool {
+    (index >= window.0 && index < window.1) || live
+}
+
 impl Core {
+    /// Every tracked order, newest last — the pre-#186 shape, kept for
+    /// in-process callers (tests, the sweep paths) that really do want the
+    /// whole table.
     pub fn list_orders(&self) -> Vec<TrackedOrder> {
-        self.ome
+        self.list_orders_window(0, 0).0
+    }
+
+    /// One window of tracked orders plus the size of the whole table (#186).
+    ///
+    /// `offset` counts back from the NEWEST end and `limit == 0` means
+    /// uncapped — the same page contract `trades.history` uses
+    /// (`trade_db::read_page`), so the two read paths page alike. Which rows
+    /// survive is decided by [`orders_page_keeps`] (live orders are never
+    /// paged out).
+    ///
+    /// The returned total is the whole table's size, not the page's: an
+    /// unbounded table answered by a page means the caller MUST be able to tell
+    /// a complete answer from a truncated one.
+    pub fn list_orders_window(&self, limit: usize, offset: usize) -> (Vec<TrackedOrder>, usize) {
+        let rows: Vec<TrackedOrder> = self
+            .ome
             .all()
             .into_iter()
             .map(|o| {
@@ -18,7 +74,19 @@ impl Core {
                     .unwrap_or_default();
                 o
             })
-            .collect()
+            .collect();
+        let total = rows.len();
+        let window = orders_page_window(total, limit, offset);
+        // One pass in the table's own order: filtering (rather than splicing
+        // the live rows in) preserves the oldest-first wire ordering the panel
+        // and the TUI both index into.
+        let page: Vec<TrackedOrder> = rows
+            .into_iter()
+            .enumerate()
+            .filter(|(i, o)| orders_page_keeps(*i, window, o.status.is_live()))
+            .map(|(_, o)| o)
+            .collect();
+        (page, total)
     }
 
     /// Reserve/risk-gate/register an order as Pending without simulating a fill.

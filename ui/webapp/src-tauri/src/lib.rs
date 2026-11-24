@@ -26,7 +26,7 @@
 
 use blitzkrieg_ui_kit::app::AppViewModel;
 use blitzkrieg_ui_kit::gateway::{Dispatcher, SupervisorConfig};
-use blitzkrieg_ui_kit::{resolve_socket_path, IpcClient};
+use blitzkrieg_ui_kit::{IpcClient, resolve_socket_path};
 
 /// Pull a fresh `AppView` JSON through the headless view-model (no GUI deps).
 pub fn snapshot_json(socket: Option<String>) -> Result<String, String> {
@@ -76,7 +76,12 @@ fn spawn_embedded_panel(socket: String) -> std::io::Result<tauri::Url> {
     let url = tauri::Url::parse(&format!("http://127.0.0.1:{port}/panel/"))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let addr = format!("127.0.0.1:{port}");
-    let server = blitzkrieg_ui_kit::web::WebServer::new(IpcClient::new(socket), 0);
+    // #186: the snapshot window is a page, not "everything" — `0` reads as
+    // uncapped on the wire and re-sent the whole trade log on every poll.
+    let server = blitzkrieg_ui_kit::web::WebServer::new(
+        IpcClient::new(socket),
+        blitzkrieg_ui_kit::core::ipc_client::DEFAULT_SNAPSHOT_TRADE_LIMIT,
+    );
     std::thread::Builder::new()
         .name("panel-http".into())
         .spawn(move || {

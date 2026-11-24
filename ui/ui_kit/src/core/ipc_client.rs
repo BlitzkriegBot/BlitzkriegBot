@@ -140,6 +140,21 @@ pub struct IpcClient {
     timeout: Duration,
 }
 
+/// Rows the snapshot path carries by default (#186).
+///
+/// `snapshot(trade_limit)` feeds a live readout rebuilt on every poll and
+/// re-sent on every SSE frame, so its window has to be a page. `0` is not a
+/// page: the wire reads it as **uncapped** and answers with the whole
+/// append-only log. Three embedders passed that literal — the TUI, the desktop
+/// app and the gateway dispatcher — so each of their snapshots grew with the
+/// trade log for the life of the process.
+///
+/// 200 is the value the gateway already passes for this same surface
+/// (`gateway_run.rs`); the panel's depth path (`GET /api/trades`, paging
+/// `trades.history`) is what reaches the full log. This constant names that
+/// one existing decision rather than introducing a second number.
+pub const DEFAULT_SNAPSHOT_TRADE_LIMIT: usize = 200;
+
 impl IpcClient {
     pub fn new(socket_path: impl Into<String>) -> Self {
         Self {
@@ -324,7 +339,7 @@ impl IpcClient {
             Err(e) => {
                 return TradesFetch::Unavailable {
                     reason: e.to_string(),
-                }
+                };
             }
         };
         let rows = match v.get("trades").and_then(|t| t.as_array()) {
@@ -332,7 +347,7 @@ impl IpcClient {
             None => {
                 return TradesFetch::Unavailable {
                     reason: "trades.history result carries no trades array".into(),
-                }
+                };
             }
         };
         let mut good = Vec::with_capacity(rows.len());

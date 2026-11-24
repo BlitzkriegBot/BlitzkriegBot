@@ -217,22 +217,37 @@ async function kernelFeePerShare(sock, revision, price) {
  * History rows are chronological (the log is appended per close), so if the
  * window's OLDEST row is already inside the session, everything the sum needs
  * may still be behind it — only a window that reaches a pre-session row (or the
- * file's start) proves completeness. Reads the wider window once in that case;
- * `saturated` says the widened read hit its own cap, which the caller must
- * report rather than sum silently.
+ * file's start) proves completeness.
+ *
+ * #186: the kernel now bounds one reply (a `limit` above its ceiling is
+ * clamped, and `0` means "default page", not "everything"). So "read a wider
+ * window" can no longer be a single larger `limit` — asking for 20,000 would
+ * come back clamped at 1,000 and this gate would call the result `saturated`
+ * on any long session. The widening is a real page walk instead: keep asking
+ * for the next page back (`offset`) until a pre-session row or the end of the
+ * log shows up. `saturated` now means only what it says — the walk stopped at
+ * its own bound (`maxRows`) before proving completeness.
  */
 async function sessionTrades(sock, startedAtMs) {
-  let limit = TRADE_WINDOW;
+  const PAGE = 1000; // the kernel's own reply ceiling
+  const maxRows = TRADE_WINDOW_WIDE;
+  let rows = [];
+  let offset = 0;
   for (;;) {
-    const res = await rpc(sock, 'trades.history', { limit });
-    const rows = res.trades || [];
+    const want = Math.min(PAGE, maxRows - rows.length);
+    if (want <= 0) return { rows, limit: rows.length, saturated: true };
+    const res = await rpc(sock, 'trades.history', { limit: want, offset });
+    const page = res.trades || [];
+    // Page order is oldest → newest within the window; `offset` walks back, so
+    // prepending keeps the accumulated list chronological like the old single
+    // read's shape.
+    rows = [...page, ...rows];
+    if (page.length < want) return { rows, limit: rows.length, saturated: false };
     const oldest = rows.length > 0 ? Number(rows[0].exitTime ?? NaN) : NaN;
-    const full = rows.length >= limit;
-    const covers = rows.length === 0 || !(oldest >= startedAtMs);
-    if (covers || !full || limit >= TRADE_WINDOW_WIDE) {
-      return { rows, limit, saturated: full && !covers };
+    if (rows.length > 0 && !(oldest >= startedAtMs)) {
+      return { rows, limit: rows.length, saturated: false };
     }
-    limit = TRADE_WINDOW_WIDE;
+    offset += page.length;
   }
 }
 
@@ -417,10 +432,10 @@ async function audit(sock, anchor) {
   // shape #200 was reported with. Say it instead of reporting the arithmetic.
   if (sessionWindow?.saturated) {
     problems.push(
-      `cannot prove this session's realized total: the trade window is saturated ` +
-      `(${sessionWindow.rows} rows at limit ${sessionWindow.limit}, oldest already inside the ` +
-      'session), so closes before it may have been evicted — re-run with a larger ' +
-      `--trade-window than ${sessionWindow.limit}`
+      `cannot prove this session's realized total: the page walk stopped at its own bound ` +
+      `(${sessionWindow.rows} rows, oldest already inside the session), so closes before it ` +
+      'may have been evicted — re-run with a larger ' +
+      `--trade-window than ${sessionWindow.rows}`
     );
   }
   if (unattributable > 0) {

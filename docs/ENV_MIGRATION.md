@@ -27,7 +27,7 @@
 | `user_layer/configs/shadow_evolution.toml` | 进化开关与参数 | **〔issue 751 推翻本行判决，2026-10-28〕** 两开关迁 `.env`（`SHADOW_ENABLED`/`SHADOW_AUTO_EVOLVE`），面板翻转 upsert `.env`；toml 写回模块 `shadow_evolution/file.rs` 撤除，本文件降级为 env 键缺席时的兼容回退（读序仍 env > 本文件），由 `scripts/migrate-config-to-env.sh` 退役进备份 | `core/blitzkrieg_core/src/config.rs`（load 侧边文件）、`bin_support/boot/args.rs`（SHADOW_* 读点） |
 | `user_layer/configs/update.toml` | 更新检查出厂缺省（读序 CLI > `BLITZKRIEG_UPDATE_*` env > 此文件 > 内置） | **保留为出厂缺省面**；运行态在 `data/update/state.json`，env 面已存在 | `core/blitzkrieg_core/src/main.rs:1810-1835` |
 | `user_layer/configs/execution_policy.toml` | 执行策略合同（账户级 sizing/门禁），`POLICY_*` env 在其上层 | **〔issue 967 退休，2026-11-06〕** 生产读/写面全部走 `POLICY_*` env 键；`execution_policy.toml` 内容永不被读取（loader 用固定 `version = 1` 骨架 + env 解析）。IPC 写面在 legacy 文件存在时拒绝写入，防止静默双源。缺文件 = env-only 中性内核 | `core/blitzkrieg_core/src/execution_policy/mod.rs` |
-| `extensions/binance_spot/config.toml` | 扩展结构声明（[meta] 与链接的 dylib 对账） | **保留为包合同** | `core/blitzkrieg_core/src/config.rs:566` |
+| `extensions/chainlink/config.toml` | 扩展结构声明（[meta] 与链接的 dylib 对账） | **保留为包合同** | `core/blitzkrieg_core/src/config.rs:566` |
 | `user_layer/strategies_lua/*/manifest.json` | **策略包合同**，不是配置：`api` 版本握手、`entry` 入口、`sha256` 完整性、`tunables` 可进化域声明（Lock 0 的依据）、`modes` 市场声明 | **保留为包合同**——它描述包的身份与能力，如同 Cargo.toml 之于 crate；env 无法承载逐包声明 | `core/blitzkrieg_core/src/strategy_engine/lua_loader.rs:4` |
 | `data/runtime/config.json` | 运行态投影（WebUI 写、内核读；现仅 `roundDurationSec` 白名单格） | **保留**：这是「面板点出来的持久意图」，与 `data/strategy-state.json` 同族；env 显式设置时它被压制（issue 499 语义） | `core/blitzkrieg_core/src/ipc/runtime_config.rs:1` |
 | `data/update/state.json`、`data/strategy-state.json`、`data/evolution/state.json` | 运行态投影家族 | **保留**（同上） | — |

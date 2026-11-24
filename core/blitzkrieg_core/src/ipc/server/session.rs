@@ -560,9 +560,9 @@ pub async fn run(
             .clone(),
     );
 
-    // P4: Rust-native feeds. Start Binance spot now (symbols known at boot); the
-    // orderbook subscriptions are added when `engine.markets` arrives (from Node)
-    // or from Rust-native round discovery below.
+    // P4: Rust-native feeds. Start the Chainlink 60s TWAP reference feed now
+    // (symbols known at boot); the orderbook subscriptions are added when
+    // `engine.markets` arrives (from Node) or from Rust-native round discovery below.
     //
     // Multi-plugin data plane: EVERY selected plugin's feed starts (each on the
     // shared CoreHost — the Core lock just queues the pushes). Tokens stay
@@ -589,7 +589,7 @@ pub async fn run(
         .collect();
     if config.feed_ws_enabled {
         let cfg = blitzkrieg_market_api::DataFeedConfig {
-            spot_assets: config.binance_assets.clone(),
+            spot_assets: config.spot_assets.clone(),
         };
         // RFC-661 M2: a consumer's own feed NEVER starts (its upstream is the
         // source's stream — a second feed would be the second connection the
@@ -603,7 +603,7 @@ pub async fn run(
             &actives,
             &reused_sources,
             &registry,
-            !config.binance_assets.is_empty(),
+            !config.spot_assets.is_empty(),
         );
         // Mount-count discipline: every mount attempt of a REUSED stream
         // (a source some consumer declares) counts once — N consumers of the
@@ -695,7 +695,7 @@ pub async fn run(
         // double its upstream queries and duplicate every batch. A family
         // OUTSIDE the table (kalshi's [900]) still takes its own instance, and
         // so does every family of a plugin with no table at all (predictfun,
-        // binance_spot): those discoveries bake the duration into their config
+        // chainlink): those discoveries bake the duration into their config
         // and discover nothing for a family they were not started with.
         let mut covered: std::collections::HashMap<String, Vec<i64>> =
             std::collections::HashMap::new();
@@ -1293,7 +1293,7 @@ pub(crate) fn select_boot_feeds(
         feeds_to_start.push(sp);
     }
     if include_spot_feeds {
-        // Reference spot plugins (e.g. `binance_spot`, MarketType::Spot) have no
+        // Reference oracle/spot plugins (e.g. `chainlink`, MarketType::Spot) have no
         // account venue binding or trading rounds, so they are never in `actives`;
         // mount their `data_feed()` automatically alongside prediction venues.
         for name in registry.names() {
@@ -1361,9 +1361,9 @@ mod spot_feed_boot_tests {
             feed: NoopFeed("polymarket"),
         }));
         reg.register(Box::new(StubPlugin {
-            name: "binance_spot",
+            name: "chainlink",
             market_type: MarketType::Spot,
-            feed: NoopFeed("binance_spot"),
+            feed: NoopFeed("chainlink"),
         }));
         let actives = crate::market::active_market_plugins(&reg, Some("polymarket"));
         let reused = std::collections::BTreeSet::new();
@@ -1371,7 +1371,7 @@ mod spot_feed_boot_tests {
         let names: Vec<&str> = selected.iter().map(|p| p.name()).collect();
         assert_eq!(
             names,
-            vec!["polymarket", "binance_spot"],
+            vec!["polymarket", "chainlink"],
             "MarketType::Spot reference feed must start even when actives only names polymarket"
         );
 
@@ -1380,9 +1380,9 @@ mod spot_feed_boot_tests {
         assert_eq!(names_no_spot, vec!["polymarket"]);
 
         let actives_with_spot =
-            crate::market::active_market_plugins(&reg, Some("polymarket,binance_spot"));
+            crate::market::active_market_plugins(&reg, Some("polymarket,chainlink"));
         let selected_dedup = select_boot_feeds(&actives_with_spot, &reused, &reg, true);
         let names_dedup: Vec<&str> = selected_dedup.iter().map(|p| p.name()).collect();
-        assert_eq!(names_dedup, vec!["polymarket", "binance_spot"]);
+        assert_eq!(names_dedup, vec!["polymarket", "chainlink"]);
     }
 }

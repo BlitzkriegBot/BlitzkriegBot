@@ -209,24 +209,24 @@ try {
   const core5 = makeCore('extension');
   await core5.start();
   const list0 = await core5.request('extension.list', {});
-  const spot = (list0.extensions ?? []).find((e) => e.name === 'binance_spot');
+  const spot = (list0.extensions ?? []).find((e) => e.name === 'chainlink');
   check('the builtin extension ships installed (not enabled)',
     spot && spot.state === 'installed', JSON.stringify(list0));
 
-  const en = await core5.request('extension.enable', { name: 'binance_spot' });
+  const en = await core5.request('extension.enable', { name: 'chainlink' });
   check('extension.enable runs on_load and reports the new state',
     en.enabled === true, JSON.stringify(en));
   const list1 = await core5.request('extension.list', {});
   check('the registry reflects enabled',
-    (list1.extensions ?? []).find((e) => e.name === 'binance_spot')?.state === 'enabled',
+    (list1.extensions ?? []).find((e) => e.name === 'chainlink')?.state === 'enabled',
     JSON.stringify(list1));
 
-  const dis = await core5.request('extension.disable', { name: 'binance_spot' });
+  const dis = await core5.request('extension.disable', { name: 'chainlink' });
   check('extension.disable runs on_unload and reports the new state',
     dis.enabled === false, JSON.stringify(dis));
   const list2 = await core5.request('extension.list', {});
   check('the registry reflects disabled',
-    (list2.extensions ?? []).find((e) => e.name === 'binance_spot')?.state === 'disabled',
+    (list2.extensions ?? []).find((e) => e.name === 'chainlink')?.state === 'disabled',
     JSON.stringify(list2));
 
   let missing = null;

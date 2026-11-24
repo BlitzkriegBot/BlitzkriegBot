@@ -6,22 +6,22 @@
 use super::async_trait_lite::async_trait;
 use super::{Extension, ExtensionContext, ExtensionType};
 
-/// A market extension shell for Binance spot. It proves the extension point: it
-/// can be installed/enabled/disabled and logs on load, but it performs no trading
-/// (trading would require an adapter wired into the order pipeline).
+/// A market extension shell for Chainlink 60s TWAP. It proves the extension
+/// point: it can be installed/enabled/disabled and logs on load, while the
+/// actual oracle feed rides `chainlink_extension::ChainlinkPlugin`.
 #[derive(Default)]
-pub struct BinanceSpotExtension;
+pub struct ChainlinkExtension;
 
-impl BinanceSpotExtension {
+impl ChainlinkExtension {
     pub fn new() -> Self {
         Self
     }
 }
 
 #[async_trait]
-impl Extension for BinanceSpotExtension {
+impl Extension for ChainlinkExtension {
     fn name(&self) -> &str {
-        "binance_spot"
+        "chainlink"
     }
     fn version(&self) -> &str {
         "0.1.0"
@@ -32,7 +32,7 @@ impl Extension for BinanceSpotExtension {
 
     async fn on_load(&self, ctx: &dyn ExtensionContext) -> Result<(), String> {
         ctx.log(&format!(
-            "binance_spot extension loaded (strategies: {:?})",
+            "chainlink extension loaded (strategies: {:?})",
             ctx.strategy_names()
         ));
         Ok(())

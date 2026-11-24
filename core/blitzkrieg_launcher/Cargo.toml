@@ -12,12 +12,12 @@ name = "blitzkrieg-core"
 path = "src/main.rs"
 
 [features]
-default = ["polymarket", "kalshi", "predictfun", "polysimulator", "binance_spot"]
-# The four official market extensions, one feature each — the same names the
+default = ["polymarket", "kalshi", "predictfun", "polysimulator", "chainlink"]
+# The official market extensions, one feature each — the same names the
 # kernel used to own (0.4.1 and earlier). The registration seam lives here
 # (`boot::builtin_registry`), feature-gated exactly like the old kernel-owned feature set.
 polymarket = ["dep:polymarket-extension"]
-binance_spot = ["dep:blitzkrieg-binance-spot"]
+chainlink = ["dep:blitzkrieg-chainlink"]
 kalshi = ["dep:kalshi-extension"]
 predictfun = ["dep:predictfun-extension"]
 polysimulator = ["dep:polysimulator-extension"]
@@ -33,7 +33,7 @@ blitzkrieg-market-api = { path = "../market_api" }
 # workspace member that links them) — optional, one Cargo feature each,
 # exactly like the old kernel-owned feature set.
 polymarket-extension = { path = "../../extensions/polymarket", optional = true }
-blitzkrieg-binance-spot = { path = "../../extensions/binance_spot", optional = true }
+blitzkrieg-chainlink = { path = "../../extensions/chainlink", optional = true }
 kalshi-extension = { package = "blitzkrieg-kalshi", path = "../../extensions/kalshi", optional = true }
 predictfun-extension = { package = "blitzkrieg-predictfun", path = "../../extensions/predictfun", optional = true }
 polysimulator-extension = { package = "blitzkrieg-polysimulator", path = "../../extensions/polysimulator", optional = true }

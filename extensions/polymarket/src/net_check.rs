@@ -16,7 +16,7 @@
 //!     and in live mode order placement, the balance self-check and the sweep.
 //!     One host carries most of the risk, which is why it is first.
 //!   * `discovery`  — Gamma: how a round's markets are found at all.
-//!   * `spot-ws`    — Binance spot: the momentum filter's reference price.
+//!   * `spot-ws`    — Chainlink 60s TWAP (PolyBolt): binary-market settlement reference price.
 //!   * `venue-ws`   — `POLYMARKET_WS_URL`: the authenticated fill stream (live
 //!     mode only, but a silent one is a silent ledger). Probed at the endpoint
 //!     the SDK's client actually dials, not at the configured base — see
@@ -38,8 +38,8 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 
-/// Binance spot: the momentum filter's reference price stream.
-const BINANCE_SPOT_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@trade";
+/// Chainlink 60s TWAP (Polymarket PolyBolt): binary-market settlement reference price stream.
+const CHAINLINK_TWAP_URL: &str = "wss://ws-live-v2.polymarket.com/ws";
 
 /// Per-stage budgets. Generous enough for a slow-but-working path, short enough
 /// that the whole report is back before an operator gives up on it: the four
@@ -196,7 +196,7 @@ async fn dial_proxy(ep: &blitzkrieg_bk_contract::net::ProxyEndpoint) -> Result<i
 const LABELS: [(&str, &str); 4] = [
     ("venue-rest", "CLOB REST"),
     ("discovery", "Gamma discovery"),
-    ("spot-ws", "Binance spot"),
+    ("spot-ws", "Chainlink TWAP"),
     ("venue-ws", "CLOB user stream"),
 ];
 
@@ -219,7 +219,7 @@ fn targets() -> Vec<Target> {
         },
         Target::Probe {
             name: "spot-ws",
-            url: BINANCE_SPOT_URL.to_string(),
+            url: CHAINLINK_TWAP_URL.to_string(),
             kind: Kind::Ws,
         },
         user_stream_target(env_target("venue-ws", ws, validate_ws_host, Kind::Ws)),
@@ -632,9 +632,9 @@ mod tests {
                 443,
             ),
             (
-                "wss://stream.binance.com:9443/ws/btcusdt@trade",
-                "stream.binance.com",
-                9443,
+                "wss://ws-live-v2.polymarket.com/ws",
+                "ws-live-v2.polymarket.com",
+                443,
             ),
             ("http://127.0.0.1:8080/base?x=1", "127.0.0.1", 8080),
             ("ws://[::1]:9000/x", "::1", 9000),
@@ -712,7 +712,7 @@ mod tests {
         match &ts[2] {
             Target::Probe { url, kind, .. } => {
                 assert!(matches!(kind, Kind::Ws));
-                assert_eq!(url, BINANCE_SPOT_URL);
+                assert_eq!(url, CHAINLINK_TWAP_URL);
             }
             _ => panic!("spot-ws is a fixed URL"),
         }

@@ -1,8 +1,7 @@
-//! WebSocket proxy decision for Binance spot — mirrors the Polymarket
-//! extension's proxy (`extensions/polymarket/src/proxy.rs`) but scoped to the
-//! Binance `@trade` stream only. Reads `BK_PROXY` through the shared
-//! `blitzkrieg_bk_contract::net` policy so the feed follows the same tunnel as
-//! every other network call in this process.
+//! WebSocket proxy tunnel for Chainlink 60s TWAP feed — mirrors the Polymarket
+//! extension's proxy (`extensions/polymarket/src/proxy.rs`). Reads `BK_PROXY`
+//! through the shared `blitzkrieg_bk_contract::net` policy so the feed follows
+//! the same tunnel as every other network call in this process.
 
 use blitzkrieg_bk_contract::net::{self, ProxyEndpoint, error_chain};
 use std::time::Duration;

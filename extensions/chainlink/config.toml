@@ -1,0 +1,27 @@
+# Extension config for the chainlink 60s TWAP reference-price extension.
+#
+# Read at kernel startup (KI-11): [meta] is parsed and checked against the linked
+# extension, so name/version/extension_type drift is reported. [dependencies],
+# [market] and [risk] are recognised and reported as declared-but-inert rather
+# than acted on. No hot reload: restart to apply.
+
+[meta]
+name = "chainlink"
+version = "0.1.0"
+extension_type = "market"
+enabled = false
+description = "Chainlink 60s TWAP oracle reference-price adapter (binary-market settlement source)"
+
+[dependencies]
+blitzkrieg_core = ">=0.1.0"
+
+[market]
+data_endpoint = "wss://ws-live-v2.polymarket.com/ws"
+channel = "price.crypto.twap"
+window_seconds = 60
+symbols = ["btcusd", "ethusd", "solusd", "xrpusd"]
+trading_enabled = false
+
+[risk]
+max_position_size = 1.0
+max_daily_loss = 500.0

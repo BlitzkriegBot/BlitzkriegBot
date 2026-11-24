@@ -1,15 +1,5 @@
 {
-  "accountGates": [
-    {
-      "account": "global",
-      "blocked": true,
-      "reason": "trading self-check failed on polymarket: venue_balance: HTTP 401 unauthorized",
-      "reasonKind": "killSwitch",
-      "sinceMs": 1000000000005,
-      "expiresAtMs": null,
-      "actor": "system"
-    }
-  ],
+  "accountGates": [],
   "accountingAudit": {
     "anchored": false,
     "failures": 0,
@@ -193,8 +183,7 @@
   "strategyLimitRejected": 0,
   "tops": 0,
   "tradingFrozen": {
-    "active": true,
-    "reason": "trading self-check failed on polymarket: venue_balance: HTTP 401 unauthorized"
+    "active": false
   },
   "venueRejected": 1
 }

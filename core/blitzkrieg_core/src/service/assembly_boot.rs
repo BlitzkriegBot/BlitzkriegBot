@@ -931,6 +931,7 @@ impl Core {
             pending_venue_cancels: Vec::new(),
             freeze_book: FreezeBook::default(),
             account_gates: HashMap::new(),
+            venue_halts: VenueHalts::default(),
             last_error: None,
             recon_watermark_ms: 0,
             boot_replayed_journal,

@@ -411,7 +411,12 @@ pub struct TradingFrozenView {
     pub active: bool,
     /// Why trading froze. Only sent while `active` (the kernel omits the key
     /// otherwise), so `None` beside `active == true` means "no reason given".
-    #[serde(default)]
+    ///
+    /// The `skip_serializing_if` is what keeps this type honest on the way
+    /// BACK: `engine_stats_fixture.rs` round-trips every safety key through
+    /// this struct and diffs it against the wire, so a `reason: null` the
+    /// kernel never sent would read as the panel silently re-spelling a key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 

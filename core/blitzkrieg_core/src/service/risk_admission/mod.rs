@@ -60,6 +60,8 @@ pub(crate) use exits::{
 pub(crate) use freeze::FreezeBook;
 // #1045: the single in-memory per-account entry gate.
 pub(crate) use freeze::{AccountGate, GLOBAL_KILL_ACCOUNT, GateReason};
+// #187: the venue axis of the same gate.
+pub(crate) use freeze::VenueHalts;
 
 // #861: the runtime risk state's durable side file (hot entry caps, systemic
 // bounds, freeze book) — the cell type `service.rs`'s Core struct holds, and

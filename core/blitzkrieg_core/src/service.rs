@@ -57,6 +57,10 @@ pub(crate) use risk_admission::FreezeBook;
 // #1045: the single in-memory per-account entry gate (replaces
 // FreezeBook's retired `account_freezes` + `auto_frozen` tables).
 pub(crate) use risk_admission::{AccountGate, GLOBAL_KILL_ACCOUNT, GateReason};
+// #187: the VENUE axis of the entry gate — a halt that needs no account to
+// hang on, so a venue failure with no bound account has a home instead of
+// escalating to the process-wide kill switch.
+pub(crate) use risk_admission::VenueHalts;
 // #861: the runtime risk-state cell (path + parsed file) the Core struct
 // holds — same re-export shape as FreezeBook above.
 pub(crate) use risk_admission::RiskStateCell;
@@ -304,6 +308,14 @@ pub struct Core {
     /// #1045: 唯一账户入场闸门，每账户一份，纯内存，永不落盘，重启即清。
     /// 所有入场路径只读 `gate.blocked`；出场永不阻断。
     account_gates: HashMap<String, AccountGate>,
+    /// #187: the VENUE axis of the same gate. `account_gates` can only hold a
+    /// halt that has an account to hang it on; a venue failure with no bound
+    /// account had nowhere to land, and the old code escalated it to
+    /// `GLOBAL_KILL_ACCOUNT` — one venue's blip stopped every venue. This table
+    /// keys on the venue itself, so that shape has a home. Entries are
+    /// `HaltScope::Venue` only (enforced by `VenueHalts::halt`), and only
+    /// `risk.kill` (an operator act) can still reach the global gate.
+    venue_halts: VenueHalts,
     /// #861: the runtime risk state's durable mirror (`Option<RiskStateCell>`
     /// — path + parsed file). `None` (backtester, most tests) = the historic
     /// session-scoped behaviour: no risk knob is written or restored, and no
@@ -861,6 +873,7 @@ mod tests {
     mod freeze_self_heal_tests;
     mod ghost_cash_move_tests;
     mod ghost_fill_tests;
+    mod halt_scope_tests;
     mod journal_cursor_tests;
     mod maker_rebate_tests;
     mod mode_snapshot_tests;

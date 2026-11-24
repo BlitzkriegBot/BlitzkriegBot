@@ -3,32 +3,32 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "805454e572305e666d7624cb854490b0636c0adfa6bcab67a52c84c5e0ceab2c",
+  "sha256": "fe7cd4cfc013d697141edba0a8cfb3bc64951ccbc10b780d77d3215890cf04e8",
   "author": "BlitzkriegBot",
-  "description": "Near-settlement favorite filtered by Digital Black-Scholes fair-value edge, conservative multi-horizon realized spot volatility, and 15s spot momentum. With 20-120 seconds left, buy BTC side whose touch is inside 0.75-0.86 when fair - (ask + taker_fee) >= min_edge (default 0.10) and spot momentum aligns; hold to settlement. One attempt per condition per round; a fill or cancel is not re-entered.",
+  "description": "Near-settlement favorite. With 45-120 seconds left, buy the side whose touch is inside 0.80-0.90 and hold it to settlement. One attempt per condition per round; a fill or a cancel is not re-entered. maker_entry 0 (default) crosses the ask as a taker (order reason late-taker). maker_entry 1 rests a post-only bid at the touch and cancels it once time_left falls below min_time_left. Applies to every asset the venue lists (BTC, ETH, SOL, XRP, ...). Not in the default enabled set. The strategy loader does not require a lua_ prefix; the registry id is the directory name late_favorite.",
   "holds_to_settlement": true,
   "entry_maker": false,
   "gate_exemptions": {
     "timing": true,
     "momentum": true,
-    "timing_min_time_left_sec": 20
+    "timing_min_time_left_sec": 45
   },
   "tunables": {
     "min_px": {
       "type": "decimal",
-      "default": "0.75",
+      "default": "0.80",
       "min": "0.50",
       "max": "0.95"
     },
     "max_px": {
       "type": "decimal",
-      "default": "0.86",
+      "default": "0.90",
       "min": "0.55",
       "max": "0.99"
     },
     "min_time_left": {
       "type": "int",
-      "default": "20",
+      "default": "45",
       "min": "0",
       "max": "300"
     },
@@ -43,36 +43,6 @@
       "default": "0",
       "min": "0",
       "max": "1"
-    },
-    "btc_only": {
-      "type": "int",
-      "default": "1",
-      "min": "0",
-      "max": "1"
-    },
-    "min_edge": {
-      "type": "decimal",
-      "default": "0.10",
-      "min": "0.00",
-      "max": "0.30"
-    },
-    "mom_window_sec": {
-      "type": "int",
-      "default": "15",
-      "min": "0",
-      "max": "120"
-    },
-    "max_spot_age_ms": {
-      "type": "int",
-      "default": "5000",
-      "min": "1000",
-      "max": "30000"
-    },
-    "max_round_sec": {
-      "type": "int",
-      "default": "300",
-      "min": "0",
-      "max": "86400"
     }
   }
 }

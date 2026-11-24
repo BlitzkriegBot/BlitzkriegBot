@@ -1,0 +1,60 @@
+{
+  "name": "consensus_favorite",
+  "version": "0.1.0",
+  "api": "1.0",
+  "entry": "strategy.lua",
+  "sha256": "affcf03da8ccd4d9880c18165a425bf2c3ddfef839fe8a789d89394b4c3dcc6b",
+  "author": "BlitzkriegBot",
+  "description": "Multi-asset aligned-direction favorite for 5m binary rounds. With 30-90 seconds left, buys the favorite priced inside 0.94-0.97 ONLY when at least 4 assets in the same round agree on the same direction at >= 0.85, filtering out single-coin fakeouts. Holds to settlement; one attempt per condition per round. maker_entry 0 (default) crosses the ask as a taker (reason late-taker).",
+  "holds_to_settlement": true,
+  "entry_maker": false,
+  "gate_exemptions": {
+    "timing": true,
+    "momentum": true,
+    "timing_min_time_left_sec": 30
+  },
+  "tunables": {
+    "min_consensus": {
+      "type": "int",
+      "default": "4",
+      "min": "1",
+      "max": "8"
+    },
+    "peer_min_px": {
+      "type": "decimal",
+      "default": "0.85",
+      "min": "0.55",
+      "max": "0.98"
+    },
+    "min_px": {
+      "type": "decimal",
+      "default": "0.94",
+      "min": "0.50",
+      "max": "0.98"
+    },
+    "max_px": {
+      "type": "decimal",
+      "default": "0.97",
+      "min": "0.55",
+      "max": "0.99"
+    },
+    "min_time_left": {
+      "type": "int",
+      "default": "30",
+      "min": "5",
+      "max": "300"
+    },
+    "max_time_left": {
+      "type": "int",
+      "default": "90",
+      "min": "15",
+      "max": "600"
+    },
+    "maker_entry": {
+      "type": "int",
+      "default": "0",
+      "min": "0",
+      "max": "1"
+    }
+  }
+}

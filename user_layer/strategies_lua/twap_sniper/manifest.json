@@ -1,0 +1,48 @@
+{
+  "name": "twap_sniper",
+  "version": "0.1.0",
+  "api": "1.0",
+  "entry": "strategy.lua",
+  "sha256": "6fa7658111626abc3aaf0a2dc3b25722923c74a822a557f5f335706ab1cd3388",
+  "author": "BlitzkriegBot",
+  "description": "Final-15s TWAP-lock sniper for 5m binary rounds. With 5-15 seconds remaining (75%-92% of the 60s settlement TWAP locked in), crosses any lagging ask inside 0.75-0.96 as a taker (reason late-taker) and holds to settlement. One attempt per condition per round; low frequency, high PF, low drawdown.",
+  "holds_to_settlement": true,
+  "entry_maker": false,
+  "gate_exemptions": {
+    "timing": true,
+    "momentum": true,
+    "timing_min_time_left_sec": 5
+  },
+  "tunables": {
+    "min_px": {
+      "type": "decimal",
+      "default": "0.75",
+      "min": "0.50",
+      "max": "0.95"
+    },
+    "max_px": {
+      "type": "decimal",
+      "default": "0.96",
+      "min": "0.55",
+      "max": "0.99"
+    },
+    "min_time_left": {
+      "type": "int",
+      "default": "5",
+      "min": "0",
+      "max": "300"
+    },
+    "max_time_left": {
+      "type": "int",
+      "default": "15",
+      "min": "5",
+      "max": "600"
+    },
+    "maker_entry": {
+      "type": "int",
+      "default": "0",
+      "min": "0",
+      "max": "1"
+    }
+  }
+}

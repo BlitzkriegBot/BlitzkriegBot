@@ -245,7 +245,6 @@ function bk_evaluate()
     end
     local params = bk.params()
     local maker = int_param(params, "maker_entry", 0) == 1
-    local btc_only = int_param(params, "btc_only", 1) == 1
     local lo = num_param(params, "min_px", 0.80)
     local hi = num_param(params, "max_px", 0.90)
     local t_min = int_param(params, "min_time_left", 45)
@@ -255,7 +254,7 @@ function bk_evaluate()
 
     for _, market in ipairs(bk.markets()) do
         local cond = market.condition_id
-        if cond ~= nil and (not btc_only or market.asset == "BTC" or market.asset == "btc") then
+        if cond ~= nil then
             local k = key_of(round.slot, cond)
             local st = quoted[k]
             local up_held = market.up_token ~= nil and held[market.up_token]

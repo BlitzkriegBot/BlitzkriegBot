@@ -1,7 +1,8 @@
 # late_favorite
 
-Buy the BTC side priced 0.80–0.90 while 45–120 seconds remain, then hold
-it to settlement. One attempt per condition per round.
+Buy the favourite side priced 0.80–0.90 while 45–120 seconds remain, then hold
+it to settlement. One attempt per condition per round. Applies to every asset
+the venue lists (BTC, ETH, SOL, XRP, …).
 
 The registry id is `late_favorite`. The loader does not require a `lua_`
 prefix; the directory name must equal `manifest.name`.
@@ -19,7 +20,6 @@ is not in the default enabled set. Enable it explicitly:
 
 | tunable | default | meaning |
 |---|---|---|
-| `btc_only` | 1 | BTC only. Set 0 to include ETH, SOL and XRP |
 | `maker_entry` | 0 | 0 = taker at the ask. 1 = post-only bid, cancelled once time left falls below `min_time_left` |
 | `min_px` / `max_px` | 0.80 / 0.90 | inclusive band |
 | `min_time_left` / `max_time_left` | 45 / 120 | seconds remaining |

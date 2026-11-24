@@ -1,0 +1,87 @@
+# Gitea Milestone -> full ci-local -> Gitea Push Mirror sync
+#
+# Triggered when a human closes a Gitea Milestone (or manually via
+# workflow_dispatch). Runs ONLY on Gitea's dedicated `bk-gate` runner
+# (GitHub Actions ignores `.gitea/workflows/`).
+#
+# Prerequisites (configured in Gitea Web UI by operator):
+#   1. Repo Settings -> Mirror Settings -> Add Push Mirror to GitHub
+#      with sync_on_commit OFF and interval = 0 (API-triggered only).
+#   2. Repo Secret `GITEA_CRED` (already used by gate.yml).
+name: milestone-mirror
+
+on:
+  milestone:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      milestone_id:
+        description: "Gitea Milestone ID to verify and mirror"
+        required: true
+      dry_run:
+        description: "Run verification + ci-local without calling push_mirrors-sync"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: milestone-mirror
+  cancel-in-progress: false
+
+jobs:
+  verify-and-mirror:
+    name: verify-and-mirror
+    runs-on: bk-gate
+    timeout-minutes: 45
+    steps:
+      - name: Verify milestone completed and push mirror configured
+        env:
+          GITEA_CRED: ${{ secrets.GITEA_CRED }}
+          MS_ID: ${{ github.event.milestone.id || inputs.milestone_id }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MS_ID" ]; then
+            echo "ERROR: missing milestone id" >&2
+            exit 1
+          fi
+          MS=$(curl -sf -u "$GITEA_CRED" \
+            "http://localhost:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/milestones/${MS_ID}")
+          TITLE=$(echo "$MS" | jq -r '.title')
+          STATE=$(echo "$MS" | jq -r '.state')
+          OPEN=$(echo "$MS" | jq -r '.open_issues')
+          CLOSED=$(echo "$MS" | jq -r '.closed_issues')
+          echo "milestone id=${MS_ID} title=${TITLE} state=${STATE} open=${OPEN} closed=${CLOSED}"
+          test "$STATE" = "closed"
+          test "$OPEN" -eq 0
+          test "$CLOSED" -gt 0
+          if [ "$DRY_RUN" != "true" ]; then
+            MIRRORS=$(curl -sf -u "$GITEA_CRED" \
+              "http://localhost:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/push_mirrors" | jq 'length')
+            echo "configured push_mirrors=${MIRRORS}"
+            test "$MIRRORS" -gt 0
+          fi
+
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Run full local CI gate
+        run: bash scripts/ci-local.sh
+
+      - name: Trigger Gitea Push Mirror sync
+        env:
+          GITEA_CRED: ${{ secrets.GITEA_CRED }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY_RUN=true: skipping POST /push_mirrors-sync"
+            exit 0
+          fi
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST -u "$GITEA_CRED" \
+            "http://localhost:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/push_mirrors-sync")
+          echo "push_mirrors-sync HTTP=${CODE}"
+          test "$CODE" -eq 200 -o "$CODE" -eq 202 -o "$CODE" -eq 204

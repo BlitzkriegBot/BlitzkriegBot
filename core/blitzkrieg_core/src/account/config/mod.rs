@@ -25,7 +25,7 @@ use super::{
 };
 use crate::model::{CoreError, CoreErrorCode};
 use blitzkrieg_market_api::MarketType;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::Path;
 
 mod book;
@@ -44,10 +44,9 @@ pub const ACCOUNTS_CONFIG_PATH: &str = "user_layer/configs/accounts.toml";
 /// NAMES of environment variables — §9.4: the value never appears in any
 /// config file, log, or IPC answer.
 ///
-/// `Serialize` exists for the toml render path the cross-venue-arb / display
-/// faces once ran; the wire types are separate (§12.1), so this never leaves
-/// the config layer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Parse-only: the writers that used to re-render this struct back to toml
+/// are gone (SQLite is the sole durable home), so no `Serialize` is derived.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 struct AccountFileEntry {
     id: String,
@@ -118,7 +117,7 @@ struct AccountFileEntry {
     rounds: Option<Vec<i64>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AccountsFile {
     account: Vec<AccountFileEntry>,
@@ -152,7 +151,7 @@ struct AccountsFile {
 /// the STRATEGY PACKAGE NAME the config feeds — the engine pushes these
 /// values into that package's `bk.params()` bag, and the lua_loader's
 /// account-stamp reads them as the venue→account leg map.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CrossVenueArbFileSection {
     leg_a_venue: String,
@@ -667,355 +666,6 @@ pub fn validate_cross_venue_arb_section(
         ));
     }
     Ok(())
-}
-
-/// The persisted write of a NEW account (`account.create`): append one
-/// `[[account]]` row to the book — read-modify-write over the whole file, the
-/// exact posture the retired toml venue writer ran (a non-parsing file is
-/// REFUSED, never flattened; atomic same-directory temp + rename; the toml
-/// re-render does not carry the operator's comments — the same accepted
-/// trade-off, every FIELD round-trips because the parse is
-/// `deny_unknown_fields`). The row carries `id`/`name`/`venue` only:
-/// `market_type` and `status` are the file's own defaults (`prediction`,
-/// `active`) — a runtime mint that wrote an explicit restriction would be a
-/// loosening spelled backwards; tightening stays `account.status`'s job.
-/// Credential ENV-NAMES are NOT written here — the create call carries no
-/// credential surface at all (§9.4); the panel edits the file (or a later
-/// venue-style verb) for key names.
-pub fn persist_account_create(
-    path: &Path,
-    account_id: &str,
-    name: Option<&str>,
-    venue: Option<&str>,
-) -> Result<(), CoreError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml unreadable, refusing the create write: {e}"),
-        )
-    })?;
-    let mut file: AccountsFile = toml::from_str(&text).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml does not parse; refusing the create write: {e}"),
-        )
-    })?;
-    if file.account.iter().any(|a| a.id == account_id) {
-        return Err(CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml already declares `[[account]]` with id `{account_id}`"),
-        ));
-    }
-    // issue 753: a new row may not alias an existing id in the env key space
-    // (`paper-a` vs `paper_a`) — checked before the push/render, so a refusal
-    // leaves the original file byte-identical.
-    {
-        let mut ids: Vec<String> = file.account.iter().map(|a| a.id.clone()).collect();
-        ids.push(account_id.to_string());
-        refuse_env_suffix_collisions(&ids)?;
-    }
-    file.account.push(AccountFileEntry {
-        id: account_id.to_string(),
-        name: name.map(|n| n.to_string()),
-        market_type: None,
-        status: None,
-        api_key_env: None,
-        secret_env: None,
-        passphrase_env: None,
-        private_key_env: None,
-        venue: venue.filter(|v| !v.is_empty()).map(|v| v.to_string()),
-        trading_enabled: None,
-        strategies: None,
-        rounds: None,
-    });
-    let out = toml::to_string(&file).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml does not render: {e}"),
-        )
-    })?;
-    write_accounts_file_atomic(path, &out, "create")
-}
-
-/// The persisted write of ONE account's trading switch
-/// (`account.trading.set`): read-modify-write over the whole file, the exact
-/// fail-closed posture [`persist_account_create`] runs (a non-parsing file is
-/// REFUSED, never flattened; same-directory temp + rename; the re-render
-/// does not carry comments — every FIELD round-trips). `false` is written
-/// explicitly; `true` REMOVES the key (the file spells "trading" by
-/// absence, the same shape a pre-switch file had).
-pub fn persist_account_trading(
-    path: &Path,
-    account_id: &str,
-    enabled: bool,
-) -> Result<(), CoreError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml unreadable, refusing the trading write: {e}"),
-        )
-    })?;
-    let mut file: AccountsFile = toml::from_str(&text).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml does not parse; refusing the trading write: {e}"),
-        )
-    })?;
-    let target = file
-        .account
-        .iter_mut()
-        .find(|a| a.id == account_id)
-        .ok_or_else(|| {
-            CoreError::new(
-                CoreErrorCode::InvalidParams,
-                format!("accounts.toml declares no `[[account]]` with id `{account_id}`"),
-            )
-        })?;
-    target.trading_enabled = Some(enabled).filter(|v| !v);
-    write_accounts_file_atomic(
-        path,
-        &toml::to_string(&file).map_err(|e| {
-            CoreError::new(
-                CoreErrorCode::InvalidParams,
-                format!("accounts.toml does not render: {e}"),
-            )
-        })?,
-        "trading",
-    )
-}
-
-/// The persisted write of ONE account's strategy ENABLEMENT set
-/// (`account.strategies.set` / the per-account half of `strategy.enable`).
-/// An EMPTY list REMOVES the key — the file spells "this account runs no
-/// strategies" by absence (per-account enablement is the ONLY truth: the
-/// old "absence = inherit the global toggle" reading is retired; an absent
-/// key on a fresh deployment still yields a silent default account, which
-/// is the zero-config shape the boot path observes). A non-empty list is
-/// the enablement set stored verbatim. The write-time validation against
-/// the registered set is the CALLER's job (it has the plugin/strategy
-/// registry; this layer only owns the file).
-pub fn persist_account_strategies(
-    path: &Path,
-    account_id: &str,
-    strategies: &[String],
-) -> Result<(), CoreError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml unreadable, refusing the strategies write: {e}"),
-        )
-    })?;
-    let mut file: AccountsFile = toml::from_str(&text).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml does not parse; refusing the strategies write: {e}"),
-        )
-    })?;
-    let target = file
-        .account
-        .iter_mut()
-        .find(|a| a.id == account_id)
-        .ok_or_else(|| {
-            CoreError::new(
-                CoreErrorCode::InvalidParams,
-                format!("accounts.toml declares no `[[account]]` with id `{account_id}`"),
-            )
-        })?;
-    target.strategies = if strategies.is_empty() {
-        None
-    } else {
-        Some(strategies.to_vec())
-    };
-    write_accounts_file_atomic(
-        path,
-        &toml::to_string(&file).map_err(|e| {
-            CoreError::new(
-                CoreErrorCode::InvalidParams,
-                format!("accounts.toml does not render: {e}"),
-            )
-        })?,
-        "strategies",
-    )
-}
-
-/// The persisted write of ONE account's round-length FAMILY set
-/// (`account.rounds.set`, 轮次多族 B2). Read-modify-write over the whole
-/// file, the exact posture [`persist_account_create`] runs (a non-parsing
-/// file is REFUSED, never flattened; atomic same-directory temp + rename via
-/// [`write_accounts_file_atomic`]; the toml re-render does not carry the
-/// operator's comments — the same accepted trade-off, every FIELD
-/// round-trips because the parse is `deny_unknown_fields`).
-///
-/// An EMPTY (or already-deduplicated-to-empty) list REMOVES the `rounds`
-/// key — the file spells "no declared family set" by absence, the exact
-/// shape a pre-declaration file had; missing and `[]` parse identically at
-/// the next boot, and a deleted key is cleaner than a persisted empty array.
-/// The union/dedup validation is the CALLER's job (the service layer
-/// reuses [`validate_rounds`] before it ever calls here); this layer only
-/// owns the file.
-pub fn persist_account_rounds(
-    path: &Path,
-    account_id: &str,
-    rounds: &[i64],
-) -> Result<(), CoreError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml unreadable, refusing the rounds write: {e}"),
-        )
-    })?;
-    let mut file: AccountsFile = toml::from_str(&text).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml does not parse; refusing the rounds write: {e}"),
-        )
-    })?;
-    let target = file
-        .account
-        .iter_mut()
-        .find(|a| a.id == account_id)
-        .ok_or_else(|| {
-            CoreError::new(
-                CoreErrorCode::InvalidParams,
-                format!("accounts.toml declares no `[[account]]` with id `{account_id}`"),
-            )
-        })?;
-    target.rounds = if rounds.is_empty() {
-        None
-    } else {
-        Some(rounds.to_vec())
-    };
-    write_accounts_file_atomic(
-        path,
-        &toml::to_string(&file).map_err(|e| {
-            CoreError::new(
-                CoreErrorCode::InvalidParams,
-                format!("accounts.toml does not render: {e}"),
-            )
-        })?,
-        "rounds",
-    )
-}
-
-/// The persisted removal of ONE account (`account.remove`): drop the named
-/// `[[account]]` from the book — read-modify-write, the same fail-closed
-/// posture as every accounts.toml writer above. The CALLER owns the
-/// refusals that need runtime facts (open positions, the last-account
-/// guard); this layer refuses only what the file itself decides (an unknown
-/// id, a file that does not parse) and never leaves the last row
-/// removable-broken: an empty book would fail the next boot's parse, so
-/// removing the FINAL row is refused here with the honest diagnostic.
-/// `default` is not special-cased — every account is removable.
-pub fn persist_account_remove(path: &Path, account_id: &str) -> Result<(), CoreError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml unreadable, refusing the remove write: {e}"),
-        )
-    })?;
-    let mut file: AccountsFile = toml::from_str(&text).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml does not parse; refusing the remove write: {e}"),
-        )
-    })?;
-    let before = file.account.len();
-    file.account.retain(|a| a.id != account_id);
-    if file.account.len() == before {
-        return Err(CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml declares no `[[account]]` with id `{account_id}`"),
-        ));
-    }
-    if file.account.is_empty() {
-        return Err(CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!(
-                "removing `[[account]]` `{account_id}` would leave accounts.toml \
-                 empty — the next boot refuses an empty book; delete the file \
-                 itself (single default account) instead"
-            ),
-        ));
-    }
-    // The display pointer must not survive the removal as a dangling id —
-    // the next boot's loader refuses an unknown `display_account`
-    // (fail-closed), so a removal that takes the displayed account away
-    // re-derives the key IN THE SAME ATOMIC WRITE (explicit > first active >
-    // first row, the loader's own order). Removing a non-displayed account
-    // leaves the pointer untouched.
-    if file.display_account.as_deref() == Some(account_id) {
-        file.display_account = file
-            .account
-            .iter()
-            .find(|a| matches!(a.status, Some(AccountStatus::Active) | None))
-            .map(|a| a.id.clone())
-            .or_else(|| file.account.first().map(|a| a.id.clone()));
-    }
-    let out = toml::to_string(&file).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml does not render: {e}"),
-        )
-    })?;
-    write_accounts_file_atomic(path, &out, "remove")
-}
-
-/// The persisted write-back of the DISPLAY pointer (`display.account.set`):
-/// set the top-level `display_account` key of accounts.toml — read-modify-write
-/// over the whole file, the exact fail-closed posture every accounts.toml
-/// writer above runs (a non-parsing file is REFUSED, never flattened;
-/// same-directory temp + rename via [`write_accounts_file_atomic`]; the toml
-/// re-render does not carry the operator's comments — the same accepted
-/// trade-off, every FIELD round-trips because the parse is
-/// `deny_unknown_fields`). The CALLER owns the runtime validations (the id
-/// must exist and be `active`); this layer only owns the file.
-pub fn persist_display_account(path: &Path, account_id: &str) -> Result<(), CoreError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml unreadable, refusing the display write: {e}"),
-        )
-    })?;
-    let mut file: AccountsFile = toml::from_str(&text).map_err(|e| {
-        CoreError::new(
-            CoreErrorCode::InvalidParams,
-            format!("accounts.toml does not parse; refusing the display write: {e}"),
-        )
-    })?;
-    file.display_account = Some(account_id.to_string());
-    write_accounts_file_atomic(
-        path,
-        &toml::to_string(&file).map_err(|e| {
-            CoreError::new(
-                CoreErrorCode::InvalidParams,
-                format!("accounts.toml does not render: {e}"),
-            )
-        })?,
-        "display",
-    )
-}
-
-/// The atomic tail both accounts.toml writers share: write the sibling temp
-/// first, then rename over the original — the boot's read and a concurrent
-/// reload can never see a partial document. `op` names the caller in the
-/// diagnostics (the same spelling each writer's own messages carry).
-fn write_accounts_file_atomic(path: &Path, contents: &str, op: &str) -> Result<(), CoreError> {
-    let tmp = path.with_extension(format!("toml.{op}.tmp"));
-    std::fs::write(&tmp, contents)
-        .map_err(|e| {
-            CoreError::new(
-                CoreErrorCode::InvalidParams,
-                format!("accounts.toml {op} write failed: {e}"),
-            )
-        })
-        .and_then(|()| {
-            std::fs::rename(&tmp, path).map_err(|e| {
-                CoreError::new(
-                    CoreErrorCode::InvalidParams,
-                    format!("accounts.toml {op} rename failed: {e}"),
-                )
-            })
-        })
 }
 
 /// Probe the kernel's OWN environment for the configured key names (§9.4: the

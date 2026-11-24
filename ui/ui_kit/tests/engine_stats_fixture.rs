@@ -106,7 +106,7 @@ fn the_kernels_real_engine_stats_payload_deserializes_into_the_view() {
     // `fallbackReceivableUsd` / `unverifiedExpiryPolicy` from it). The dry
     // fixture's policy is the factory default and nothing has fallen back.
     let settlement = &v.settlement;
-    assert_eq!(settlement.unverified_expiry_policy, "cash");
+    assert_eq!(settlement.unverified_expiry_policy, "receivable");
     assert_eq!(settlement.pending_fallback_claims, 0);
     assert_eq!(settlement.fallback_receivable_usd, Some(0.0));
     assert_eq!(settlement.oldest_fallback_claim_age_ms, None);

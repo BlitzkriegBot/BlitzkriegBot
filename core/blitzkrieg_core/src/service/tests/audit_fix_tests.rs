@@ -32,6 +32,28 @@ fn core_with_trade_log(path: Option<std::path::PathBuf>) -> Core {
         ..Default::default()
     };
     cfg.trade_log_path = path.map(|p| p.to_string_lossy().into_owned());
+    // Parallel tests share the process cwd, and SettlementBook replays
+    // `settlements.jsonl` from beside the order log. The default
+    // `data/orders/...` order_log_path is therefore a shared journal: another
+    // test's `ExpiryFallbackBooked` lines replay into this core, inflate its
+    // fallback-claim pool, and the Receivable policy redeems them as cash
+    // (+2) — the intermittent audit_reconcile_tests failure. Give every core
+    // its own order-log directory under the temp root. Production keeps the
+    // documented relative path (single core per process, no sharing).
+    let dir = std::env::temp_dir().join(format!(
+        "bk-audit-{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static CORE_COUNTER: AtomicU64 = AtomicU64::new(0);
+            CORE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        },
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    cfg.order_log_path = Some(dir.join("orders.jsonl").to_string_lossy().into_owned());
     let mut c = Core::new(cfg);
     c.set_balance(SEED);
     c

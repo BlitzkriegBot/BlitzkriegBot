@@ -1,0 +1,72 @@
+# Gitea 轻量门禁（2026-11-24 操作者裁决 B 方案）
+#
+# runs-on: bk-gate 是专用 label：.github/workflows 的 macos-latest/ubuntu-latest
+# job 在 Gitea 上永远没有匹配 runner，因此不会触发；只有本文件在 Gitea 执行。
+#
+# 只跑 ci-local 的 Node gate 子集 + cargo check，不跑全量 release build。
+# 目的：自动复核 agent 是否真的过了门禁，防止谎报；耗时约 2-3 分钟。
+# 全量 release build 仍由 bk-ship.sh 的 CI 门（独立干净 worktree）负责。
+#
+# 与 .github/workflows/ci.yml 完全独立，不影响 GitHub 侧 CI。
+name: gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast-gates:
+    name: fast-gates
+    runs-on: bk-gate
+    timeout-minutes: 20
+    steps:
+      - name: checkout
+        if: success()
+        uses: actions/checkout@v4
+
+      - name: planner gates
+        if: success()
+        run: |
+          set -euo pipefail
+          node scripts/dep-direction-check.mjs --self-test
+          node scripts/dep-direction-check.mjs
+          sh scripts/dep-direction-check-teeth.sh
+          node scripts/contract-tree-check.mjs --self-test
+          node scripts/contract-tree-check.mjs
+          node scripts/store-layer-check.mjs --self-test
+          node scripts/store-layer-check.mjs
+
+      - name: core gates (teeth)
+        if: success()
+        run: |
+          set -euo pipefail
+          node scripts/intent-audit-check.mjs --teeth
+          node scripts/strategy-no-stop-loss-check.mjs --teeth
+          node scripts/strategy-declaration-check.mjs --teeth
+          node scripts/plugin-modes-check.mjs --teeth
+          node scripts/kline-aggregation-check.mjs --teeth
+          node scripts/risk-systemic-check.mjs --teeth
+          node scripts/account-credential-check.mjs --teeth
+          node scripts/account-cross-isolation-check.mjs --teeth
+          node scripts/lua-sandbox-check.mjs --teeth
+          node scripts/lua-decimal-check.mjs --teeth
+          node scripts/thesis-death-check.mjs --teeth
+
+      # core gates (real) 需要 target/release/blitzkrieg-core 二进制，属于全量构建，
+      # 不在本轻量门禁范围内；由 bk-ship.sh 的干净 worktree CI 门负责。
+
+      - name: file-size + secret-scan
+        if: success()
+        run: |
+          set -euo pipefail
+          node scripts/file-size-check.mjs --self-test
+          node scripts/file-size-check.mjs
+          bash scripts/secret-scan.sh
+
+      - name: cargo check
+        if: success()
+        run: cargo check --workspace --all-targets

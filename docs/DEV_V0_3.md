@@ -1726,7 +1726,7 @@ node scripts/cycle-check.mjs
 | worktree 位置 | `/Volumes/Hard Disk/bk-wt-e&lt;NN&gt;`（与仓库同卷，避免 `/tmp` 上的 APFS/权限差异；仓库已有 `/private/tmp/bk-socket-wt` 的前例，说明 worktree 是既有实践） |
 | `CARGO_TARGET_DIR` | 每 worktree 用 `&lt;worktree&gt;/target`（即默认）。**不要**共享一个 target 目录：并发 cargo 会互相等待锁，把并行变成串行 |
 | 构建范围 | 日常只 `cargo test -p blitzkrieg-core --locked --features test-support`（快；集成测试/bench 需要该 feature，#825 起不在 default 里）；**PR 前必须** `cargo build --release --workspace --locked` + `cargo clippy --workspace --all-targets --locked --features blitzkrieg-core/test-support -- -D warnings`（CI 就是这么卡的：`-D warnings`） |
-| 提交署名 | 按 `dev-docs/GITHUB_GOVERNANCE.md`：逐次 `git -c user.name=ceer_quant -c user.email=ceer_quant@users.noreply.github.com commit`，**不落地全局 config** |
+| 提交署名 | 按 `dev-docs/GITHUB_GOVERNANCE.md`：逐次 `git -c user.name=BlitzkriegBot -c user.email=BlitzkriegBot@users.noreply.github.com commit`，**不落地全局 config** |
 | PR 模板必填 | ① 领地声明（白名单 + `git diff --name-only` 全文）② 热点文件改动清单（文件/行数/用途）③ 反向验收证据（`--teeth` 原始输出）④ 未完成项与依赖（如「依赖 E29 合并」） |
 | 禁止 | Agent 之间不得 `git push` 到别人分支、不得 rebase 他人分支、不得合并自己或他人的 PR |
 

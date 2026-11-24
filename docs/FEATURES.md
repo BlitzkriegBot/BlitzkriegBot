@@ -375,4 +375,4 @@ Tauri 打包（`frontendDist` 指 `dist/`，窗口运行时指向内嵌只读服
 
 ---
 
-_维护者：ceer_quant · 相关（内部，`dev-docs/` 不公开）：`dev-docs/KNOWN_ISSUES.md` · `dev-docs/DECISIONS_PENDING.md` · `dev-docs/ROADMAP_V0_1.md`_
+_维护者：BlitzkriegBot · 相关（内部，`dev-docs/` 不公开）：`dev-docs/KNOWN_ISSUES.md` · `dev-docs/DECISIONS_PENDING.md` · `dev-docs/ROADMAP_V0_1.md`_

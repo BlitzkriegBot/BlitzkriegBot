@@ -70,3 +70,80 @@ jobs:
       - name: cargo check
         if: success()
         run: cargo check --workspace --all-targets
+
+  auto-merge:
+    name: auto-merge
+    needs: fast-gates
+    if: success() && github.event.pull_request.number != ''
+    runs-on: bk-gate
+    timeout-minutes: 10
+    steps:
+      - name: Check R6 manual-approval boundary
+        env:
+          GITEA_CRED: ${{ secrets.GITEACRED }}
+        run: |
+          # Gitea/act runner does not export $GITHUB_OUTPUT, so step outputs are
+          # passed through temp files instead (same runner container, persists).
+          PR_NUM=${{ github.event.pull_request.number }}
+          FILES=$(curl -s -u "$GITEA_CRED" "http://192.168.0.153:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}/files")
+          R6_HIT=$(echo "$FILES" | jq -r '.[] | select(.filename | test("ledger|RiskGate|risk.gate|\\.env|live|credential|secret")) | .filename' | head -1)
+          if [ -n "$R6_HIT" ]; then
+            echo "R6 boundary touched: $R6_HIT -> skip auto-merge"
+            echo "true" > /tmp/auto-merge-skip
+          else
+            echo "false" > /tmp/auto-merge-skip
+          fi
+
+      - name: Checkout main and rebase PR branch
+        if: success()
+        env:
+          GITEA_CRED: ${{ secrets.GITEACRED }}
+        run: |
+          # Skip when check-r6 wrote "true" to the temp file (R6 boundary hit).
+          if [ "$(cat /tmp/auto-merge-skip 2>/dev/null)" = "true" ]; then
+            echo "skipped: R6 manual-approval boundary touched"
+            exit 0
+          fi
+          git config --global user.name "ceer_quant"
+          git config --global user.email "ceer_quant@users.noreply.github.com"
+          PR_NUM=${{ github.event.pull_request.number }}
+          REPO_DIR=/tmp/bk-auto-merge-$$
+          git clone "http://$GITEA_CRED@192.168.0.153:3000/BlitzkriegBot/BlitzkriegBot.git" "$REPO_DIR"
+          cd "$REPO_DIR"
+          git checkout main
+          git pull origin main
+          git fetch origin pull/${PR_NUM}/head:pr-branch
+          git checkout pr-branch
+          if git rebase main; then
+            echo "true" > /tmp/auto-merge-rebase-ok
+            git push origin pr-branch
+          else
+            echo "false" > /tmp/auto-merge-rebase-ok
+            git checkout -b "auto-merge/${PR_NUM}-${{ github.sha }}"
+            git add -A 2>/dev/null || true
+            git commit -m "chore(auto-merge): rebase conflict for PR #${PR_NUM}" 2>/dev/null || true
+            git push origin "auto-merge/${PR_NUM}-${{ github.sha }}"
+            curl -s -X PATCH -u "$GITEA_CRED" -H "Content-Type: application/json" \
+              -d "{\"head\":\"auto-merge/${PR_NUM}-${{ github.sha }}\"}" \
+              "http://192.168.0.153:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}"
+          fi
+          rm -rf "$REPO_DIR"
+
+      - name: Squash merge via Gitea API
+        if: success()
+        env:
+          GITEA_CRED: ${{ secrets.GITEACRED }}
+        run: |
+          # Only squash-merge when not skipped AND rebase succeeded.
+          if [ "$(cat /tmp/auto-merge-skip 2>/dev/null)" = "true" ]; then
+            echo "skipped: R6 manual-approval boundary touched"
+            exit 0
+          fi
+          if [ "$(cat /tmp/auto-merge-rebase-ok 2>/dev/null)" != "true" ]; then
+            echo "skipped: rebase did not succeed"
+            exit 0
+          fi
+          PR_NUM=${{ github.event.pull_request.number }}
+          curl -s -X POST -u "$GITEA_CRED" -H "Content-Type: application/json" \
+            -d '{"merge_style":"squash","commit_message":"Auto-merge PR #${PR_NUM} via gate CI"}' \
+              "http://192.168.0.153:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}/merge"

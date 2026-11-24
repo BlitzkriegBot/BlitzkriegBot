@@ -56,6 +56,8 @@ export interface RiskLimitsDoc {
   version: string
   account: { id: string; limits: AccountRiskLimitsView }
   exit: RiskExitView
+  /** 单笔权益比例（`BK_SIZE_PCT`，百分比 0..=100，0 = 关闭）。 */
+  sizePct?: string | number
   error?: string
 }
 
@@ -71,6 +73,7 @@ export interface RiskSetSystemicBody {
   maxConsecutiveLosses?: string | number
   cooldownMinutes?: string | number
   maxOrderNotionalUsd?: string | number
+  sizePct?: string | number
   reason?: string
 }
 

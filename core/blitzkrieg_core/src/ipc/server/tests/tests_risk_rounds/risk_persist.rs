@@ -101,3 +101,56 @@ async fn risk_set_systemic_persists_to_the_db_and_the_boot_rearms_it() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn risk_set_systemic_persists_size_pct_and_reloads_on_boot() {
+    use rust_decimal_macros::dec;
+    let dir = std::env::temp_dir().join(format!("bk-size-pct-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("risk.sqlite");
+    let cfg = CoreConfig {
+        dry_seed_balance: dec!(1000),
+        trade_log_path: None,
+        order_log_path: None,
+        position_log_path: None,
+        allowed_round_secs: crate::account::config::TEST_ALLOWED_ROUNDS.to_vec(),
+        ..Default::default()
+    };
+    let mut c = Core::new(cfg.clone());
+    c.set_balance(cfg.dry_seed_balance);
+    c.open_account_risk_db(&db_path).expect("temp risk db opens");
+    c.store = Some(Arc::new(
+        crate::store::SqliteStore::open(&db_path).expect("temp store opens"),
+    ));
+    cfg.install_engine(&mut c).expect("engine install");
+    let core = Arc::new(AsyncMutex::new(c));
+    let registry = crate::market::registry::MarketPluginRegistry::new();
+    let peer = PeerAuth::SameUid { uid: own_uid() };
+
+    let applied = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"sizePct":"2.5","reason":"webui"}}"#.to_string(),
+    )
+    .await;
+    assert!(applied.get("error").is_none(), "sizePct set failed: {applied}");
+    assert_eq!(applied["result"]["persisted"], serde_json::json!(true));
+
+    let limits = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":2,"method":"risk.limits","params":{}}"#.to_string(),
+    )
+    .await;
+    assert_eq!(limits["result"]["sizePct"], serde_json::json!("2.5"));
+
+    // Boot reload: a fresh Core reading the same SQLite DB must restore size_pct = 2.5.
+    let mut c2 = Core::new(cfg.clone());
+    c2.open_account_risk_db(&db_path).expect("reopen risk db");
+    assert_eq!(c2.config().size_pct, dec!(2.5));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

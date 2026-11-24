@@ -126,6 +126,7 @@ pub(crate) async fn handle_risk(
                 &c.risk_config().systemic,
                 &c.config().positions.exit,
             );
+            doc.size_pct = Some(c.config().size_pct);
             if let Some(vars) = &file {
                 crate::cockpit::overlay_risk_limits(vars, &mut doc.exit, &mut doc.account);
             }
@@ -217,10 +218,13 @@ pub(crate) async fn handle_risk(
                             let changes: Vec<(&str, String)> = update
                                 .applied
                                 .iter()
+                                .filter(|c| c.field != "sizePct")
                                 .map(|c| (c.field, c.to.clone()))
                                 .collect();
                             let persisted = if update.persisted {
                                 true
+                            } else if changes.is_empty() {
+                                false
                             } else {
                                 let c = core.lock().await;
                                 persist_changes_to_store(&c, p.account_id.as_deref(), &changes)

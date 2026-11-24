@@ -289,7 +289,7 @@ fn build_supervisor_config(cli: &ParsedCli, fallback_socket: String) -> Supervis
         cfg.seed_balance = sb.clone();
     }
     if let Some(ref mon) = cli.max_order_notional {
-        cfg.max_order_notional = mon.clone();
+        cfg.max_order_notional = Some(mon.clone());
     }
     // CLI knobs beat the HFT_* environment values `from_env` already filled in.
     if let Some(v) = cli.round_sec {

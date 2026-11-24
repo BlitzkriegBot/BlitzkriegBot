@@ -86,7 +86,10 @@ pub struct SupervisorConfig {
     pub mode: String,
     pub seed_balance: String,
     pub tick_ms: u64,
-    pub max_order_notional: String,
+    /// `Some(v)` = the launcher explicitly overrides `--max-order-notional`.
+    /// `None` = stay silent so the kernel default (`100` USD) and per-account
+    /// Risk panel `maxOrderNotionalUsd` stay in charge without a hidden `$6.00` cap.
+    pub max_order_notional: Option<String>,
     pub assets: Vec<String>,
     /// `Some(n)` = the launcher owns the round length (CLI flag or
     /// `HFT_ROUND_SEC` spoke) and passes `--round-sec` to the core. `None` =
@@ -128,10 +131,9 @@ impl SupervisorConfig {
         let dry = std::env::var("DRY_RUN")
             .map(|v| v != "false")
             .unwrap_or(true);
-        // Per-order notional is a SAFETY bound, not the strategy size: size it
-        // from the real worst case (max shares × ~0.6) so a legitimate order is
-        // never blocked (mirrors the Node runner's rationale).
-        let notional = format!("{:.2}", (max_shares as f64 * 0.6).max(6.0));
+        // Leave max_order_notional silent unless the operator passes
+        // --max-order-notional explicitly; otherwise the kernel default ($100)
+        // and per-account Risk panel maxOrderNotionalUsd stay in charge.
         // Ops/test overrides: pin the binary, the child working directory (so a
         // harness can isolate `data/`), and append raw args (e.g. `--no-trade-log`).
         let binary_path = std::env::var("UIKIT_CORE_BIN")
@@ -153,7 +155,7 @@ impl SupervisorConfig {
             mode: if dry { "dry".into() } else { "live".into() },
             seed_balance: "1000".into(),
             tick_ms: 10,
-            max_order_notional: notional,
+            max_order_notional: None,
             assets,
             round_sec: std::env::var("HFT_ROUND_SEC")
                 .ok()
@@ -178,11 +180,13 @@ impl SupervisorConfig {
             self.tick_ms.to_string(),
             "--seed-balance".into(),
             self.seed_balance.clone(),
-            "--max-order-notional".into(),
-            self.max_order_notional.clone(),
             "--assets".into(),
             self.assets.join(","),
         ];
+        if let Some(ref mon) = self.max_order_notional {
+            a.push("--max-order-notional".into());
+            a.push(mon.clone());
+        }
         if let Some(sec) = self.round_sec {
             a.push("--round-sec".into());
             a.push(sec.to_string());
@@ -809,6 +813,19 @@ fn silent_round_sec_leaves_the_persisted_cell_in_charge() {
     let args = cfg.to_args();
     let i = args.iter().position(|a| a == "--round-sec").unwrap();
     assert_eq!(args[i + 1], "300");
+}
+
+#[test]
+fn silent_max_order_notional_leaves_core_and_risk_panel_in_charge() {
+    let cfg = SupervisorConfig::from_env("/tmp/x.sock".into());
+    assert!(cfg.max_order_notional.is_none());
+    assert!(!cfg.to_args().contains(&"--max-order-notional".to_string()));
+
+    let mut explicit = cfg;
+    explicit.max_order_notional = Some("25.00".into());
+    let args = explicit.to_args();
+    let i = args.iter().position(|a| a == "--max-order-notional").unwrap();
+    assert_eq!(args[i + 1], "25.00");
 }
 
 #[test]

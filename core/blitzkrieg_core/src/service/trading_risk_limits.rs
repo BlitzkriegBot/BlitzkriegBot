@@ -265,6 +265,21 @@ impl Core {
             "live",
         )?;
 
+        if let Some(to) = patch.size_pct {
+            if to < Decimal::ZERO || to > Decimal::ONE_HUNDRED {
+                return Err(CoreError::new(
+                    CoreErrorCode::InvalidParams,
+                    format!("sizePct must be in [0, 100], got {to}; nothing was applied"),
+                ));
+            }
+            changes.push(SystemicLimitChange {
+                field: "sizePct",
+                from: self.config.size_pct.to_string(),
+                to: to.to_string(),
+                effect: "live",
+            });
+        }
+
         if changes.is_empty() {
             return Err(CoreError::new(
                 CoreErrorCode::InvalidParams,
@@ -275,28 +290,66 @@ impl Core {
         // Write phase: the row build + install lives in
         // `install_account_risk_row` (account_store.rs); this file keeps the
         // plan/persist orchestration only.
-        let row = self.install_account_risk_row(&target, &matrix, patch);
+        let risk_changes: Vec<SystemicLimitChange> = changes
+            .iter()
+            .filter(|c| c.field != "sizePct")
+            .cloned()
+            .collect();
+        let row = if !risk_changes.is_empty() {
+            let row = self.install_account_risk_row(&target, &matrix, patch);
+            // issue #1199 P1-6: max_daily_drawdown_usd 是日亏熔断预算，与
+            // PositionConfig.max_daily_loss_usd 为同一预算；setSystemic 写入后
+            // 同步进内存，使本会话立即按新值裁决（live，与 maxSingleLossUsd 一致）。
+            if risk_changes.iter().any(|c| c.field == "maxDailyDrawdownUsd") {
+                self.config.positions.max_daily_loss_usd = row.max_daily_drawdown_usd.value();
+                let positions = self.config.positions.clone();
+                self.positions.set_config(positions);
+            }
+            Some(row)
+        } else {
+            None
+        };
 
-        // issue #1199 P1-6: max_daily_drawdown_usd 是日亏熔断预算，与
-        // PositionConfig.max_daily_loss_usd 为同一预算；setSystemic 写入后
-        // 同步进内存，使本会话立即按新值裁决（live，与 maxSingleLossUsd 一致）。
-        if changes.iter().any(|c| c.field == "max_daily_drawdown_usd") {
-            self.config.positions.max_daily_loss_usd = row.max_daily_drawdown_usd.value();
-            let positions = self.config.positions.clone();
-            self.positions.set_config(positions);
+        if let Some(to) = patch.size_pct {
+            self.config.size_pct = to;
+            if let Some(engine) = self.engine.as_mut() {
+                engine.set_size_pct(to);
+            }
         }
 
         // The ONE durable-write exit (issue #1199 T-03, zeroed): the carrier
         // decision is `persist_risk_bounds` alone — the StoreApi seam when a
         // store is open (production: the SqliteStore wired at assembly, which
         // writes the same whole merged row through the shared AccountRiskDb
-        // connection, value for value), the direct AccountRiskDb handle when
-        // no store is open (`open_account_risk_db` path), memory-only when
-        // the core has no carrier at all (backtester, in-process tests —
-        // honestly `persisted: false`). A persist failure refuses the whole
-        // apply in every carrier (file-first ruling — memory may never hold a
-        // value the carrier does not have).
-        let persisted: bool = self.persist_risk_bounds(&target, &row, &changes)?;
+        // connection, value for value), memory-only when the core has no
+        // carrier at all (backtester, in-process tests — honestly
+        // `persisted: false`). A persist failure refuses the whole apply in
+        // every carrier (file-first ruling — memory may never hold a value the
+        // carrier does not have).
+        let mut persisted: bool = match row.as_ref() {
+            Some(r) => self.persist_risk_bounds(&target, r, &risk_changes)?,
+            None => false,
+        };
+        if let Some(to) = patch.size_pct {
+            if let Some(store) = self.store.as_deref() {
+                let scope_id = crate::account::AccountId::from(target.as_str());
+                store
+                    .put_setting(
+                        crate::store::AccountScope::new(&scope_id),
+                        crate::risk::account_store::SIZE_PCT_SETTING,
+                        Some(&to.to_string()),
+                    )
+                    .map_err(|e| {
+                        CoreError::new(
+                            CoreErrorCode::Internal,
+                            format!(
+                                "sizePct NOT applied: the account_settings store write failed ({e})"
+                            ),
+                        )
+                    })?;
+                persisted = true;
+            }
+        }
         for c in &changes {
             tracing::info!(
                 target: "risk",

@@ -15,7 +15,7 @@
 
 mod sqlite;
 
-pub use sqlite::SqliteStore;
+pub use sqlite::{DEFAULTS_ACCOUNT_ID, SqliteStore};
 
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;

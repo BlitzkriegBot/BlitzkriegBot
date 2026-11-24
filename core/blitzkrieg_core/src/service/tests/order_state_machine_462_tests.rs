@@ -353,12 +353,15 @@ fn an_external_buy_from_a_timed_out_place_rebuilds_the_position() {
     );
 }
 
-/// #462 fix 2, acceptance (the closer): a timed-out place the venue never
-/// received must not pend forever — the sweep retires it past the budget
-/// and the reservation is released. Without this judge, the timeout
-/// branch's "stays pending" leaks the cash for the life of the process.
+/// #462 fix 2, acceptance — REWRITTEN BY #184.
+///
+/// The old test asserted the sweep RETIRES a never-acked place and releases its
+/// reservation past the budget. That was the defect #184 names: a POST timeout
+/// proves nothing about the venue's book, so retiring on it invents a
+/// cancellation. The order must now stay LIVE and keep its money, and the sweep
+/// must say so out loud as an UNVERIFIED posture.
 #[test]
-fn a_never_acked_timed_out_place_is_retired_by_the_sweep() {
+fn a_never_acked_timed_out_place_is_never_locally_cancelled() {
     let mut c = live_core(dec!(10));
     let (id, st) = c
         .place(order(FillPolicy::Maker, dec!(0.40), dec!(5), "k1"), 0, 1)
@@ -380,30 +383,36 @@ fn a_never_acked_timed_out_place_is_retired_by_the_sweep() {
         "inside the budget the POST may still land — no verdict yet"
     );
 
-    // Past the budget: retired, reservation released.
+    // Past the budget: STILL not cancelled. No probe answered, so the order is
+    // unverifiable, and inventing a terminal state here would be R7.1 L1.
     c.reconcile(crate::reconcile::VenueSnapshot {
         open_order_ids: vec![],
         trades: vec![],
         now_ms: 10 + PLACE_TIMEOUT_VERDICT_MS,
     })
     .unwrap();
+    let o = c.ome().get(&id).unwrap();
     assert_eq!(
-        c.ome().get(&id).unwrap().status,
-        OrderStatus::Cancelled,
-        "no venue evidence past the budget — the intent is retired (#462)"
+        o.status,
+        OrderStatus::Pending,
+        "no venue evidence past the budget — the order stays unverified (#184)"
     );
+    assert!(
+        o.terminal_evidence.is_none(),
+        "no terminal state may be claimed without evidence"
+    );
+    assert_eq!(o.probe_attempts, 1, "the sweep recorded its probe");
     assert_eq!(
         c.ledger().reserved(),
-        Decimal::ZERO,
-        "the reservation must be released with the intent"
+        dec!(2),
+        "the reservation MUST stay: the venue may still hold the order (#184)"
     );
 }
 
-/// #12: a Live order whose venue never answered with a venue id leaks its
-/// reservation forever — `resolve_place_timeouts` must retire it once the
-/// place-timeout budget is past, and release the BUY reservation with it.
+/// #12, rewritten by #184: a Live order with no venue id is exactly the
+/// "no answer" case. It must keep its reservation and be reported, not retired.
 #[test]
-fn live_order_without_venue_id_is_retired_on_place_timeout() {
+fn live_order_without_venue_id_keeps_its_reservation_on_place_timeout() {
     // live_core: placements stay Pending until a venue ack — the exact
     // pre-ack state #12 is about.
     let mut c = live_core(dec!(10_000));
@@ -417,7 +426,6 @@ fn live_order_without_venue_id_is_retired_on_place_timeout() {
     c.confirm_live(&id, 10).unwrap();
     assert_eq!(c.ome().get(&id).unwrap().status, OrderStatus::Live);
 
-    // Past the place-timeout budget with no venue evidence at all.
     c.reconcile(crate::reconcile::VenueSnapshot {
         open_order_ids: vec![],
         trades: vec![],
@@ -427,13 +435,13 @@ fn live_order_without_venue_id_is_retired_on_place_timeout() {
 
     assert_eq!(
         c.ome().get(&id).unwrap().status,
-        OrderStatus::Cancelled,
-        "Live without a venue id must still be retired by the place timeout (#12)"
+        OrderStatus::Live,
+        "a Live order without a venue id cannot be judged from a timeout (#184)"
     );
     assert_eq!(
         c.ledger().reserved(),
-        Decimal::ZERO,
-        "the reservation is released together with the intent (#12)"
+        dec!(0.8),
+        "the reservation is held, not released (#184)"
     );
 }
 
@@ -444,6 +452,10 @@ fn live_order_without_venue_id_is_retired_on_place_timeout() {
 /// bridge's loop retires cancels FIRST (its step 1) and only then
 /// submits pending orders (step 1b, skipped entirely when a cancel just
 /// failed).
+///
+/// #184: the queue is what the escalation owes the venue; the terminal status
+/// now waits for the venue's acknowledgement, so this test pins the queue and
+/// the in-flight marker, not a locally-invented `Cancelled`.
 #[test]
 fn the_escalation_cancel_is_forwarded_before_any_new_order() {
     let mut c = live_core(dec!(10));
@@ -462,7 +474,21 @@ fn the_escalation_cancel_is_forwarded_before_any_new_order() {
         vec!["venue-resting-1".to_string()],
         "the escalation's cancel rides the queue the bridge drains before placing (#462)"
     );
-    assert_eq!(c.ome().get(&id).unwrap().status, OrderStatus::Cancelled);
+    let o = c.ome().get(&id).unwrap();
+    assert!(
+        o.cancel_requested,
+        "the withdrawal is in flight; the venue has not answered yet (#184)"
+    );
+    assert_eq!(
+        o.status,
+        OrderStatus::Live,
+        "queued is not cancelled — the order stays live until the venue acks (#184)"
+    );
+    assert_eq!(
+        c.ledger().reserved(),
+        dec!(0.8),
+        "the reservation outlives the request (#184)"
+    );
 }
 
 // ── #457: ForceClosed — ghosts die on the clock ─────────────────────────

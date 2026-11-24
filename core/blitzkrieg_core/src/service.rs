@@ -859,6 +859,7 @@ mod tests {
     mod fee_quote_tests;
     mod fill_model_tests;
     mod freeze_self_heal_tests;
+    mod fsm_timeout_tests;
     mod ghost_cash_move_tests;
     mod ghost_fill_tests;
     mod journal_cursor_tests;

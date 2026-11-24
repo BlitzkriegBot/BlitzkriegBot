@@ -327,6 +327,21 @@ impl Ledger {
         self.reservations.remove(order_id).unwrap_or(Decimal::ZERO)
     }
 
+    /// What this order holds right now — a READ-ONLY peek, no journal row and
+    /// no table change.
+    ///
+    /// #184 needs it for the pre-flight half of a terminal transition: the
+    /// release must be provably exact BEFORE the terminal row and its evidence
+    /// are written, otherwise a mismatch aborts half-way and leaves exactly
+    /// the artefact the audit halts on (a terminal order whose reservation
+    /// never left). [`Ledger::release`] stays the only mutator.
+    pub fn held(&self, order_id: &str) -> Decimal {
+        self.reservations
+            .get(order_id)
+            .copied()
+            .unwrap_or(Decimal::ZERO)
+    }
+
     /// Realign the book to the venue's last report — kind = `Realign` when the
     /// number moved, a silent no-op when it did not (the periodic free-cash
     /// sync would otherwise flood the trail with zero rows). Negative targets

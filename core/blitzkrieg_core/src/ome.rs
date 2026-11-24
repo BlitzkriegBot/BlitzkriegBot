@@ -754,6 +754,9 @@ impl Ome {
             // Only a terminal Rejected transition ever writes this (issue
             // #930); a fresh order carries no refusal text.
             rejected_reason: None,
+            cancel_requested: false,
+            probe_attempts: 0,
+            terminal_evidence: None,
         };
         self.by_internal
             .insert(r.internal_key.clone(), p.order_id.clone());
@@ -778,6 +781,13 @@ impl Ome {
     /// status may be stamped — `debug_assert` vanishes under `--release`, so
     /// this is a real, propagated `Err` (issue #54: `mark_terminal` had no
     /// release-time state validation).
+    ///
+    /// #184: this is the EVIDENCE-FREE stamp, and it deliberately leaves
+    /// `terminal_evidence` untouched. Every production transition that claims
+    /// a venue fact must go through [`Self::mark_terminal_with_evidence`];
+    /// this one remains for test fixtures that construct a terminal row
+    /// directly. A terminal row with no evidence is reported by
+    /// [`Self::terminal_without_evidence`] rather than silently trusted.
     pub fn mark_terminal(&mut self, id: &str, status: OrderStatus, now_ms: i64) -> CoreResult<()> {
         if !status.is_terminal() {
             return Err(CoreError::new(
@@ -789,6 +799,110 @@ impl Ome {
             o.status = status;
             Ok(())
         })
+    }
+
+    /// #184: mark an order terminal AND record the proof that made it terminal.
+    ///
+    /// This is the write the #184 constraint names — 「释放预留只能发生在
+    /// `Terminal{evidence}` 落盘之后」 — so it is the ONLY stamp a terminal
+    /// transition on the money path may use. The record is written in the SAME
+    /// mutation as the status: there is no instant where one exists without
+    /// the other.
+    ///
+    /// Refuses a non-terminal status, and refuses `PlaceNeverAccepted{Unknown}`
+    /// — a probe that got no answer is not evidence of absence (frozen
+    /// `ProbeResult` doc; R7.1 L1).
+    pub fn mark_terminal_with_evidence(
+        &mut self,
+        id: &str,
+        status: OrderStatus,
+        evidence: TerminalEvidenceSource,
+        now_ms: i64,
+    ) -> CoreResult<()> {
+        if !status.is_terminal() {
+            return Err(CoreError::new(
+                CoreErrorCode::InvalidOrderState,
+                format!("{id}: {status:?} is not a terminal status"),
+            ));
+        }
+        if let TerminalEvidenceSource::PlaceNeverAccepted {
+            probe: ProbeOutcome::Unknown,
+        } = &evidence
+        {
+            return Err(CoreError::new(
+                CoreErrorCode::InvalidOrderState,
+                format!(
+                    "{id}: a probe that returned Unknown is not evidence of absence \
+                     — the order cannot be terminalised on it (#184)"
+                ),
+            ));
+        }
+        let record = TerminalEvidenceRecord {
+            status,
+            source: evidence,
+        };
+        self.mutate(id, now_ms, |o| {
+            o.status = status;
+            o.terminal_evidence = Some(record);
+            o.cancel_requested = false;
+            Ok(())
+        })
+    }
+
+    /// #184: request a withdrawal without terminalising. The order stays LIVE
+    /// and keeps its reservation until a venue fact lands, which is exactly
+    /// the window the old code collapsed ("queued cancel" == "cancelled").
+    pub fn mark_cancel_requested(&mut self, id: &str, now_ms: i64) -> CoreResult<()> {
+        self.mutate(id, now_ms, |o| {
+            o.cancel_requested = true;
+            Ok(())
+        })
+    }
+
+    /// #184: bump the probe counter on an order the venue never acknowledged.
+    /// Returns the new count; the caller decides when to give up and surface
+    /// the Unknown verdict.
+    pub fn note_probe_attempt(&mut self, id: &str, now_ms: i64) -> CoreResult<u8> {
+        let mut probes = 0u8;
+        self.mutate(id, now_ms, |o| {
+            o.probe_attempts = o.probe_attempts.saturating_add(1);
+            probes = o.probe_attempts;
+            Ok(())
+        })?;
+        Ok(probes)
+    }
+
+    /// #184: attach evidence to a terminal row that reached its status through
+    /// a path that cannot name the venue id (the simulated matcher completing
+    /// an order is the one production case). Refuses to overwrite evidence
+    /// that is already there, and refuses to invent evidence for a live order.
+    pub fn stamp_terminal_evidence_if_missing(
+        &mut self,
+        id: &str,
+        source: TerminalEvidenceSource,
+        now_ms: i64,
+    ) -> CoreResult<()> {
+        self.mutate(id, now_ms, |o| {
+            if o.status.is_terminal() && o.terminal_evidence.is_none() {
+                o.terminal_evidence = Some(TerminalEvidenceRecord {
+                    status: o.status,
+                    source,
+                });
+                o.cancel_requested = false;
+            }
+            Ok(())
+        })
+    }
+
+    /// #184: terminal rows that carry no evidence. A non-empty answer is a
+    /// data hole (a legacy log line, or a path that bypassed
+    /// [`Self::mark_terminal_with_evidence`]), and the reconcile sweep reports
+    /// it instead of assuming the old status was honest.
+    pub fn terminal_without_evidence(&self) -> Vec<&TrackedOrder> {
+        self.orders
+            .values()
+            .filter(|o| o.status.is_terminal() && o.terminal_evidence.is_none())
+            .collect()
     }
 
     pub fn set_escalation(&mut self, id: &str, at_ms: i64) -> CoreResult<()> {
@@ -1207,6 +1321,27 @@ impl Ome {
             } else {
                 order.status
             };
+            // #184: a fill that completed the order is a terminal fact, and the
+            // evidence is the venue's own trade report. Only a LIVE order can
+            // carry a venue id here (a dry order fills through the simulated
+            // matcher, which labels the completion `SimulatedFill` in
+            // `Core::ingest_fill`); a live order with no id cannot produce an
+            // honest `VenueFill`, so it is left for the proof the fill's own
+            // path supplies rather than invented here.
+            if order.status == OrderStatus::Filled {
+                let source = order.venue_order_id.clone().map(|vid| {
+                    TerminalEvidenceSource::VenueFill {
+                        venue_order_id: vid,
+                    }
+                });
+                if let Some(source) = source {
+                    order.terminal_evidence = Some(TerminalEvidenceRecord {
+                        status: OrderStatus::Filled,
+                        source,
+                    });
+                    order.cancel_requested = false;
+                }
+            }
         } else {
             tracing::warn!(
                 order = %id,

@@ -562,8 +562,15 @@ impl Core {
         }
         // E-VA: expiry/force-close releases the virtual hold too.
         self.virtual_release_order(&order);
-        self.ome
-            .mark_terminal(id, OrderStatus::ForceClosed, now_ms)?;
+        // #184: the evidence is written BEFORE the money moves, in the same
+        // mutation as the status. `KernelForcedClose` is the honest label: the
+        // kernel is closing this order itself and claims no venue receipt.
+        self.ome.mark_terminal_with_evidence(
+            id,
+            OrderStatus::ForceClosed,
+            crate::model::TerminalEvidenceSource::KernelForcedClose,
+            now_ms,
+        )?;
         // RFC 568 阶段一：死亡事实（过期强平）喂配对簿。
         self.pair_on_order_event(&order.internal_key, Decimal::ZERO, true);
         if let Some(engine) = self.engine.as_mut() {

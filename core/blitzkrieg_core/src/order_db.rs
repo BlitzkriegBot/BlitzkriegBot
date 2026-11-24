@@ -147,6 +147,9 @@ mod tests {
             venue: String::new(),
             round_duration_sec: 0,
             rejected_reason: None,
+            cancel_requested: false,
+            probe_attempts: 0,
+            terminal_evidence: None,
         }
     }
 

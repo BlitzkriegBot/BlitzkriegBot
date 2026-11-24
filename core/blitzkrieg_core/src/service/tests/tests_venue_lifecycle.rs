@@ -101,12 +101,31 @@ fn cancel_remaining_keeps_filled_shares_and_retires_the_remainder() {
     assert_eq!(o.filled_size, dec!(2));
 
     c.cancel_remaining(&id, 4).unwrap();
+    // #184: retiring the remainder is not complete until the venue acks. The
+    // DELETE rides the queue and the order keeps its money in the meantime.
     let o = c.ome().get(&id).unwrap();
-    assert_eq!(o.status, OrderStatus::Cancelled);
+    assert!(o.cancel_requested, "the withdrawal is in flight");
+    assert_eq!(
+        o.status,
+        OrderStatus::PartiallyFilled,
+        "queued is not cancelled (#184)"
+    );
     // The filled part is NOT refunded — it is real inventory now.
     assert_eq!(c.positions().open_positions().len(), 1);
     // And the venue-side delete rides the queue.
     assert_eq!(c.take_pending_venue_cancels(), vec!["0xv1".to_string()]);
+
+    // The venue answers: the remainder is terminal and the unfilled notional
+    // goes back (3 shares x 0.40 = 1.20).
+    c.confirm_venue_cancel(&id, "0xv1", 5).unwrap();
+    let o = c.ome().get(&id).unwrap();
+    assert_eq!(o.status, OrderStatus::Cancelled);
+    assert_eq!(o.filled_size, dec!(2), "cancelling never unwinds a fill");
+    assert_eq!(
+        c.ledger().reserved(),
+        Decimal::ZERO,
+        "the unfilled commitment is released on the venue's ack (#184)"
+    );
 }
 
 #[test]

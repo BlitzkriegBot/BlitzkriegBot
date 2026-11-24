@@ -881,6 +881,18 @@ impl Core {
                                     )?
                                 }
                                 None => {
+                                    // #184: stamp the terminal fact first, then
+                                    // release — never the reverse. This refusal
+                                    // happened INSIDE the kernel (the dry matcher
+                                    // found no crossing depth), so the honest
+                                    // label is `SimulatedReject`, not a venue
+                                    // claim (R7.1 L2).
+                                    self.ome.mark_terminal_with_evidence(
+                                        id,
+                                        OrderStatus::Rejected,
+                                        crate::model::TerminalEvidenceSource::SimulatedReject,
+                                        now_ms,
+                                    )?;
                                     if order.side == Side::Buy {
                                         // E28: the refused taker's reservation is
                                         // released in the ORDER'S OWN book.
@@ -891,7 +903,6 @@ impl Core {
                                         // (the leg never rested).
                                         self.virtual_release_order(&order);
                                     }
-                                    self.ome.mark_terminal(id, OrderStatus::Rejected, now_ms)?;
                                     // RFC 568 阶段一：死亡事实（taker 拒绝）
                                     // 喂配对簿。
                                     self.pair_on_order_event(
@@ -1109,6 +1120,23 @@ impl Core {
                     Some(o) => o.clone(),
                     None => continue,
                 };
+                // #184: terminal fact + evidence land BEFORE the money moves.
+                // This kill happens inside the kernel (the book no longer
+                // crosses at execute_at), so the honest label is
+                // `KernelForcedClose` — no venue answered anything.
+                if let Err(e) = self.ome.mark_terminal_with_evidence(
+                    &order.order_id,
+                    OrderStatus::Rejected,
+                    crate::model::TerminalEvidenceSource::KernelForcedClose,
+                    leg.report_at_ms,
+                ) {
+                    tracing::error!(order = %order.order_id, error = %e, "mark_terminal rejected failed");
+                    self.emit_error_at(e, leg.report_at_ms);
+                    // Do NOT release money for an order that could not be
+                    // marked terminal: the reservation must outlive the row,
+                    // never the other way round.
+                    continue;
+                }
                 if order.side == Side::Buy {
                     // E28: the killed FOK's reservation is released in the
                     // ORDER'S OWN book.
@@ -1147,15 +1175,6 @@ impl Core {
                     }
                     // E-VA: the virtual hold goes with it.
                     self.virtual_release_order(&order);
-                }
-                // The terminal stamp must not be swallowed: a silent failure
-                // would leave the order live while its reservation is gone.
-                if let Err(e) =
-                    self.ome
-                        .mark_terminal(&order.order_id, OrderStatus::Rejected, leg.report_at_ms)
-                {
-                    tracing::error!(order = %order.order_id, error = %e, "mark_terminal rejected failed");
-                    self.emit_error_at(e, leg.report_at_ms);
                 }
                 // RFC 568 阶段一：死亡事实（in-flight taker 被杀）喂配对簿。
                 self.pair_on_order_event(&order.internal_key, Decimal::ZERO, true);

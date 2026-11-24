@@ -188,6 +188,29 @@ impl Core {
         now_ms: i64,
     ) -> CoreResult<()> {
         if let Some(o) = self.ome.get(id).cloned() {
+            if !o.status.is_live() {
+                // Already terminal: a late venue reject must not rewrite an
+                // honest terminal state (#7), and there is nothing to release.
+                return Ok(());
+            }
+            // #184 write ORDER: the terminal fact and its evidence land first,
+            // then the money moves. The old shape released the reservation and
+            // only afterwards stamped `Rejected`, so a failed stamp left the
+            // cash back while the order still looked live — the exact
+            // "先放钱后改状态" inversion the audit named.
+            //
+            // Evidence: the venue answered and refused the order, i.e. it
+            // authoritatively does NOT hold it. That is
+            // `PlaceNeverAccepted{probe: Absent}` — the frozen contract's
+            // spelling for "the venue answered and has no order for us".
+            self.ome.mark_terminal_with_evidence(
+                id,
+                OrderStatus::Rejected,
+                crate::model::TerminalEvidenceSource::PlaceNeverAccepted {
+                    probe: crate::model::ProbeOutcome::Absent,
+                },
+                now_ms,
+            )?;
             if o.side == Side::Buy {
                 // E28: the reservation is released in the ORDER'S OWN book —
                 // a venue reject must never refund another account's cash.
@@ -215,7 +238,6 @@ impl Core {
                 // E-VA: the virtual hold leaves the pot with the real one.
                 self.virtual_release_order(&o);
             }
-            self.ome.mark_terminal(id, OrderStatus::Rejected, now_ms)?;
             // RFC 568 阶段一：死亡事实（venue 拒单）喂配对簿。
             self.pair_on_order_event(&o.internal_key, Decimal::ZERO, true);
             // The rejected entry never rested: its token may be re-attempted.
@@ -509,7 +531,31 @@ impl Core {
     /// same idempotent ledger + OME path the dry matcher uses, then project the
     /// resulting delta onto the position book.
     pub fn ingest_fill(&mut self, fill: Fill, now_ms: i64) -> CoreResult<()> {
+        let order_before = self
+            .ome
+            .get(&fill.order_id)
+            .map(|o| (o.status, o.venue_order_id.clone()));
         let outcome = self.ome.apply_fill_report(fill, now_ms)?;
+        // #184: a fill that completed the order is terminal, and the proof is
+        // the fill itself. `record_delta` attaches `VenueFill` when the order
+        // carries a venue id; a DRY order has no venue, so its completion is a
+        // simulation and must be labelled as one — never as a venue receipt
+        // (R7.1 L2).
+        if let Some((_, venue_id)) = order_before
+            && venue_id.is_none()
+            && let Some(d) = outcome.delta.as_ref()
+            && self
+                .ome
+                .get(&d.order_id)
+                .map(|o| o.status == OrderStatus::Filled && o.terminal_evidence.is_none())
+                .unwrap_or(false)
+        {
+            self.ome.stamp_terminal_evidence_if_missing(
+                &d.order_id,
+                crate::model::TerminalEvidenceSource::SimulatedFill,
+                now_ms,
+            )?;
+        }
         self.report_fill_outcome(outcome, now_ms);
         Ok(())
     }

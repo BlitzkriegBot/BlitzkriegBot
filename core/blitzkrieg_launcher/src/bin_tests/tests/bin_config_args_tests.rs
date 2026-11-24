@@ -525,7 +525,8 @@ fn the_snapshot_defaults_split_by_mode_like_the_side_files() {
         default_strategy_state_for(Mode::Dry),
         "data/strategy-state.dry.json"
     );
-    // Read-only settles locally — the simulation book, not the venue book.
+    // Read-only's ACCOUNTING book is the simulation book, not the venue book
+    // (#177 keeps that; it refuses execution, not the ledger's basis).
     assert_eq!(
         default_position_log_for(Mode::ReadOnly),
         "data/positions/positions.dry.jsonl"

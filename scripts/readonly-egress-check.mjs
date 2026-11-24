@@ -18,10 +18,17 @@
  *   1. the mode the core reports over IPC is `readonly`, not `live`;
  *   2. no venue call is attempted: no order ever leaves PENDING for a venue id,
  *      and none is rejected by a venue (both would require an executor);
- *   3. orders still settle locally, so read-only is usable as an observer rather
- *      than being a broken dry mode (the ledger must actually move);
- *   4. the order log holds no venue-bound row — the durable artefact a live
- *      order would leave behind.
+ *   3. `orders.place` is REFUSED — the second layer of #177. Before #177 the
+ *      mode only gated venue egress, so a read-only core accepted the order and
+ *      settled it in the simulated book; the ledger moved and a position opened.
+ *      Read-only now refuses execution in the kernel, so the refusal must be
+ *      the observable outcome, not a fill;
+ *   4. nothing was written: `orders.list` is empty, the ledger still holds only
+ *      its boot seed, `positions.list` is empty, and the order log has no rows
+ *      at all (not merely no venue-bound rows) — a refused order leaves no
+ *      durable trace;
+ *   5. the mode is still USABLE AS AN OBSERVER: a read verb answers. Read-only
+ *      refuses non-read verbs; it does not refuse observation.
  *
  * Every claim is read from the running process, not from source text, so the
  * gate keeps its meaning if the implementation is refactored.
@@ -101,40 +108,70 @@ const ready = await rpc(sock, 'core.ready');
 const mode = ready?.mode ?? null;
 console.log('mode over IPC   :', JSON.stringify(mode));
 
-// (3) A read-only core must still be a usable observer: place an order and
-// require that it settles locally. If read-only were "refuse everything", the
-// ledger would never move and the mode would be useless for its purpose.
-await rpc(sock, 'orders.place', {
-  tokenId: 'tok1', conditionId: 'cond1', side: 'buy', mode: 'taker',
-  price: 0.30, size: 10, internalKey: 'k-ro', strategy: 'operator',
-  asset: 'BTC', direction: 'up', roundSlot: 0, // "no round" (#457)
-});
+// (3) #177: read-only refuses EXECUTION, so the order must come back as a
+// refusal. Accepting it and settling it in the simulated book (the pre-#177
+// behaviour) is the defect, not the contract: it moved the ledger and opened a
+// position in the one mode that must not transact. The refusal is captured, not
+// thrown, so the rest of the gate can still read the state the attempt left.
+let refused = false;
+let refusalMessage = null;
+try {
+  await rpc(sock, 'orders.place', {
+    tokenId: 'tok1', conditionId: 'cond1', side: 'buy', mode: 'taker',
+    price: 0.30, size: 10, internalKey: 'k-ro', strategy: 'operator',
+    asset: 'BTC', direction: 'up', roundSlot: 0, // "no round" (#457)
+  });
+} catch (err) {
+  refused = true;
+  refusalMessage = err?.message ?? String(err);
+}
 await sleep(600);
+
+// (5) Observation must still work: read-only refuses non-read verbs, not reads.
+let observed = false;
+try {
+  const readings = await rpc(sock, 'positions.list');
+  observed = Array.isArray(readings?.positions);
+} catch {
+  observed = false;
+}
 
 const list = await rpc(sock, 'orders.list');
 const orders = list?.orders ?? [];
 const venueBound = orders.filter((o) => o.venueOrderId);
 const finalStatuses = orders.map((o) => o.status);
 const bal = await rpc(sock, 'ledger.balance');
+const readPositions = await rpc(sock, 'positions.list');
+const positions = readPositions?.positions ?? [];
 console.log('orders placed   :', orders.length);
+console.log('place refusal   :', refused ? `yes (${refusalMessage})` : 'NO — the order was accepted');
 console.log('venue-bound     :', venueBound.length);
 console.log('order statuses  :', JSON.stringify(finalStatuses));
 console.log('ledger balance  :', JSON.stringify(bal?.balance ?? null));
 console.log('ledger reports  :', bal?.seed == null ? 'no seed (live-like)' : 'a seed (local settlement)');
+console.log('open positions  :', positions.length);
 
 // (4) The durable artefact: a live order writes a venue id into the order log.
+// #177 makes the stronger claim possible — a refused order writes no row at all.
 let logVenueBound = 0;
 let logRows = 0;
+let logFilled = 0;
 if (existsSync(ORDER_LOG)) {
   for (const line of readFileSync(ORDER_LOG, 'utf8').split('\n')) {
     if (!line.trim()) continue;
     logRows++;
     try {
-      if (JSON.parse(line).venue_order_id) logVenueBound++;
+      const row = JSON.parse(line);
+      if (row.venue_order_id) logVenueBound++;
+      if (row.status === 'FILLED' || row.status === 'PARTIALLY_FILLED') logFilled++;
     } catch {}
   }
 }
-console.log('order log       : rows =', logRows, '| venue-bound =', logVenueBound);
+console.log(
+  'order log       : rows =', logRows,
+  '| venue-bound =', logVenueBound,
+  '| filled =', logFilled,
+);
 
 try { proc.kill('SIGTERM'); } catch {}
 await sleep(500);
@@ -142,13 +179,20 @@ try { proc.kill('SIGKILL'); } catch {}
 try { unlinkSync(sock); } catch {}
 
 // ── verdict ─────────────────────────────────────────────────────────────────
+const seededBalance = '1000';
+const balanceText = String(bal?.balance ?? '');
 const checks = [
   ['banner announces read-only', announced],
   ['venue executor never started', !startedExecutor],
   ['IPC mode is read-only', mode === 'readonly'],
+  ['read verbs still answer', observed],
+  ['orders.place is refused (#177)', refused],
+  ['no order was registered', orders.length === 0],
+  ['no position was opened', positions.length === 0],
+  ['the ledger did not move', balanceText === seededBalance],
   ['no order reached a venue', venueBound.length === 0],
   ['durable log holds no venue id', logVenueBound === 0],
-  ['orders still settle locally', orders.length === 1 && bal?.seed != null],
+  ['durable log records no fill', logFilled === 0],
 ];
 let ok = true;
 console.log('\nclaims:');
@@ -167,7 +211,8 @@ if (orders.length === 1 && !TERMINAL.includes(orders[0].status)) {
 console.log(
   `\nRESULT: ${ok ? 'PASS' : 'FAIL'} — ` +
     (ok
-      ? 'read-only refused egress structurally; orders settled locally, nothing reached a venue'
+      ? 'read-only refused egress structurally and refused execution (#177): ' +
+        'no order, no fill, no position, no ledger move, nothing reached a venue'
       : 'read-only did NOT hold: see the failing claims above'),
 );
 process.exit(ok ? 0 : 1);

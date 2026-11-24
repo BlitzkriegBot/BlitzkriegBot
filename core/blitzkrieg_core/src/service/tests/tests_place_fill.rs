@@ -42,7 +42,8 @@ fn spread_arb_entry_overrides_flow_through_engine_config() {
 fn the_daily_budget_basis_follows_the_mode() {
     assert_eq!(dry_core(dec!(100)).equity_basis(), EquityBasis::Dry);
     assert_eq!(live_core(dec!(100)).equity_basis(), EquityBasis::Live);
-    // Read-only settles locally, so its money is the simulation's too.
+    // Read-only's money lives in the simulation book (it refuses execution,
+    // not the ledger's basis — #177).
     let read_only = Core::new(CoreConfig {
         mode: Mode::ReadOnly,
         ..Default::default()

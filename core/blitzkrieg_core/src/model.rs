@@ -32,7 +32,9 @@ pub enum Mode {
     Dry,
     /// Real orders via the CLOB.
     Live,
-    /// Observation only: the venue's order egress is never constructed.
+    /// Observation only: the venue's order egress is never constructed, and the
+    /// kernel refuses execution outright (issue #177) — an order, exit, cancel,
+    /// risk or config verb never becomes a fill, a trade row or a position here.
     ///
     /// This is a THIRD variant rather than a `readonly: bool` flag beside `mode`
     /// for one reason: a flag is opt-in at every site that reads it, and a site
@@ -40,10 +42,12 @@ pub enum Mode {
     /// makes every `match` on `Mode` a compile error until it is revisited, so
     /// the guarantee cannot be lost by omission (E12-e / #94).
     ///
-    /// Behaviourally read-only settles like [`Mode::Dry`] — because with no venue
-    /// there is nothing to report a fill, so a live ledger would be a fiction —
-    /// while the *intent* stays visible: `readonly()` answers false for `Dry`
-    /// (a simulation, not a promise) and true here.
+    /// Money still lives in the simulated book (`settles_locally` answers true,
+    /// so boot seeding and the valuation basis work): what read-only cannot do
+    /// is *transact*. Before #177 it shared `Mode::Dry`'s settle branch and
+    /// synthesised fills for orders that should never have been accepted —
+    /// `readonly()` answers false for `Dry` (a simulation, not a promise) and
+    /// true here.
     ReadOnly,
 }
 
@@ -65,10 +69,14 @@ impl Mode {
         matches!(self, Mode::Live)
     }
 
-    /// Whether orders settle as simulated fills rather than waiting on a venue.
+    /// Which book this mode's money lives in.
     ///
-    /// True for both non-trading modes: read-only cannot wait for a venue that
-    /// was never started, so it settles the same way a simulation does.
+    /// True for both non-trading modes: neither has a venue to report a fill
+    /// from, so boot seeding, valuation and settlement use the simulated book.
+    /// This is an ACCOUNTING fact, not an execution licence — `Mode::ReadOnly`
+    /// refuses every non-read verb at the IPC gate and every execution at
+    /// `place_gated` (#177), so nothing moves in that book. See
+    /// [`Mode::readonly`].
     pub fn settles_locally(self) -> bool {
         !matches!(self, Mode::Live)
     }
@@ -436,8 +444,11 @@ mod mode_tests {
         assert!(!Mode::ReadOnly.may_trade());
     }
 
-    /// ReadOnly settles locally: with no venue constructed, nothing would ever
-    /// report a fill, so a ledger that waited would simply never move.
+    /// ReadOnly's money sits in the simulated book: with no venue constructed,
+    /// nothing would ever report a fill to a live ledger. #177 kept the
+    /// ACCOUNTING predicate alone on purpose — its consumers (boot seeding,
+    /// the equity basis, the exit ladder's settlement holders) are correct for
+    /// read-only too. EXECUTION is refused separately, at `place_gated`.
     #[test]
     fn everything_but_live_settles_locally() {
         assert!(Mode::Dry.settles_locally());

@@ -203,7 +203,7 @@ async fn replay_shaped_core_keeps_the_engine_only_toggle() {
 }
 
 /// issue 984: strategy.reload / strategy.packages.reload 改变活分发表，
-/// 必须登记进 READONLY_REFUSED —— 只读内核拒绝二者，且拒绝发生在
+/// 分类为 `Action`，只读内核拒绝二者，且拒绝发生在
 /// handler 之前（同 strategy.params.set）。
 #[tokio::test]
 async fn strategy_reload_and_packages_reload_are_refused_in_read_only_mode() {

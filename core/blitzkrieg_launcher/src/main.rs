@@ -36,10 +36,12 @@
 //! (exit 2), never a silent fallback. Closing intents are never blocked by it.
 //!
 //! `--readonly` is a promise, not a convention: the venue order egress is never
-//! constructed, so no code path in this process can send an order. It outranks
-//! `--mode live` / `DRY_RUN=false` (giving both is not an error — the read-only
-//! promise simply wins) and settles orders like dry, since a ledger waiting on a
-//! venue that was never started would never move.
+//! constructed, so no code path in this process can send an order. Since #177 it
+//! is also an execution refusal at the kernel: every non-read IPC verb is
+//! rejected from a classification table, and the placement path refuses before
+//! submission — a read-only core books no fill, no trade row and no position,
+//! simulated or not. It outranks `--mode live` / `DRY_RUN=false` (giving both is
+//! not an error — the read-only promise simply wins).
 //!
 //! #199 — the data-directory latch. The ledgers ARE the accounting truth the
 //! risk limits rest on, so a second writer is not a logging accident: it breaks
@@ -375,7 +377,8 @@ async fn main() -> anyhow::Result<()> {
         if mode == Mode::Live {
             eprintln!(
                 "blitzkrieg-core: --readonly given with a live mode request; \
-                 refusing egress (orders will settle locally, no venue is started)"
+                 refusing egress (read-only refuses execution — no venue is \
+                 started and no order can be placed)"
             );
         }
         Mode::ReadOnly

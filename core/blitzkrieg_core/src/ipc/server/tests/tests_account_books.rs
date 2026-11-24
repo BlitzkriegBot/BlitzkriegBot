@@ -747,7 +747,7 @@ async fn account_remove_retires_the_journal_file_and_a_recreate_starts_clean() {
     let _ = std::fs::remove_dir_all(scratch);
 }
 
-/// 两个新动词都是写动词：只读模式的内核拒绝（READONLY_REFUSED 名单，
+/// 两个新动词都是写动词：只读模式的内核按分类表拒绝（`Write` 类，
 /// 同 venue.set 的文案形状）。
 #[tokio::test]
 async fn account_create_and_remove_are_refused_in_read_only_mode() {

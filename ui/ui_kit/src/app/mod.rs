@@ -26,8 +26,9 @@ pub struct AppView {
     pub open_positions: usize,
     pub trades: usize,
     pub win_rate: f64,
-    /// Ledger PnL (`balance − seed`); `None` when seed is absent (LIVE / older
-    /// core) — never trade-folded into a fake ledger number.
+    /// Ledger PnL (`balance − opening_equity`, issue #1046/#1063); `None` when
+    /// opening_equity is absent (LIVE before the first venue report, or an
+    /// older core) — never trade-folded into a fake ledger number.
     pub net_pnl: Option<f64>,
     pub rows: Vec<AppRow>,
     pub last_error: Option<String>,

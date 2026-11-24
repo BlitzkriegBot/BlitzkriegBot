@@ -14,11 +14,10 @@ async fn venue_set_mounts_every_declared_family_of_the_account() {
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let accounts_path = dir.join("accounts.toml"); // the LEGACY path — never written
     let env_path = dir.join(".env");
-    // #1189 PR-C: the write faces re-derive the whole book from the `.env`
-    // after every write (write env + same-process reload), so the file must
-    // spell the declaration the memory book carries — the memory-only
-    // spelling would be dropped by the reload (and was never durable: the
-    // next boot read the same env and lost it too).
+    // A private `.env` spelling the same declaration the memory book
+    // carries — the boot READ face only (操作者裁决 2026-11-14 后内核不写
+    // 它); the durable half of every write below is the SQLite store the
+    // `db_path` opens.
     std::fs::write(
         &env_path,
         "ACCOUNT_LIST=paper\nACCOUNT_PAPER_NAME=\"paper\"\nACCOUNT_PAPER_ROUNDS=\"900,3600\"\n",
@@ -175,22 +174,24 @@ async fn venue_set_mounts_every_declared_family_of_the_account() {
 /// B2 (轮次多族): `account.rounds.set` at the wire — the ADD half. A set
 /// of two families on a bound account mounts BOTH (venue, duration)
 /// discovery instances at runtime (增族即挂), reports
-/// `runtimeEnabled: true`, persists the rounds into the private
-/// .env, and the account book reads the new set back. The
+/// `runtimeEnabled: true`, persists the rounds into the SQLite
+/// `accounts.rounds_json` column, and the account book reads the new set
+/// back. The
 /// idempotence posture: a second write with the same set mounts nothing
 /// (`runtimeEnabled: false` — every pair already live).
 #[tokio::test]
 async fn rounds_set_mounts_every_added_family_and_persists_the_declaration() {
-    // A private .env — the persist half refuses while a legacy toml sits
-    // beside it, the same posture venue.set's mount test runs under.
+    // A private `.env` (boot READ face) plus `db_path` below — the persist
+    // half writes the store; `accounts_config_path` is only the retired book
+    // path (never written, never created).
     let dir = std::env::temp_dir().join(format!("bk-rounds-set-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let accounts_path = dir.join("accounts.toml"); // the LEGACY path — never written
     let env_path = dir.join(".env");
-    // #1189 PR-C: the venue binding is durable state — the write faces
-    // re-derive the book from the `.env` after every write, so the file
-    // spells the binding the memory book carries.
+    // A private `.env` spelling the same binding the memory book carries —
+    // the boot READ face only (操作者裁决 2026-11-14 后内核不写它); the
+    // durable half of the writes below is the SQLite store `db_path` opens.
     std::fs::write(
         &env_path,
         "ACCOUNT_LIST=paper\nACCOUNT_PAPER_NAME=\"paper\"\nACCOUNT_PAPER_VENUE=\"roundsmount\"\n",

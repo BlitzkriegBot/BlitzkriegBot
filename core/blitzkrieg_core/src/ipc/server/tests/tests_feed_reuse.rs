@@ -76,9 +76,9 @@ async fn reuse_fixture(
     let dir = std::env::temp_dir().join(format!("bk-reuse-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
-    // issue 751: the persist half writes .env (the writers refuse while a
-    // legacy toml sits beside it), so the fixture keeps a PRIVATE .env and
-    // lets `accounts_config_path` derive the sibling for the refusal probe.
+    // 操作者裁决 2026-11-14：持久化后端是 SQLite（`db_path` 打开 store，
+    // 写面在无 store 时才拒绝）。`accounts_config_path` 只是账户簿自己的
+    // legacy 路径（此处从不写入、从不存在），保留它不影响写面。
     let accounts_path = dir.join("accounts.toml"); // the LEGACY path — never written
     let env_path = dir.join(".env");
     std::fs::write(

@@ -33,16 +33,16 @@
 //!     mapping is PR-3) — asserted per backend.
 //!   * The SqliteStore materializes an `accounts` row on any account-book
 //!     write (the FK precondition), so a GHOST write leaves a row in the DB
-//!     the env backend's dead key does not — but neither materializes in the
-//!     BOOK (the list face resolves from `ACCOUNT_LIST` / the row set the
-//!     writer named), which is the invariant the issue's "no implicit
+//!     and its list face SHOWS it, where the in-memory backend refuses the
+//!     unknown id outright. The production service layer refuses the ghost
+//!     BEFORE the store, which is the invariant the issue's "no implicit
 //!     ledger" discipline is about.
 //!
 //! Toolchain note: this is an integration test (tests/), so the library is
-//! compiled WITHOUT cfg(test) — the env backend drives the REAL public
-//! write faces (`env_file` + the account config env family + the production
-//! `crate::store::EnvStore`), which is exactly the seam the gate
-//! (scripts/store-layer-check.mjs) watches.
+//! compiled WITHOUT cfg(test) — both comparison backends drive the REAL
+//! public production types (`blitzkrieg_core::store::SqliteStore` and the
+//! in-memory backend over the same `StoreApi` shape), which is exactly the
+//! seam the gate (scripts/store-layer-check.mjs) watches.
 
 // TRAIT_SOURCE: the agreed shape. When the store module grows read faces,
 // this becomes `use blitzkrieg_core::store::StoreApi;` and the local trait
@@ -860,14 +860,14 @@ impl StoreApi for SqliteStore {
     }
 }
 
-// ── the business path: ONE set of operations, run on ALL THREE backends ─────
+// ── the business path: ONE set of operations, run on BOTH backends ──────────
 
 /// Run the full business path against one backend and return every
-/// observable outcome. The three backends' reports must be equal.
+/// observable outcome. The two backends' reports must be equal.
 ///
 /// Report discipline: writes report their OUTCOME (Ok, or Err with the
-/// refusal's KIND — the env backend's refusals carry an error-code prefix
-/// the memory backend's plain strings do not, and that text is an
+/// refusal's KIND — the SQLite backend's refusals carry an error-code
+/// prefix the memory backend's plain strings do not, and that text is an
 /// implementation freedom, not a behavior). The LIST face is the full
 /// fact-for-fact comparison: every row, every field. Refusals additionally
 /// report whether the account was NAMED in the message (both backends
@@ -876,7 +876,7 @@ impl StoreApi for SqliteStore {
 /// The ENUMERATED store-level differences are kept OUT of this shared
 /// report (asserted per backend in
 /// `the_sqlite_backend_enumerates_its_legal_differences`): the duplicate
-/// create (the env store refuses its own ACCOUNT_LIST duplicate; the
+/// create (the in-memory store refuses a duplicate id; the
 /// SqliteStore's create is INSERT OR IGNORE — idempotent, the service
 /// layer's duplicate refusal is the production gate for both), the
 /// market-plugin cell (not a StoreApi domain), and the credentials domain
@@ -1043,9 +1043,9 @@ fn outcome(r: Result<(), String>) -> String {
 }
 
 /// Classify a refusal's text into its behavioral kind. Both backends refuse
-/// a duplicate create and an unknown account BY NAME; the env backend's
-/// refusals carry the CoreError code prefix (`InvalidParams: …`) — strip it
-/// and compare the shape.
+/// an unknown account BY NAME; the SQLite backend's refusals carry the
+/// CoreError code prefix (`InvalidParams: …`) — strip it and compare the
+/// shape.
 fn refusal_kind(e: &str) -> String {
     let stripped = e
         .strip_prefix("InvalidParams: ")
@@ -1060,7 +1060,7 @@ fn refusal_kind(e: &str) -> String {
 }
 
 /// THE acceptance: the same business path produces the same outcomes on the
-/// env backend, the in-memory backend and the SQLite backend.
+/// in-memory backend and the SQLite backend.
 #[test]
 fn the_backends_agree_on_the_business_path() {
     let mem = MemoryStore::new();
@@ -1079,13 +1079,13 @@ fn the_backends_agree_on_the_business_path() {
     );
 
     // The report must be non-trivial: a path where every operation failed
-    // identically on all three backends would also "agree" — pin that the book
+    // identically on both backends would also "agree" — pin that the book
     // actually got built (two creates, then one row after the removal), the
     // risk/exit round-trip actually landed, and the settings cell actually
     // moved.
     assert!(
         sqlite_report.iter().any(|l| l.starts_with("create a: Ok")),
-        "alpha must be created on the env backend: {sqlite_report:#?}"
+        "alpha must be created on the sqlite backend: {sqlite_report:#?}"
     );
     assert!(
         sqlite_report.iter().any(|l| l.contains("alpha")
@@ -1122,7 +1122,7 @@ fn the_backends_agree_on_the_business_path() {
 
 /// The legal differences, enumerated (issue #1199 r2 P0-2 — the parity
 /// proof's honest ledger): where the SqliteStore's semantics differ from
-/// the env backend's, the difference is ASSERTED per backend, never
+/// the in-memory backend's, the difference is ASSERTED per backend, never
 /// silenced.
 #[test]
 fn the_sqlite_backend_enumerates_its_legal_differences() {
@@ -1148,8 +1148,8 @@ fn the_sqlite_backend_enumerates_its_legal_differences() {
     );
 
     // 2. `market.credentials.set`: the typed refusal (the per-account
-    // var-name→account mapping is PR-3). The env backend writes `.env`, the
-    // memory backend records — the SqliteStore refuses.
+    // var-name→account mapping is PR-3). The memory backend records — the
+    // SqliteStore refuses.
     let creds = sqlite
         .credentials()
         .save_credentials(&[("KALSHI_API_KEY", "k")], false);
@@ -1191,9 +1191,9 @@ fn the_sqlite_backend_enumerates_its_legal_differences() {
     );
 
     // 4. A ghost account-book write materializes an `accounts` row in the
-    // DB (the FK precondition) that the env backend's dead key does not —
-    // and the sqlite list face, reading the accounts table, SHOWS the ghost
-    // row where the env list face (the ACCOUNT_LIST book) does not. The
+    // DB (the FK precondition) — and the sqlite list face, reading the
+    // accounts table, SHOWS the ghost row where the in-memory list face
+    // (the map) refuses the unknown id outright. The
     // store-level difference is named and asserted, not silenced.
     let _ = sqlite.accounts().set_venue("ghost", "polymarket");
     let ghost_row = sqlite.list().unwrap().iter().any(|r| r.id == "ghost");

@@ -1,19 +1,21 @@
-//! The cockpit working copies derived FROM the `.env` file — the read-only
-//! cache side of the single-source ruling (see `crate::cockpit` for the
-//! table and the architecture statement; `crate::env_file` for the read
-//! contract).
+//! The cockpit working copies derived FROM the `.env` file — the legacy
+//! read-side re-derive path (see `crate::cockpit` for the table and the
+//! architecture statement; `crate::env_file` for the read contract).
 //!
-//! Every path that changes the exit discipline or the systemic limits funnels
-//! through [`Core::refresh_cockpit_from_env_file`]:
+//! Since 操作者裁决 2026-11-14 the kernel NEVER writes `.env`; this re-derive
+//! is the env-carrier backend's freshness mechanism only, and with SQLite
+//! open `cockpit_env_rederive_allowed` returns false so the DB-sourced
+//! working copies can never be clobbered by a stale file. Every path that
+//! changes the exit discipline or the systemic limits now writes the store
+//! (`StoreApi::save_exit` / `save_risk_bounds`).
 //!
-//!   * `risk.setExit` / `risk.setSystemic` persist to the file FIRST and then
-//!     call this (a persist failure refuses the whole apply — memory may
-//!     never hold a value the file does not have);
-//!   * the boot derives the working copy from the file directly (the
-//!     launcher's process-env snapshot is no longer consulted for these
+//! Which paths still funnel through [`Core::refresh_cockpit_from_env_file`]:
+//!
+//!   * the boot derives the working copy from the file when no DB is open
+//!     (the launcher's process-env snapshot is not consulted for these
 //!     keys — the 2026-11-08 divergence class dies here);
 //!   * the env-file watcher (mtime poll in the IPC server) calls this on
-//!     external hand edits.
+//!     external hand edits, gated by `cockpit_env_rederive_allowed`.
 //!
 //! Fail direction: a key that is present but unparseable warns naming the
 //! key and is skipped — one typo must never freeze the other nine (same

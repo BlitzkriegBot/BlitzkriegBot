@@ -372,12 +372,18 @@ pub async fn run(
     // carrier asymmetry note below.)
     //
     // issue #1199 (the watcher asymmetry): with the SQLite store open the DB
-    // is the cockpit carrier, so the cockpit re-derive is DISABLED — any
-    // unrelated `.env` write (an account toggle, a credential save — they all
-    // rewrite the same file) used to re-derive the cockpit working copies
-    // FROM THE FILE and clobber the DB-sourced values with stale keys. The
-    // execution-policy reload stays: its carrier is still the env file, and
-    // the reload is a pure re-read (no clobber of DB-sourced state).
+    // is the cockpit carrier, so the cockpit re-derive is DISABLED — back
+    // when runtime verbs still rewrote `.env` (an account toggle, a
+    // credential save — they all rewrote the same file), an unrelated write
+    // re-derived the cockpit working copies FROM THE FILE and clobbered the
+    // DB-sourced values with stale keys. Since 操作者裁决 2026-11-14 the
+    // kernel never writes `.env`, so only an operator hand edit moves the
+    // mtime now; the asymmetry stays because the clobber would still happen
+    // on that hand edit. The
+    // execution-policy reload stays: POLICY_* keys are resolved SQL-first
+    // (SQL outranks the file), and the reload is a pure re-read (no clobber
+    // of DB-sourced state) — its carrier is SQLite, the env edit only
+    // triggers the re-derive.
     if let Some(watch_path) = core
         .lock()
         .await

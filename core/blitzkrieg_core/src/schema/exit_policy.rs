@@ -80,9 +80,9 @@ pub struct ExitSetChange {
 
 /// `risk.setExit` result: the audited change list, in the
 /// `SystemicLimitUpdate` shape. `persisted` is `true` when the durable carrier
-/// took the write — the SQLite `account_exit_policy` row when the DB is open
-/// (the default since #1199 PR-2; the restart re-resolves the same values
-/// from it), the `.env` `BK_EXIT_*` keys on the env-only backend — and
+/// took the write — the SQLite `account_exit_policy` row (`StoreApi::save_exit`;
+/// the only backend since #1199 — the env-only backend was deleted, so the
+/// restart re-resolves the same values from it) — and
 /// `false` otherwise (no carrier wired — backtester, most tests — or the
 /// write failed, which is logged with the path). The panel also receives
 /// `persistence: "store" | "none"` beside it, spelled by the write face.

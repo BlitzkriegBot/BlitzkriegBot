@@ -19,10 +19,10 @@ use tokio::sync::Mutex as AsyncMutex;
 /// 「加载中」。
 #[tokio::test]
 async fn venue_set_mounts_a_never_booted_venues_data_plane_at_runtime() {
-    // A private .env — the persist half of account.venue.set refuses while
-    // a legacy toml sits beside it (the same posture the round-duration
-    // card runs), so the fixture must carry one, exactly the way the
-    // round-trip test below does. The ENGINE is installed too: the
+    // A private `.env` (the boot READ face) plus `db_path` below — the
+    // persist half of `account.venue.set` writes the SQLite `accounts.venue`
+    // column; `accounts_config_path` is only the retired book path (never
+    // written, never created). The ENGINE is installed too: the
     // scanner assertion at the bottom reads `engine.scanner().round_state`
     // and an engine-less core would answer it with an empty list for the
     // WRONG reason (no scanner at all, not "the venue never mounted").

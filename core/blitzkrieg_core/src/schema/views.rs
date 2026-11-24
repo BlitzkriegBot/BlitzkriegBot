@@ -743,7 +743,7 @@ pub struct AccountVenueSetParams {
 }
 
 /// `account.venue.set` result: the binding that is now in force (memory AND
-/// the operator's `.env` — `persisted` says the env write landed; a persist failure
+/// the SQLite store — `persisted` says the DB write landed; a persist failure
 /// refuses the whole write so the two stores cannot disagree).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -790,7 +790,8 @@ pub struct AccountRoundsSetParams {
 }
 
 /// `account.rounds.set` result: the set now in force (memory AND
-/// the operator's `.env` — `persisted` says the env write landed; a persist failure
+/// the SQLite store (`accounts.rounds_json`) — `persisted` says the DB write
+/// landed; a persist failure
 /// refuses the whole write so the two stores cannot disagree). Shape follows
 /// [`AccountVenueSetResult`] minus the venue-specific fields — no per-family
 /// change list: the reply's `rounds` IS the fact.
@@ -890,7 +891,8 @@ pub struct AccountTradingSetParams {
 }
 
 /// `account.trading.set` result: the switch that is now in force (memory
-/// AND the operator's `.env`; a persist failure refuses the whole write).
+/// AND the SQLite store (`accounts.trading_enabled`); a persist failure
+/// refuses the whole write).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountTradingSetResult {
@@ -909,8 +911,9 @@ pub const ACCOUNT_TRADING_SET_NOTE: &str = "false = new entries refused for this
 
 /// `account.freeze` params: the account-scoped entry gate (#1045).
 /// `frozen: true` places a `Manual` gate on the account—new orders (manual and
-/// strategy entries) are refused, its EXITS keep flowing; `frozen: false` is an
-/// alias of `account.unfreeze` and lifts the gate. The gate is pure in-memory:
+/// strategy entries) are refused, its EXITS keep flowing. `frozen: false` is
+/// RETIRED (#1059): the handler refuses it with `InvalidParams` so the single
+/// unfreeze write path is `account.unfreeze`. The gate is pure in-memory:
 /// session-scoped, not persisted, a restart starts clean.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -998,7 +1001,7 @@ pub const ACCOUNT_STRATEGIES_SET_NOTE: &str = "the account's strategy ENABLEMENT
 /// `display.account.set` params: the account the snapshot's
 /// `displayAccount`/`displayVenue` should point at. The kernel validates the
 /// account EXISTS and is `active` (plan-first), then updates the runtime
-/// pointer AND the operator's `.env` `ACCOUNT_DISPLAY` key in one
+/// pointer AND the SQLite `kernel_meta` `display_account` cell in one
 /// transaction. `reason` is audit-only.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1009,7 +1012,7 @@ pub struct DisplayAccountSetParams {
 }
 
 /// `display.account.set` result: the pointer now in force (memory AND
-/// the operator's `.env`; a persist failure refuses the whole write). `displayVenue`
+/// the SQLite store; a persist failure refuses the whole write). `displayVenue`
 /// is the pointed-at account's venue binding — empty = unbound.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1054,7 +1057,7 @@ pub struct AccountCreateParams {
     pub reason: Option<String>,
 }
 
-/// `account.create` result: the created id, whether the .env write
+/// `account.create` result: the created id, whether the SQLite write
 /// landed (`false` is impossible today — a persist failure refuses the whole
 /// call, the field is the contract's honesty disclosure), one fixed note, and
 /// whether the named venue's data plane was mounted into the running session.
@@ -1098,7 +1101,7 @@ pub struct AccountRemoveParams {
     pub reason: Option<String>,
 }
 
-/// `account.remove` result: the retired id, whether the .env write
+/// `account.remove` result: the retired id, whether the SQLite write
 /// landed, and one fixed note.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

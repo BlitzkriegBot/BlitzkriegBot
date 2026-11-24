@@ -561,10 +561,11 @@ pub fn credentials_status(
 
 /// `market.credentials.set`: validate every var name against the plugin's
 /// requirement table (a typo must fail now, not as a silently inert
-/// executor), then upsert the values into the configured `.env` — the single
-/// persistent home for UI-submitted credentials. next_session only — the
-/// launcher re-reads `.env` at the next start, and the executor reads the
-/// environment once at boot.
+/// executor), then upsert the values into the SQLite store
+/// (`StoreApi::save_credentials`: encrypted `kernel_meta` blobs) — the single
+/// persistent home for UI-submitted credentials (the `.env` is only the
+/// boot-time read fallback). next_session only — the executor reads the
+/// environment once at boot; a `.env` edit is re-read at the next start.
 pub async fn apply_credentials_set(
     registry: &registry::MarketPluginRegistry,
     core: &tokio::sync::Mutex<crate::service::Core>,
@@ -1298,8 +1299,8 @@ mod derive_tests {
         assert_eq!(ro.source, "accounts");
         assert_eq!(ro.derived_venues, vec!["beta"]);
         // persisted 层。
-        // plugin_readout 自己从 config 读格 —— config 没有 runtime_config_path
-        // 时 cell 是 None，直接落 fallback；persisted 层用带路径的核验证。
+        // plugin_readout 从 wired store 读 cell —— 没有 store（db_path=None）
+        // 时 cell 是 None，直接落 fallback；persisted 层用带 store 的核验证。
         let dir = scratch("readout");
         let path = cell_in(&dir);
         seed_cell(std::path::Path::new(&path), Some("alpha"), "uid:old", 0);

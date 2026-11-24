@@ -229,8 +229,9 @@ fn legacy_risk_state_freezes_are_ignored_at_boot() {
 }
 
 /// #1062 阻断 1：unfreeze persist 失败 → gate 仍在，绝不假成功。
-/// 当没有 `accounts_config_path`（无法落盘 .env/accounts.toml），解冻必须
-/// 返回错误，运行时闸门不动，账户仍拒新单。
+/// 当没有 wired store（无法落 SQLite——操作者裁决 2026-11-14 后 `.env`
+/// 对内核只读，不再是持久化载体），解冻必须返回错误，运行时闸门不动，
+/// 账户仍拒新单。
 #[test]
 fn unfreeze_persist_failure_keeps_gate() {
     use crate::account::{Account, AccountId, AccountLedgers, AccountStatus, CredentialKeys};
@@ -254,8 +255,8 @@ fn unfreeze_persist_failure_keeps_gate() {
         AccountId::from("default"),
     );
 
-    // No accounts_config_path → account_env_write_paths() returns None → persist
-    // refuses. The account starts non-trading so the unfreeze persist branch is
+    // No wired store → the persist half refuses (persistence is disabled).
+    // The account starts non-trading so the unfreeze persist branch is
     // entered (not skipped).
     let mut c = crate::service::Core::with_account_book(
         crate::service::CoreConfig {
@@ -290,10 +291,11 @@ fn unfreeze_persist_failure_keeps_gate() {
     );
 }
 
-/// #1062 阻断 1 的成功半边：unfreeze 把配置态写回 `.env`（唯一事实源），
-/// `STATUS` 与 `TRADING_ENABLED` 在一次重写里同时摘除；用同一份 `.env`
-/// 重建内核后闸门不复活。生产形态是 `accounts.toml` 不存在（它只是
-/// write-refusal basis，不是可写载体，issue 751/923）。
+/// #1062 阻断 1 的成功半边：unfreeze 把配置态写进 SQLite `accounts` 行
+/// （唯一事实源，操作者裁决 2026-11-14），`status` 与 `trading_enabled`
+/// 在一次 UPDATE 里同时翻正；用同一份 store 重建内核后闸门不复活。生产形态
+/// 是 `accounts.toml` 不存在（它只是 write-refusal basis，不是可写载体，
+/// issue 751/923）。
 #[test]
 fn unfreeze_writes_env_back_and_entries_stay_open_after_rebuild() {
     use crate::account::{Account, AccountId, AccountLedgers, AccountStatus, CredentialKeys};

@@ -167,9 +167,9 @@ pub struct Core {
     /// it grows past the cap it drains, so a pathological detail variety
     /// degrades to the old per-tick logging instead of unbounded memory.
     entry_reject_logged: std::collections::HashSet<String>,
-    /// 跨所套利弹窗 v2: the leg configuration in force (the `ACCOUNT_ARB_*`
-    /// env grammar's memory mirror). `None` = unconfigured.
-    /// Written by `arb_config_set_persisting` (`.env` + memory in one
+    /// 跨所套利弹窗 v2: the leg configuration in force (the `arb_pairs` table's
+    /// memory mirror). `None` = unconfigured.
+    /// Written by `arb_config_set_persisting` (SQLite + memory in one
     /// transaction), read by the engine hot-push (the adapter's account
     /// stamp + the strategy's `bk.params()` leg entries).
     arb_leg_config: Option<crate::account::CrossVenueArbConfig>,
@@ -709,7 +709,7 @@ pub(super) fn confirm_error_text(
 // ── 账户↔venue 解耦：per-account strategy ENABLEMENT 语义层 ─────────────
 //
 // 语义裁决（本轮）：不存在「为账户分配策略」的呈现逻辑 —— 策略全局可见；
-// operator `.env` 的 ACCOUNT_<ID>_STRATEGIES 记录的是每账户×策略的启用状态（面板启用
+// SQLite `strategy_assignments` 表记录的是每账户×策略的启用状态（面板启用
 // 按钮的持久化）。scope (strategy, account) 运行 ⇔ 策略已安装 AND 账户
 // 已启用 AND 策略 ∈ 该账户启用集。被停用的 scope 若有持仓 → exits-only：
 // 不再开新仓，TP/SL/挂单巡逻/退出意图照常管理到平完。以下三个原语是

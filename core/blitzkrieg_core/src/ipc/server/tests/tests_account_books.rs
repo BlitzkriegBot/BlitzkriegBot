@@ -11,15 +11,15 @@ use tokio::sync::Mutex as AsyncMutex;
 
 // ── 账户簿运行时增删：account.create / account.remove，at the wire ────────
 
-/// A two-account core PLUS its private .env — the persist half
-/// needs a file, and it must never be the checkout's own
-/// `user_layer/configs/.env`. The in-memory book mirrors the
-/// file (default + paper) so list/persist assertions can never disagree.
-/// The scratch dir is per-CALL (an atomic counter, not just the pid): two
-/// wire tests in the same process run their fixtures CONCURRENTLY under
-/// the suite, and a pid-keyed dir would have them rename over each other.
-/// Returns the legacy toml path (never written; the writers refuse while
-/// it exists) alongside the core.
+/// A two-account core PLUS its private .env — the boot READ face, and it
+/// must never be the checkout's own `user_layer/configs/.env`. The
+/// in-memory book mirrors the file (default + paper) so list/persist
+/// assertions can never disagree. The scratch dir is per-CALL (an atomic
+/// counter, not just the pid): two wire tests in the same process run their
+/// fixtures CONCURRENTLY under the suite, and a pid-keyed dir would have
+/// them rename over each other.
+/// Returns the legacy toml path (never written, never created — the persist
+/// half is the SQLite store `db_path` opens) alongside the core.
 async fn two_account_persist_fixture() -> (
     Arc<AsyncMutex<Core>>,
     crate::market::registry::MarketPluginRegistry,
@@ -788,7 +788,7 @@ async fn account_create_and_remove_are_refused_in_read_only_mode() {
     );
 }
 
-/// 无 accounts_config_path 的内核（回测、多数进程内测试）拒绝两个动词
+/// 无 wired store 的内核（回测、多数进程内测试）拒绝两个动词
 /// —— 与 venue.set 的 "persistence is disabled" 同一文案形状：一个
 /// 不能持久化的写入是对操作员的谎报。
 #[tokio::test]
@@ -1191,8 +1191,8 @@ async fn account_journal_default_follows_display_then_session_wins() {
 }
 
 /// 运行时建户的凭证探针（「凭证未载」徽章修复）：stub 插件声明一个凭据
-/// 变量名，进程环境里已带该变量（上一会话写 .env、重启后 launcher 装进
-/// 环境的形态）。`account.create` 必须跑 boot 同款 §9.4 探针 —— 新账户
+/// 变量名，进程环境里已带该变量（手工写进 `.env`——或旧版本内核写进去的
+/// 遗留行——重启后 launcher 装进环境的形态）。`account.create` 必须跑 boot 同款 §9.4 探针 —— 新账户
 /// 在 `account.list` 里 `credentialsLoaded: true`，而不是 from_plugin_env
 /// 的 `loaded: false` 默认值把徽章钉死在「凭证未载」。变量缺席时探针
 /// 如实报 false（fail-closed 姿态不变：探针只读名字的存在性，值永不上

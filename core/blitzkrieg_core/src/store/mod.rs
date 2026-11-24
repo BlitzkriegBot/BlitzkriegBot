@@ -51,7 +51,8 @@ pub trait StoreApi: Debug + Send + Sync {
     }
 
     /// The account↔venue binding write (`account.venue.set`); an empty
-    /// `venue` unbinds. Refuses while the legacy accounts toml exists.
+    /// `venue` unbinds. Upserts the `accounts.venue` column (the row is
+    /// materialized with the standard defaults when it does not exist yet).
     fn save_account_venue(&self, _account_id: &str, _venue: &str) -> Result<(), CoreError> {
         Err(CoreError::new(
             CoreErrorCode::Internal,
@@ -76,8 +77,9 @@ pub trait StoreApi: Debug + Send + Sync {
     }
 
     /// `account.remove`: drop the id and sweep every row it owns. Refuses
-    /// an unknown id, an emptying removal, or a legacy-toml presence; the
-    /// display pointer is re-derived when it named the removed id.
+    /// an unknown id and an emptying removal (the in-memory book owns the
+    /// last-account refusal); the display pointer is re-derived when it
+    /// named the removed id.
     fn remove_account(&self, _account_id: &str) -> Result<(), CoreError> {
         Err(CoreError::new(
             CoreErrorCode::Internal,
@@ -240,9 +242,10 @@ pub trait StoreApi: Debug + Send + Sync {
 
     /// `execution_policy.set/.reset` for one account: the section's whole
     /// footprint (field → value, `None` = swept) as one sweep-then-write.
-    /// Refuses while the legacy policy toml exists (the kernel's own
-    /// bootstrap template is swept instead — the one exception the old
-    /// write face owned). Returns the footprint for the reload snapshot.
+    /// A reset with no POLICY_* row for the account is refused by name (no
+    /// section to revoke); a residual legacy policy toml is dead data the
+    /// handler WARNS about, not a store-level gate (#1199). Returns the
+    /// footprint for the reload snapshot.
     fn save_policy_section(
         &self,
         _account_id: &str,

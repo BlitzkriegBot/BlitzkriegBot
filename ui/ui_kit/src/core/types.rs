@@ -1043,8 +1043,11 @@ pub struct EvolutionStatusView {
     /// UI cannot print "72 hours" over a different setting.
     #[serde(default)]
     pub cycle_secs: i64,
-    // The switches live in the `.env` single source (`SHADOW_ENABLED` /
-    // `SHADOW_AUTO_EVOLVE`, issue 751), which the runtime verbs upsert —
+    // The switches live in the SQLite `kernel_meta` cells (`shadow_enabled` /
+    // `shadow_auto_evolve`, issue 751's store seam; the `.env`
+    // `SHADOW_ENABLED` / `SHADOW_AUTO_EVOLVE` keys are only the legacy
+    // boot fallback for pre-store deployments), which the runtime verbs
+    // upsert —
     // no `switchConflicts` field here, because a config/runtime disagreement
     // cannot exist. The kernel still sends an always-empty `switchConflicts`
     // list on the wire for an older WebUI; serde ignores the key it no longer

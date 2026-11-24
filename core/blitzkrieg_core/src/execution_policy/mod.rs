@@ -70,9 +70,12 @@
 //! turned into `_`, e.g. `POLICY_BUDGET_RATIO_BINANCE_MAIN` for account
 //! `binance-main`. The pre-751 bare names (`BUDGET_RATIO`, `MAX_BUDGET_USD`)
 //! stay as read-only aliases. An ACCOUNT_LIST id carrying any `POLICY_<ID>_*
-//!` key forms an env-only section even without a TOML row; the write face
-//! (`execution_policy.set`/`.reset`) writes these keys into the `.env` and
-//! refuses while the legacy toml file still exists. Env is read at load time
+//!` key forms a section even without a TOML row; the write face
+//! (`execution_policy.set`/`.reset`) lands these keys as `account_settings`
+//! rows in the SQLite store (`StoreApi::save_policy_section`) — a residual
+//! legacy `execution_policy.toml` is dead data the write WARNS about, never
+//! a gate (the loader reads the store's rows only, #967 + #1199). Env is
+//! read at load time
 //! only (a restart — or an IPC write's reload — picks up changes), matching
 //! the repo's restart-to-change knob discipline.
 
@@ -958,11 +961,13 @@ impl Default for Policy {
 impl Policy {
     /// Load + parse + validate the config at `path`. A MISSING file is the
     /// zero-config deployment (code defaults, no account sections) — with the
-    /// #751 env layer still folded on top (POLICY_* keys in the process
-    /// environment are the whole surface once the toml retires); a file that
-    /// exists but does not parse, misses a field, or carries an out-of-range
-    /// value REFUSES (fail-closed) — the caller refuses the boot rather than
-    /// trading under a policy the operator did not write.
+    /// #751 env layer still folded on top (the `POLICY_*` keys are the whole
+    /// surface now that #967 retired the toml: production boot/reload go
+    /// through [`Self::load_single_source`] / [`Self::load_for_reload_with_sql`],
+    /// which never read this file; this parser survives for the TOML text
+    /// seams and tests). A file that exists but does not parse, misses a
+    /// field, or carries an out-of-range value REFUSES (fail-closed) rather
+    /// than trading under a policy the operator did not write.
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,

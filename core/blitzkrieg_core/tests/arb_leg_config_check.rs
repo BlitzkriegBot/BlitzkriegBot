@@ -63,7 +63,7 @@ fn scratch_dir() -> PathBuf {
 /// Env-single-source (issue 751): only the per-test `.env` is written (same
 /// unique stem as the nominal toml path; cargo runs tests in parallel, a
 /// shared `.env` would cross-contaminate). The toml path stays UNWRITTEN —
-/// the env write face refuses while any legacy toml exists.
+/// no production writer consults it (the persist half is the SQLite store).
 fn accounts_toml_path(name: &str) -> PathBuf {
     let path = scratch_dir().join(format!("accounts-{name}-{}.toml", std::process::id()));
     std::fs::write(

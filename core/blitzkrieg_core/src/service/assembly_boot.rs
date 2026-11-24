@@ -783,10 +783,12 @@ impl Core {
         // runtime config mutation cannot move a quota mid-session).
         let virtual_accounts =
             crate::risk::virtual_account::VirtualAccounts::new(&config.virtual_limits);
-        // The shadow manager reads the switch write-back path off the config
+        // The shadow manager reads the legacy env-path argument off the config
         // before the config moves into the struct (same ordering concern as
-        // above). Issue 751: the flips land in `.env`, not the retired
-        // `shadow_evolution.toml`.
+        // above). Issue 751's store seam: the flips persist into the SQLite
+        // `kernel_meta` cells, not the retired `shadow_evolution.toml`; since
+        // 操作者裁决 2026-11-14 the `.env` is read-only for the kernel, so the
+        // path is carried for call-site compatibility only.
         let shadow_env_path = config.env_file_path.clone();
         // #861: the runtime risk state (hot entry caps, systemic bounds, kill
         // switch, freeze book). Loaded BEFORE the config moves into the struct

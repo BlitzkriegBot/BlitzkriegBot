@@ -1,8 +1,9 @@
-//! The cockpit families' carrier is decided by ASSEMBLY (operator ruling
+//! The cockpit families' carrier is the STORE SEAM (operator ruling
 //! 2026-11-08, restated for the #1199 store seam): the exit discipline
 //! (`BK_EXIT_*`) and the per-account systemic limits (`BK_RISK_*`) — the
 //! families the panel's 风控与策略 card reads and writes — persist through
-//! the store seam, and which backend is wired decides where the truth lives:
+//! the store seam, and since 2026-11-14 (第六轮) the only backend is SQLite:
+//! the env-only backend was DELETED together with every `.env` write face.
 //!
 //!   * DB open (the default assembly since #1199 PR-2): the SQLite database
 //!     IS the cockpit truth — the working copies are its read-through cache
@@ -11,15 +12,10 @@
 //!     re-derive is disabled — see `cockpit_env_rederive_allowed`: a file
 //!     re-derive would clobber the DB-sourced copies with stale `BK_*` keys
 //!     on any unrelated `.env` write);
-//!   * env-only backend (no DB): the `.env` FILE is the authoritative state
-//!     and the kernel's in-memory config is a READ-ONLY CACHE of the file:
-//!     every write lands in the file FIRST, then the cache is re-derived
-//!     FROM the file — the cache can never hold a value the file does not
-//!     have (the 2026-11-08 divergence class: panel ON / file OFF, because
-//!     the launcher's process-env snapshot had gone stale while the kernel
-//!     held the boot-time value — three layers, three answers); external
-//!     hand edits are picked up by the env-file watcher (mtime poll,
-//!     `ipc/server`) and re-derived the same way.
+//!   * no DB (`config.db_path` unset — backtester, most process-internal
+//!     tests): there is NO durable carrier at all; the in-memory working
+//!     copies are the only state and a write that needs persistence reports
+//!     `persisted: false` / `persistence: "none"` instead of pretending.
 //!
 //! Either way a write that cannot land durably refuses the whole apply, and
 //! the receipt names the outcome (`persistence: "store" | "none"` — the

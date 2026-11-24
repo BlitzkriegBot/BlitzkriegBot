@@ -333,8 +333,10 @@ impl Core {
         self.freeze_account(account, reason);
     }
 
-    /// Lift one account's gate (`account.unfreeze` / `account.freeze {frozen: false}`
-    /// / the reset path). Unknown account = no-op.
+    /// Lift one account's gate (the internal helper behind `account.unfreeze`
+    /// and the reset path). `account.freeze {frozen: false}` is RETIRED
+    /// (#1059) — the handler refuses it, so this is not reachable from that
+    /// verb. Unknown account = no-op.
     pub fn resume_account(&mut self, account: &str) -> bool {
         self.clear_account_gate(account).is_some()
     }
@@ -344,7 +346,9 @@ impl Core {
     ///
     /// #1057（裁决 A 真单门）：
     /// - 阻断 1：先 persist 配置态（把 `trading_enabled` 置 true、`status`
-    ///   置 `Active`，落盘到 `.env`），**再** clear gate。persist 失败则
+    ///   置 `Active`，落盘到 SQLite `accounts` 行——操作者裁决 2026-11-14
+    ///   后 `.env` 对内核只读，`StoreApi::save_account_active` 一次
+    ///   UPDATE 同时翻正两列），**再** clear gate。persist 失败则
     ///   什么都不变，gate 仍在，绝不假成功。
     /// - 阻断 3：全局熔断键 `"global"` 解冻时同时 `risk.resume()`，使
     ///   tradingFrozen 与 accountGates 单点化。

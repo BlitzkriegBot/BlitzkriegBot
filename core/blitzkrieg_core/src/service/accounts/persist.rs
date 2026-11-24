@@ -12,14 +12,15 @@ use super::Core;
 impl Core {
     /// The account↔venue binding write (`account.venue.set`): the in-memory
     /// write through [`crate::account::AccountLedgers::set_venue`] and the
-    /// durable write into the account book's own file are ONE transaction —
+    /// durable write into the store seam (`StoreApi::save_account_venue` →
+    /// the SQLite `accounts.venue` column) are ONE transaction —
     /// the persist happens FIRST (plan-and-persist before apply: a persist
-    /// failure leaves both the file and the memory exactly as they were, so
-    /// the two stores can never disagree), the in-memory record moves only
-    /// after the file accepted. A core without an
-    /// [`CoreConfig::accounts_config_path`] (backtester, most in-process
-    /// tests) refuses instead of writing into whatever checkout it happens
-    /// to run from — the `runtime_config_path` posture, kept.
+    /// failure leaves both the store and the memory exactly as they were, so
+    /// the two can never disagree), the in-memory record moves only
+    /// after the store accepted. A core without a wired store
+    /// (backtester, most in-process tests) refuses instead of writing into
+    /// whatever checkout it happens to run from — the standard
+    /// "persistence is disabled" posture every write face shares.
     ///
     /// Validation of the venue NAME (a registered plugin, or empty = unbind)
     /// is the caller's job — it needs the compiled-in registry, which the
@@ -73,8 +74,8 @@ impl Core {
     /// validate → persist FIRST (a failure leaves both stores untouched) →
     /// the in-memory book. The venue.set transaction posture, kept: the
     /// persist happens FIRST (plan-and-persist before apply — the two stores
-    /// can never disagree), and a core without an
-    /// [`CoreConfig::accounts_config_path`] refuses instead of writing into
+    /// can never disagree), and a core without a wired store
+    /// (backtester, most in-process tests) refuses instead of writing into
     /// whatever checkout it happens to run from.
     ///
     /// Validation reuses [`crate::account::config::validate_rounds`] (the
@@ -882,24 +883,24 @@ impl Core {
         engine.rebuild_account_scopes(&account, requested, held, &mut build)
     }
 
-    /// Boot application of the accounts file's strategy ENABLEMENT sets
+    /// Boot application of the account book's strategy ENABLEMENT sets
     /// (账户↔venue 解耦语义) — the production `run()` calls this ONCE after
-    /// `install_engine`. For every account with a NON-EMPTY `strategies` key
-    /// the named scopes are instantiated and ENABLED; the default account
-    /// with NO key and a non-empty persisted enabled-set (strategy-state
-    /// .json — the old global toggle's durable form) is MIGRATED once: that
-    /// set is materialized as the default account's enablement rows in
-    /// the operator's `.env`, so the upgrade keeps the production behaviour exactly
-    /// (default 账户 strategies=["pair_discount_arb","spread_arb"] 升级后
-    /// 行为不变) and the file is the only truth from that boot on.
+    /// `install_engine`. For every account with a NON-EMPTY `strategies` set
+    /// (loaded from the SQLite book — the `.env` ACCOUNT_* grammar is only
+    /// the read-side seed at first import) the named scopes are instantiated
+    /// and ENABLED. The default account's old enabled-set migration is
+    /// RETIRED: the book's set is the only truth from this boot on (a default
+    /// with zero strategies stays at zero — it is never re-inflated from the
+    /// legacy `strategy-state.json` file).
     ///
     /// NOT part of `install_engine`: the replay/backtest boot goes through
     /// that path too and its single-default book must keep byte-identical
     /// outcomes (the exit-economics baseline). Production assembly is the
     /// only caller.
     ///
-    /// Returns the migrated default enablement set (empty when nothing
-    /// migrated) so the caller can report it on stderr.
+    /// Returns the migrated default enablement set — always empty since the
+    /// migration was retired; the return type stays so the caller's stderr
+    /// report path does not change.
     ///
     /// Fail-closed: a SQLite `account_settings` read failure (table gone,
     /// file unreadable, lock contention) is an `Err` — it must not be
@@ -910,7 +911,7 @@ impl Core {
             return Ok(Vec::new());
         };
         // Default 账户的策略集不再从 strategy_state.json 迁移（default 的
-        // 启用策略只认 .env ACCOUNT_DEFAULT_STRATEGIES / 运行时
+        // 启用策略只认 SQLite `strategy_assignments` 行 / 运行时
         // `account.strategies.set`），避免旧 persisted set 把默认账户强塞
         // 成若干策略（issue：default 0 启用策略却账本说 7 个）。
         // 这里只保留 per-account round duration  overlay 和各账户 enablement
@@ -998,7 +999,7 @@ impl Core {
     }
 
     /// `account.create`（账户簿运行时增删的建半）：新账户落内存 AND
-    /// operator `.env`，一个事务 —— persist 先行（失败则两个存储都不动），落盘
+    /// SQLite store，一个事务 —— persist 先行（失败则两个存储都不动），落盘
     /// 收下后才动内存，与 [`Self::set_account_venue_persisting`] 同一姿态。
     /// 身份合同在这里钉死：id 非空 / trim 后非空 / 不允许保留名 `default` /
     /// 不允许与簿内现有 id 重复；status 恒 `Active`（运行时铸造一个受限账户
@@ -1006,7 +1007,7 @@ impl Core {
     /// `Prediction`（0.3 唯一有插件的市场类型，与文件缺省一致）。调用方从
     /// 插件声明传入凭据变量名并与身份一起落盘；值仍由
     /// `market.credentials.set` 写入，永不进入账户请求或响应。
-    /// 无 [`CoreConfig::accounts_config_path`] 的内核（回测、多数进程内测试）
+    /// 无 wired store 的内核（回测、多数进程内测试）
     /// 拒绝 —— 同 venue.set 的 "persistence is disabled" 文案形状。
     ///
     /// venue 名的注册校验（plan-first）是调用方的职责 —— 编译进来的插件注册
@@ -1128,7 +1129,7 @@ impl Core {
     }
 
     /// `account.remove`（账户簿运行时增删的删半）：账户离开内存 AND
-    /// operator `.env`，同一事务姿态。拒绝面：账簿的最后一个账户（空簿会让
+    /// SQLite store，同一事务姿态。拒绝面：账簿的最后一个账户（空簿会让
     /// 下一次 boot 拒载，删掉它是删库式脚枪）；仍有 open position 的账户
     /// （钱不能变成不可寻址的）；未知 id 标准拒绝。`default` 只是普通账户
     /// —— 所有账户都可删（用户裁决：绑定只在建户时绑定、编辑面已收，
@@ -1145,8 +1146,8 @@ impl Core {
         // The LAST account stays: an empty book fails the next boot's parse,
         // so retiring it would be a delete-the-deployment footgun. Every id
         // is otherwise fair game — `default` included (the zero-config
-        // fallback re-derives on the next boot when the file lacks a
-        // `default` row). Existence refuses first, with the standard
+        // fallback re-derives on the next boot when the rows lack a
+        // `default` account). Existence refuses first, with the standard
         // unknown-account error.
         self.accounts.require(id)?;
         if self.accounts.account_list().len() <= 1 {
@@ -1200,7 +1201,7 @@ impl Core {
         // `account.create` 是新账本，不是老账户续弦 —— 留着旧文件，下一次
         // boot 的 attach_journals 会把上一世的成交流水整表回放进来（生产
         // kalshi 实锤：6 轮建/删叠出 6 笔幽灵 seed@account.create，Σamount
-        // 比真实余额多 5000）。删文件失败则整体拒绝 —— 此时 .env
+        // 比真实余额多 5000）。删文件失败则整体拒绝 —— 此时 SQLite store
         // 已收下了删除（persist 先行的代价），但内存未动、旧 journal 还在，
         // 重试一次即可收敛；拒绝的消息如实告知。
         //
@@ -1284,10 +1285,12 @@ impl Core {
         self.clear_account_gate(id.as_str());
         self.accounts.repair_active_after_removal(id);
         // 显示账户配置化: the removal must not orphan the display pointer —
-        // the file was rewritten WITHOUT the row above, and the same render
-        // re-derived its top-level `display_account` key when it pointed here
-        // (persist_account_remove's own edit); the memory cell re-derives the
-        // same way so the snapshot never names a removed account.
+        // the delete above removes the `accounts` row; a `kernel_meta`
+        // `display_account` cell that still names it is filtered by the
+        // next boot's loader (dangling → active), and the memory cell
+        // re-derives through the SAME fallback now
+        // (`repair_display_after_removal`) so the live snapshot never names
+        // a removed account.
         self.accounts.repair_display_after_removal(id);
         tracing::info!(
             target: "risk",

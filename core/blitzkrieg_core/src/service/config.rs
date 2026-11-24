@@ -52,7 +52,9 @@ pub struct CoreConfig {
     pub max_consecutive_losses: u32,
     pub breaker_cooldown_sec: i64,
     /// Per-account round length anchor: `account_id → seconds`. Each account's
-    /// own grid (`ACCOUNT_<ID>_ROUND_DURATION_SEC` env key). Absent for an
+    /// own grid (boot-resolved from its SQLite `account_settings`
+    /// `round.duration_sec` row; the `ACCOUNT_<ID>_ROUND_DURATION_SEC` env key
+    /// is the first-import read fallback). Absent for an
     /// account → falls back to `default_round_duration_sec`. This is the
     /// single source of truth for timing math (slot derivation, expiry, stop
     /// tightening) — replacing the old global `round_duration_sec`.
@@ -96,26 +98,33 @@ pub struct CoreConfig {
     /// `round_duration.get` renders exactly the labels the plugins claimed,
     /// and a duration missing here reads unlabeled.
     pub round_labels: BTreeMap<i64, &'static str>,
-    /// Where the effective round length came from — one of `cli` / `env` /
-    /// `runtime` / `toml` / `default`. The boot resolution owns the spelling;
+    /// Which tier owns the effective round length at boot — `cli_or_env`
+    /// (an explicit `--round-sec` / `BK_ROUND_SEC` suppresses the UI card's
+    /// writes) or `default` (the card may apply). The boot resolution owns
+    /// the spelling (`round_duration_source_from` in the launcher);
     /// `round_duration.get` surfaces it so the UI can say "an explicit flag
-    /// outranks this card". Not a decision input anywhere.
+    /// outranks this card". Not a decision input anywhere except the
+    /// `cli_or_env` destructive-switch refusal.
     pub round_duration_source: &'static str,
-    /// The round-duration UI card's durable cell (`data/runtime/config.json`
-    /// in production). `None` disables the write path — the backtester and
-    /// most in-process tests run with `None`, and a `round_duration.set` then
-    /// refuses with "persist is disabled" instead of writing into whatever
-    /// checkout the caller happens to run from (the same posture as
-    /// `strategy_state_path`).
+    /// The retired round-duration UI cell's legacy path
+    /// (`data/runtime/config.json` in production). The cell itself is
+    /// RETIRED: `round_duration.set` persists per-account to the SQLite
+    /// `account_settings` row (key `round.duration_sec`) and boot reads it
+    /// back from there — no production write or read path consults this
+    /// field any more. It survives only so the launcher wiring keeps
+    /// compiling; the file's one remaining live cell (the market-plugin
+    /// override) is written through the store seam
+    /// ([`crate::runtime_config`]).
     pub runtime_config_path: Option<String>,
     /// The `.env` file the launcher loads at start (`<cwd>/.env` in
-    /// production) — the write half of `market.credentials.set` upserts
-    /// validated credential keys HERE (the single persistent home for
-    /// UI-submitted credentials; the config.json cell is retired). `None`
-    /// disables the write path — the backtester and most in-process tests
-    /// run with `None`, and a `market.credentials.set` then refuses with
-    /// "persist is disabled" (the same posture as `runtime_config_path`).
-    /// The READ side never consults this field: the kernel's own environment
+    /// production) and loads into the process environment — a READ-only
+    /// boot source for the kernel (操作者裁决 2026-11-14): every runtime
+    /// write face persists through the SQLite store, and
+    /// `market.credentials.set` upserts into the store's encrypted
+    /// `kernel_meta` blobs, never this file. `None` keeps the process
+    /// environment as the only boot face — the backtester and most in-process
+    /// tests run with `None`. The READ side never consults this field: the
+    /// kernel's own environment
     /// already carries the launcher's `.env` load, so every predicate reads
     /// `std::env` directly.
     pub env_file_path: Option<String>,
@@ -135,25 +144,24 @@ pub struct CoreConfig {
     /// credential-bearing plugin is compiled in.
     pub credential_vars: BTreeMap<String, Vec<String>>,
     /// The account book's own legacy path (`user_layer/configs/accounts.toml`
-    /// in production; retired as a configuration source by issue 751/923 —
-    /// now the write-gate basis) — the write half of `account.venue.set`
-    /// refuses while a file exists at this path; the book is re-read from
-    /// the `.env` alone at the next boot. `None` disables the write
-    /// path: the backtester and most in-process tests run with `None`, and a
-    /// venue bind then refuses with "persistence is disabled" instead of
-    /// writing into whatever checkout the caller happens to run from (the
-    /// same posture as `runtime_config_path`, which this mirrors). The READ
-    /// half never consults this as a source — `Core::new` hands the path to
-    /// the loader (which probes it as residue and warns), tests inject a
-    /// book via [`Core::with_account_book`]; only tests that exercise the
-    /// persist round-trip set this to their own private file.
+    /// in production; retired as a configuration source by issue 751/923).
+    /// Since #1199 it is NOT a write gate either: the account write faces
+    /// gate on the store handle's presence (`db_path` — `None` = backtester /
+    /// most in-process tests, "persistence is disabled" refusal). The field
+    /// survives only so existing launcher wiring and tests compile unchanged;
+    /// no production write path reads it. The READ half never consults this
+    /// as a source — the loader receives the hardcoded
+    /// [`crate::account::config::ACCOUNTS_CONFIG_PATH`] residue probe instead
+    /// (it warns when the file exists and is ignored), and `Core::new` reads
+    /// the `.env` ACCOUNT_* keys alone.
     pub accounts_config_path: Option<String>,
     /// #458: where manual, destructive operations (`system.reset_trading`,
     /// and later `orders.force_close`) append their audit record. `None`
     /// (the backtester, most in-process tests) means a reset REFUSES rather
     /// than wipe records with no audit trail — the manual-ops line is the
     /// only trace a reset leaves. Production resolves this to
-    /// `data/audit/manual-ops.jsonl` in `main.rs`, like `runtime_config_path`.
+    /// `data/audit/manual-ops.jsonl` in `main.rs` (the launcher's cwd-relative
+    /// `data/` wiring).
     pub manual_ops_audit_path: Option<String>,
     /// #481/④: where the cross-venue mapping ledger persists
     /// (`data/runtime/unified-mapping.json` in production). `None` keeps the

@@ -209,8 +209,9 @@ pub struct SetSystemicLimitsParams {
     /// 熔断冷静期（分钟）：**下次会话生效** —— 与连亏熔断同一裁决。
     #[serde(default, with = "crate::decimal::opt")]
     pub cooldown_minutes: Option<Decimal>,
-    /// 单笔下单帽（USD）：账户级，与 `BK_RISK_MAX_ORDER_NOTIONAL_USD` 同一
-    /// `.env` 键，热载入立即生效，重启从 `.env` 恢复。取代进程级的
+    /// 单笔下单帽（USD）：账户级，落在 SQLite `account_risk` 行的同名金额
+    /// 字段（`StoreApi::save_risk_bounds`；`BK_RISK_MAX_ORDER_NOTIONAL_USD`
+    /// 只是重启导入时的读侧拼写），热载入立即生效，重启从库恢复。取代进程级的
     /// `--max-order-notional` CLI 标语（issue #983：风控跟随账户资本）。
     #[serde(default, with = "crate::decimal::opt")]
     pub max_order_notional_usd: Option<Decimal>,
@@ -259,12 +260,12 @@ pub struct SystemicLimitChange {
 
 /// `risk.setSystemic` result: the audited change list, in the
 /// `RiskLimitUpdate` shape. `persisted` is `true` when the durable carrier
-/// took the write — the SQLite `account_risk` row when the DB is open (the
-/// default since #1199 PR-2), the `.env` `BK_RISK_*` keys on the env-only
-/// backend — and `false` otherwise (no carrier wired — backtester, most
+/// took the write — the SQLite `account_risk` row (`StoreApi::save_risk_bounds`;
+/// the only backend since #1199 — the env-only backend was deleted) — and
+/// `false` otherwise (no carrier wired — backtester, most
 /// tests — or the write failed, which is logged with the path). The panel
 /// also receives `persistence: "store" | "none"` beside it, spelled by the
-/// write face: `"store"` = a durable carrier took it (carrier-neutral since
+/// write face: `"store"` = the durable carrier took it (carrier-neutral since
 /// #1199 PR-2 — the assembly decides which one), `"none"` = nothing landed
 /// durably.
 #[derive(Debug, Clone, Serialize)]

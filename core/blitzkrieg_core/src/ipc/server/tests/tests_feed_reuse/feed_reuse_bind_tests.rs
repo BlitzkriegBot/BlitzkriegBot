@@ -27,8 +27,7 @@ async fn a_consumer_only_bind_mounts_the_source_data_plane_once_and_never_the_co
     // reachable under the SOURCE's key.
     core.lock()
         .await
-        .subscribe_feed_tokens(&source, vec!["tok-a".to_string()])
-        .await;
+        .subscribe_feed_tokens(&source, vec!["tok-a".to_string()]);
     // (d) exactly one upstream feed mount for the reused stream. The
     // start log is a process-global shared cell (sibling tests add their
     // own entries concurrently) — read only THIS fixture's slice: the

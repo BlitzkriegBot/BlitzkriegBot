@@ -572,6 +572,10 @@ impl MarketHost for CoreHost {
         let plugin = plugin.to_string();
         Box::pin(async move {
             let c = self.core.lock().await;
+            // #182: every publish below is a SYNCHRONOUS `try_send` control.
+            // Nothing in this guard scope may suspend — a suspend point here
+            // would hold the process-wide Core lock across a feed's channel
+            // write, serialising every account's reads behind it.
             let configured = {
                 let plane = c.family_feed();
                 plane.venue_is_configured(&plugin)
@@ -581,14 +585,14 @@ impl MarketHost for CoreHost {
                 !plane.inspect().venues_with_accounts.is_empty()
             };
             if configured {
-                c.publish_family_feed_subscriptions(&plugin).await;
+                c.publish_family_feed_subscriptions(&plugin);
             } else if any_account {
                 // A venue with no configured account must not keep a connection.
-                c.subscribe_feed_tokens(&plugin, Vec::new()).await;
-                c.subscribe_placeholder_tokens(&plugin, Vec::new()).await;
+                c.subscribe_feed_tokens(&plugin, Vec::new());
+                c.subscribe_placeholder_tokens(&plugin, Vec::new());
             } else {
                 // Tests / hosts without the account plane: pass through.
-                c.subscribe_feed_tokens(&plugin, tokens).await;
+                c.subscribe_feed_tokens(&plugin, tokens);
             }
         })
     }

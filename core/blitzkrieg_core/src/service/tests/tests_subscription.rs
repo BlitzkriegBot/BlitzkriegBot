@@ -38,10 +38,8 @@ async fn subscription_controls_route_per_plugin() {
         std::sync::Arc::new(RecordingControl(kalshi_log.clone())),
     );
 
-    c.subscribe_feed_tokens("polymarket", vec!["poly-up".into(), "poly-down".into()])
-        .await;
-    c.subscribe_feed_tokens("kalshi", vec!["kalshi-up".into()])
-        .await;
+    c.subscribe_feed_tokens("polymarket", vec!["poly-up".into(), "poly-down".into()]);
+    c.subscribe_feed_tokens("kalshi", vec!["kalshi-up".into()]);
 
     assert_eq!(
         *poly_log.lock().unwrap(),
@@ -55,8 +53,7 @@ async fn subscription_controls_route_per_plugin() {
     );
 
     // A same-token replacement only touches the named control.
-    c.subscribe_feed_tokens("kalshi", vec!["kalshi-next".into()])
-        .await;
+    c.subscribe_feed_tokens("kalshi", vec!["kalshi-next".into()]);
     assert_eq!(
         poly_log.lock().unwrap().len(),
         1,
@@ -72,8 +69,7 @@ async fn subscription_controls_route_per_plugin() {
     );
 
     // An unknown plugin name is an inert no-op (no panic, no cross-talk).
-    c.subscribe_feed_tokens("predictfun", vec!["x".into()])
-        .await;
+    c.subscribe_feed_tokens("predictfun", vec!["x".into()]);
     assert_eq!(poly_log.lock().unwrap().len(), 1);
     assert_eq!(kalshi_log.lock().unwrap().len(), 2);
 }

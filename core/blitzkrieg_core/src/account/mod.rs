@@ -428,19 +428,6 @@ impl AccountLedgers {
         }
     }
 
-    /// Issue #43: wire one durable store carrier into EVERY account's ledger,
-    /// so each money fact lands in SQLite (kernel_meta) beyond the JSONL
-    /// journal. The store is cloned per ledger — `Box<dyn StoreApi>` isn't
-    /// `Clone`, `SqliteStore` is. Called from `Core::with_account_book` at
-    /// boot; a store-less core (backtester, in-process tests) never calls this
-    /// and every ledger stays memory-only.
-    #[allow(dead_code)]
-    pub(crate) fn set_store_on_all_ledgers(&mut self, store: &crate::store::SqliteStore) {
-        for ledger in self.ledgers.values_mut() {
-            ledger.set_store(Some(Arc::new(store.clone())));
-        }
-    }
-
     /// Wire the shared StoreApi into THIS book and every ledger it owns —
     /// runtime-created accounts (`insert`) take the store through `self.store`
     /// on the same path. Called once at core assembly; before it, every
@@ -1040,57 +1027,6 @@ impl AccountLedgers {
                         .unwrap_or_else(default_account_id)
                 });
         }
-    }
-
-    /// E28 Gate 2 (§9.1): the account's durable CONFIG posture must PERMIT this
-    /// order — only `Active` with `trading_enabled` places new entries; closes
-    /// pass every posture except `ReadOnly` (a freeze must never be the reason a
-    /// position is trapped — the kill-switch posture).
-    ///
-    /// This is the runtime half of Gate 2: `trading_enabled` / `status` are read
-    /// LIVE from the account book on every order, so `account.trading.set` and a
-    /// tightened `status` take effect without a restart. The other half is
-    /// [`crate::Core::account_gate_permits`] (runtime gates: Manual / DailyLoss /
-    /// VenueRejection / TradingDisabled / KillSwitch). Both are applied at every
-    /// entry path — `permits_order` (the old parallel second door) is retired:
-    /// config posture is now expressed as AccountGates at boot
-    /// ([`crate::Core::reconcile_config_gates`]) instead of a separate check.
-    ///
-    /// An unknown account is refused with the standard `unknown account` error,
-    /// never implicitly created (reverse acceptance C).
-    #[allow(dead_code)]
-    pub(crate) fn posture_permits(&self, id: &AccountId, is_close: bool) -> CoreResult<()> {
-        let Some(account) = self.accounts.get(id) else {
-            return Err(unknown_account(id));
-        };
-        let allowed = if is_close {
-            account.status.allows_closes()
-        } else {
-            account.trading_enabled && account.status.allows_entries()
-        };
-        if !allowed {
-            let why = if !account.trading_enabled && !is_close {
-                "trading-closed (开仓拒、平仓放行)".to_string()
-            } else {
-                account.status.to_string()
-            };
-            return Err(CoreError::new(
-                CoreErrorCode::AccountLimit,
-                format!("account `{id}` is {why} — refused at config Gate 2",),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Config-truth entry read (tests only since #1057): `unfreeze` writes the
-    /// config posture back to `.env` before clearing the gate and reports
-    /// `entries_allowed` from the gate alone, so production no longer consults
-    /// this. Removal is tracked under #1061 (single-point implementation).
-    #[allow(dead_code)]
-    pub(crate) fn entry_open(&self, id: &AccountId) -> bool {
-        self.accounts
-            .get(id)
-            .is_some_and(|a| a.trading_enabled && a.status.allows_entries())
     }
 }
 

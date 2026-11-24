@@ -710,28 +710,6 @@ impl Ledger {
     }
 }
 
-/// Market-agnostic reservation lifecycle (see `ledger_api`). The core pipeline
-/// can talk to this trait; prediction markets use the whole balance as the
-/// single collateral asset.
-impl crate::ledger_api::LedgerApi for Ledger {
-    fn reserve_for_order(&mut self, id: &str, amount: Decimal) -> CoreResult<()> {
-        self.reserve(id, amount)
-    }
-    fn release_reservation(&mut self, id: &str) -> Decimal {
-        self.release(id)
-    }
-    fn settle_reservation(&mut self, id: &str, filled_notional: Decimal) {
-        // Market-agnostic lifecycle: the caller states one number, so the
-        // reserved notional and the cash cost coincide (no price improvement
-        // information reaches this trait).
-        self.settle_buy_fill(id, filled_notional, filled_notional);
-    }
-    fn available_for(&self, _asset: &crate::ledger_api::Asset) -> Decimal {
-        // Single-collateral (USDC) model: the asset argument is informational.
-        self.available()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

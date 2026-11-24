@@ -4,8 +4,8 @@
 //! on-chain/REST reconciliation loop lands with P1.
 //!
 //! Every cash movement also lands in an append-only JOURNAL (the audit trail):
-//! one [`JournalEntry`] per change, `amount` = the actual signed delta
-//! (post-clamp), `balance_after` = the resulting balance. The balance itself is
+//! one [`JournalEntry`] per change, `amount` = the actual signed delta (negative
+//! when a debit outruns the cash on hand). The balance itself is
 //! still maintained incrementally — O(1), never a traversal — the journal is
 //! the trail that makes the number explainable and boot-replayable. The
 //! invariant the tests pin: `balance == Σ journal.amount` for a trail with
@@ -199,9 +199,18 @@ impl Ledger {
     }
 
     /// The ONE entry every balance change goes through. `requested` is the
-    /// arithmetic delta; the recorded `amount` is the ACTUAL delta after the
-    /// zero-floor clamp, so `Σ amounts == balance` stays exact even where a
-    /// fill costs more than the book holds.
+    /// arithmetic delta and the recorded `amount` is that same delta — there is
+    /// no floor left between them, so `Σ amounts == balance` holds for any
+    /// sequence, negative balances included.
+    ///
+    /// #178: cash is booked VERBATIM, including negative. A venue that reports
+    /// a negative balance (blown account, clawback, insolvent book) is stating
+    /// a fact about our money, and a floor in the ledger would replace that
+    /// fact with a friendlier one. The floor this function used to apply was
+    /// the ledger half of the `#969` / `5d75f58a` family: it made the book look
+    /// better than the venue said it was, always in the same direction. The
+    /// "never commit more than you have" constraint belongs to the BUDGET
+    /// ([`Self::available`]), not to the record of what happened.
     fn apply(&mut self, kind: JournalKind, requested: Decimal, ref_: &str) -> Decimal {
         self.apply_tagged(kind, requested, ref_, "")
     }
@@ -216,7 +225,7 @@ impl Ledger {
         ref_: &str,
         fee_source: &str,
     ) -> Decimal {
-        let new_balance = (self.balance + requested).max(Decimal::ZERO);
+        let new_balance = self.balance + requested;
         let amount = new_balance - self.balance;
         self.balance = new_balance;
         if kind == JournalKind::Seed && amount != Decimal::ZERO {
@@ -292,6 +301,12 @@ impl Ledger {
     }
 
     /// Collateral free to commit to new BUY orders.
+    ///
+    /// This is the BUDGET, and a budget cannot be negative — you cannot spend
+    /// more than nothing. #178 is the reason the floor lives HERE and nowhere
+    /// else: "never commit more than you have" is a constraint on the next
+    /// action, not on the record of the past. [`Self::balance`] is allowed to
+    /// be negative because a venue reporting a blown account is stating a fact.
     pub fn available(&self) -> Decimal {
         (self.balance - self.reserved()).max(Decimal::ZERO)
     }
@@ -329,10 +344,16 @@ impl Ledger {
 
     /// Realign the book to the venue's last report — kind = `Realign` when the
     /// number moved, a silent no-op when it did not (the periodic free-cash
-    /// sync would otherwise flood the trail with zero rows). Negative targets
-    /// clamp to zero, unchanged.
+    /// sync would otherwise flood the trail with zero rows).
+    ///
+    /// #178: a negative target is booked VERBATIM. Two decades of "a balance
+    /// can't be negative" is exactly the belief that hid a blown account: the
+    /// venue said −N and the book said 0, and the difference was absorbed by
+    /// nobody. The number is recorded as reported, the journal row carries the
+    /// true signed delta, and it is `available()` — the spending budget — that
+    /// stays non-negative.
     pub fn set_balance(&mut self, balance: Decimal) {
-        let target = balance.max(Decimal::ZERO);
+        let target = balance;
         self.apply(JournalKind::Realign, target - self.balance, "venue");
     }
 
@@ -429,17 +450,28 @@ impl Ledger {
         draw
     }
 
-    /// The cash identity `available + reserved == balance` (issue #181). It
-    /// fails exactly when reserved exceeds balance, i.e. when local commitments
-    /// no longer fit under the last venue-reported balance — which is also what
-    /// [`Ledger::unfunded_reserved`] measures.
+    /// Whether the reservation table is fully funded by the book: every live
+    /// BUY commitment fits under the cash the venue last reported.
+    ///
+    /// This used to be spelled `available() + reserved() == balance`, which is
+    /// the same predicate for a non-negative book but is NOT one for a negative
+    /// one: `available()` is floored at zero (a budget cannot be negative), so
+    /// a negative book could never satisfy the sum and the identity reported a
+    /// structural failure on an empty order book. #178 makes the definition
+    /// state what the check actually means — nothing over-committed — instead
+    /// of restating an arithmetic that only holds above zero.
     pub fn is_balanced(&self) -> bool {
-        self.available() + self.reserved() == self.balance
+        self.unfunded_reserved() == Decimal::ZERO
     }
 
     /// Reserved notional the local balance does not cover (zero when balanced).
+    ///
+    /// A negative book funds NOTHING: the fundable amount is `max(balance, 0)`,
+    /// not `balance`. Without that floor the subtraction goes the wrong way —
+    /// a −100 book with an empty reservation table would report 100 of unfunded
+    /// orders that do not exist.
     pub fn unfunded_reserved(&self) -> Decimal {
-        (self.reserved() - self.balance).max(Decimal::ZERO)
+        (self.reserved() - self.balance.max(Decimal::ZERO)).max(Decimal::ZERO)
     }
 
     /// Every live reservation, sorted by order id — the audit's view of what the
@@ -1094,24 +1126,101 @@ mod tests {
         assert_eq!(rows.len(), 10);
     }
 
-    /// Clamped fills still satisfy the identity because the row records the
-    /// ACTUAL delta (post-clamp), not the request: a fill that overdraws the
-    /// book journals what really moved.
+    /// A fill that overdraws the book is booked VERBATIM (#178). The row
+    /// records the full signed delta and `balance_after` goes negative, so
+    /// `Σ amounts == balance` still holds — the old zero-floor did not make
+    /// this test's identity hold, it just made the loss disappear one row at a
+    /// time while claiming the book had stopped at zero.
     #[test]
-    fn journal_amounts_are_post_clamp_actual_deltas() {
+    fn journal_amounts_are_verbatim_including_overdrafts() {
         let mut l = Ledger::new();
         l.seed(dec!(10));
-        // A fill costing 30 against a 10 balance: the book floors at zero and
-        // the row says −10, not −30.
+        // A fill costing 30 against a 10 balance: the book really goes to −20,
+        // and the row says −30, not the −10 a floor would have reported.
         l.settle_buy_fill("o1", dec!(30), Decimal::ZERO);
         let rows = l.journal_snapshot();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[1].amount, dec!(-10));
-        assert_eq!(rows[1].balance_after, Decimal::ZERO);
+        assert_eq!(rows[1].amount, dec!(-30));
+        assert_eq!(rows[1].balance_after, dec!(-20));
         assert_eq!(rows[1].kind, JournalKind::BuyFill);
         assert_eq!(rows[1].ref_, "o1", "the order id is the fill's ref");
         let sum = rows.iter().fold(Decimal::ZERO, |a, r| a + r.amount);
         assert_eq!(sum, l.balance());
+    }
+
+    /// #178 — the accusation this whole change answers: a venue that reports a
+    /// NEGATIVE balance (blown account, clawback, insolvent book) is stating a
+    /// fact about our money. The book must record that fact verbatim, and the
+    /// journal row must carry the true signed delta so the trail proves it.
+    ///
+    /// The pinning matters because the old clamp was invisible: it had no knob,
+    /// no log line and no test of its own — a `max(ZERO)` that silently turned
+    /// "the venue says −100" into "the book says 0", absorbing the difference
+    /// into nobody's ledger. `#969` / `5d75f58a` is the same error with a knob
+    /// on it.
+    #[test]
+    fn venue_negative_report_is_booked_verbatim() {
+        let mut l = Ledger::new();
+        l.seed(dec!(50));
+        assert_eq!(l.balance(), dec!(50));
+
+        l.apply_venue_report(dec!(-100));
+
+        assert_eq!(
+            l.balance(),
+            dec!(-100),
+            "the venue's number is the book's number — negative included"
+        );
+        let last = l.journal_snapshot().pop().expect("the realign row");
+        assert_eq!(last.kind, JournalKind::Realign);
+        assert_eq!(
+            last.amount,
+            dec!(-150),
+            "the row carries the true delta 50 → −100, not a clamp-shortened −50"
+        );
+        assert_eq!(last.balance_after, dec!(-100));
+        // The audit trail still explains the balance exactly.
+        let sum = l
+            .journal_snapshot()
+            .iter()
+            .fold(Decimal::ZERO, |a, r| a + r.amount);
+        assert_eq!(sum, l.balance(), "Σ rows == balance, negatives and all");
+    }
+
+    /// #178 — the split that makes the fix safe: the BALANCE may be negative
+    /// (it is a record), the BUDGET may not (it is a permission). The floor
+    /// belongs to `available()`, and it must still be there.
+    ///
+    /// This is the constraint the old clamp was serving. Moving it to the
+    /// budget keeps every downstream sizing path at "spend at most nothing"
+    /// without rewriting history to say the loss never happened.
+    #[test]
+    fn available_budget_never_negative_but_balance_can_be() {
+        let mut l = Ledger::new();
+        l.apply_venue_report(dec!(-100));
+
+        assert_eq!(l.balance(), dec!(-100), "the book tells the truth");
+        assert_eq!(
+            l.available(),
+            Decimal::ZERO,
+            "a budget is never negative — you cannot spend less than nothing"
+        );
+        assert!(
+            l.reserve("o1", dec!(1)).is_err(),
+            "a negative book refuses every new BUY, fails closed via the budget"
+        );
+        assert_eq!(l.reserved(), Decimal::ZERO, "the refused hold left none");
+        // No reservation exists, so nothing is over-committed — the audit must
+        // not invent an unfunded figure out of the negative balance.
+        assert_eq!(
+            l.unfunded_reserved(),
+            Decimal::ZERO,
+            "an empty order book on a negative account is not over-committed"
+        );
+        assert!(
+            l.is_balanced(),
+            "the ledger is internally consistent: nothing is reserved against nothing"
+        );
     }
 
     /// The durable file: every row appends through `jsonl::append`, and a

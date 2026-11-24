@@ -12,6 +12,12 @@
  * 操作员裁决 2026-11-08：账本流水=唯一真相，面板不再拿成交行的
  * 模型费净利去拼一个可能两头都不是的余额。
  *
+ * issue #179：**不再推导 `seed`**。`AccountView.seeded_total` 是「累计 Seed
+ * 入金」，不是期初权益 —— 净利是相对 `opening_equity` 度量的，两者不等时
+ * `seed + net` 在数学上就是错的；而 `AccountView` 至今没有 `equity` /
+ * `opening_equity` 字段。因此权益未知就是未知（`equity: null` → 显示「—」），
+ * 不许拿 seed 拼一个看起来合理的数（R7.1 L5）。
+ *
  * 返回 `null` 时表示没有账户行可读，调用方自行决定兜底（快照顶层
  * balance 或保持空态），绝不自行编造一个口径。
  */
@@ -24,20 +30,18 @@ export function useAccountBalance(
 ): BalanceView | null {
   if (!row) return null
 
-	  const cash = Number(row.balance)
-	  const seed = row.seededTotal !== undefined ? Number(row.seededTotal) || 0 : null
-	  // 净利按内核账本口径 SSOT（row.cumulativeNetPnl）读取，不再按
-	  // cash − seed 另算（那是导致 Live 下「净利 = 全部余额」的根因）。
-	  // 期初权益未知时 cumulativeNetPnl 为 null → 净利未知，向下游透传
-	  // null，显示「未知」，绝不回退到 cash − seed 或任何成交折叠。
-	  const net = row.cumulativeNetPnl ?? null
+  const cash = Number(row.balance)
+  // 净利按内核账本口径 SSOT（row.cumulativeNetPnl）读取，不再按
+  // cash − seed 另算（那是导致 Live 下「净利 = 全部余额」的根因）。
+  // 期初权益未知时 cumulativeNetPnl 为 null → 净利未知，向下游透传
+  // null，显示「未知」，绝不回退到 cash − seed 或任何成交折叠。
+  const net = row.cumulativeNetPnl ?? null
 
-	  return balanceView(
+  return balanceView(
     {
       balance: cash,
       reserved: Number(row.reserved) || 0,
       available: Number(row.available) || 0,
-      seed,
     },
     net,
     0,

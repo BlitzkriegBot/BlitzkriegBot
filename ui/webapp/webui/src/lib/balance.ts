@@ -1,16 +1,45 @@
 /**
- * The balance the panel presents.
+ * The balance the panel presents — a pass-through view of the account's own book.
  *
- * ## The accounting basis
+ * ## What the panel may compute, and what it may not
  *
- * **真实余额 = 本金 ＋ 净利润.** The principal is a fixed fact about the run; the
- * net profit is the closed-trade total *after* fees. Fees therefore enter this
- * figure the way a cost should — as an expense deducted from gross profit — and
- * nothing about a fee moves the principal itself. Making that the headline
- * matters: presenting the core's cash ledger as "the balance" reads as if a fee
- * had changed the principal, which is precisely what an expense must not do.
+ * The ledger is the cash truth (操作员裁决 2026-11-08：账本流水=唯一真相). The
+ * kernel already publishes the one net-profit number the panel is allowed to
+ * show: `cumulativeNetPnl` = `balance − opening_equity` (issue #1046/#1063,
+ * `schema/views.rs`: 「净利的 SSOT，面板不得再按 cash − seed 另算一套」).
+ * This module therefore **passes ledger fields through unchanged**:
  *
- * ## Why the core's cash ledger is not shown beside it in DRY
+ *   - `net`   ← `cumulativeNetPnl`, verbatim. Null = unknown = render 「—」.
+ *   - `cash` / `reserved` / `available` ← the account's own ledger, verbatim.
+ *
+ * ## Why `equity` is null instead of a computed number (issue #179)
+ *
+ * The panel used to compose `equity = seed + net`, where `seed` was
+ * `seededTotal` (累计 Seed 入金). That is not the equity identity: the kernel
+ * measures net profit against **`opening_equity`**, not against the cumulative
+ * seed total, so whenever the two differ the sum is simply a wrong number —
+ * arithmetically, not just philosophically. And `AccountView` carries **no
+ * `equity` and no `opening_equity` field at all** (only `seeded_total` +
+ * `cumulative_net_pnl`), so the panel cannot obtain the real equity either.
+ *
+ * R7.1 L5 forbids papering over that gap: the UI must not present a fallback
+ * figure as if it were data. `equity` is therefore `null` — the one honest
+ * value — and every consumer renders 「—」 until the backend ships the field
+ * (tracked separately as the `equity` / `opening_equity` addition to
+ * `AccountView`). This module will pass those fields through when they exist;
+ * it must never re-derive them.
+ *
+ * ## `gross` — trade-fold basis, deliberately kept
+ *
+ * `gross = net + fees` adds two figures that both genuinely exist on the wire
+ * (`cumulativeNetPnl` and the folded fee total). Fees are an expense already
+ * deducted from net, so adding them back recovers the pre-cost figure — that is
+ * a definition, not a fabricated balance. It is **not** a ledger number and is
+ * never displayed as one: callers label it 「成交记录口径」. The moment the
+ * backend publishes `gross_pnl`, this arithmetic is deleted in favour of the
+ * field (see issue #179).
+ *
+ * ## Why the core's cash ledger is never presented as equity
  *
  * The core's `Ledger` is a real control — `reserve()` refuses a BUY whose
  * notional exceeds available collateral — and LIVE seeds it from the venue
@@ -22,50 +51,35 @@
  *
  * Measured on this book (2026-09-16): cash 1002.06 while the log's all-time net
  * was 48.21, so the −46.15 difference was nothing more than the profit earned
- * before the boot. Comparing the two thus produced a discrepancy the panel had
- * to explain on every page, about a quantity carrying no information the log
- * does not already have — and whose sign flips with the pre-boot history.
- *
- * So the panel drops the comparison in DRY and keeps the cash ledger where it is
- * the answer rather than a footnote: LIVE, where the venue balance is the only
- * figure that exists because the core reports no principal there.
- *
- * A missing principal is not drift: without 本金 there is no equity, so the panel
- * falls back to the cash ledger and labels it as such instead of treating the
- * absent principal as zero and reporting the whole balance as an error.
+ * before the boot. Printing that cash figure under an equity label would have
+ * reported the session's seed plus this run's fills as the account's worth.
  */
 import type { Snapshot } from '@/api/client'
+import { money } from './format.ts'
 
 export interface BalanceView {
-  /** Starting principal, or null when the core did not report one (LIVE, old core). */
-  seed: number | null
-  /** Realized net profit over the deduped closed-trade rows — already after fees.
-   * Null when the core reported no principal/opening equity (LIVE before the
-   * first venue equity): render 「未知」, never fold to a number. */
+  /**
+   * Cumulative net profit, ledger basis (`cumulativeNetPnl` — the SSOT).
+   * Null when the core did not report it (opening equity unknown): render
+   * 「—」, never fold a trade sum in its place.
+   */
   net: number | null
   /** Total fees paid, an expense. Already deducted from `net`, never added to it. */
   fees: number
-  /** Realized gross profit: `net + fees`. The figure fees are a cost *against*.
-   * Null when `net` is null. */
+  /**
+   * Pre-cost profit on the **trade-fold** basis: `net + fees`. Null when `net`
+   * is null. Not a ledger figure, and never rendered as a balance.
+   */
   gross: number | null
   /**
-   * 本金 ＋ 净利润 — the DRY headline. Null when the core reported no principal
-   * (LIVE, or a core older than the field), which is when `cash` takes over.
+   * Account equity — **always null today**: `AccountView` carries neither
+   * `equity` nor `opening_equity`, and `seed + net` is not the equity identity
+   * (net is measured against `opening_equity`, not `seededTotal`). Consumers
+   * must render 「—」. The field survives so the shape is stable for the
+   * backend addition (#181) — at which point it is passed through verbatim.
    */
   equity: number | null
-  /**
-   * True when the 本金 ＋ 净利 identity does NOT reproduce the cash ledger
-   * (|cash − (seed + net)| beyond rounding): the account's ledger was reset
-   * or seeded out-of-band while the trade log kept older rows, so the fold's
-   * net describes a previous era's cash. 2026-11-08 live find: default's
-   * ledger reset to a fresh $1,000 seed while its 36 pre-reset trades
-   * (net −$3.08) stayed in the log — the tile composed $996.92, a number
-   * that was neither the real cash nor the fold. When this flag is set the
-   * panel shows the LEDGER cash as the headline and labels the net/fees as
-   * 全史累计 instead of composing the equation.
-   */
-  identityBroken: boolean
-  /** The core's cash ledger, gross of local reservations. The LIVE headline. */
+  /** The core's cash ledger, gross of local reservations. Never a stand-in for `equity`. */
   cash: number
   /** Cash tied up in resting buy orders. */
   reserved: number
@@ -81,20 +95,32 @@ export function balanceView(
   const cash = Number(balance?.balance ?? 0)
   const reserved = Number(balance?.reserved ?? 0)
   const available = Number(balance?.available ?? 0)
-  const seed = balance?.seed === null || balance?.seed === undefined ? null : Number(balance.seed)
   const realized = net === null || net === undefined ? null : Number(net) || 0
   const paidFees = Number(fees) || 0
 
   return {
-    seed,
     net: realized,
     fees: paidFees,
+    // Two real inputs on the trade-fold basis (fees are an expense already
+    // deducted from net); explicitly labelled 成交口径 wherever it is rendered.
     gross: realized === null ? null : realized + paidFees,
-    equity: seed === null || realized === null ? null : seed + realized,
-    identityBroken:
-      seed !== null && realized !== null && Math.abs(cash - (seed + realized)) > 0.005,
+    // No equity on the wire → no equity to show. See the header: composing
+    // `seed + net` is the wrong identity (issue #179, R7.1 L5).
+    equity: null,
     cash,
     reserved,
     available,
   }
+}
+
+/**
+ * The equity headline, in one place so both the overview tile and the market
+ * page's stat row render the same thing.
+ *
+ * `equity === null` means **unknown**, and unknown renders 「—」 — never the
+ * cash ledger under an equity label (issue #179, R7.1 L5). Centralised because
+ * the previous two call sites each carried their own `: money(cash)` fallback.
+ */
+export function equityHeadline(equity: number | null): string {
+  return equity === null ? '—' : money(equity)
 }

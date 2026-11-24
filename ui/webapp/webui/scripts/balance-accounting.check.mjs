@@ -2,24 +2,34 @@
  * Regression check for the panel's balance accounting (`src/lib/balance.ts`,
  * `src/lib/trades.ts`).
  *
- * `balance.ts` is what turned "模拟余额 1070 with 净利润 40" from a
- * contradiction into an explained number. The properties pinned here:
+ * The properties pinned here:
  *
- *   - the headline balance is 本金 ＋ 净利润, so a fee can never move the
- *     principal — it is an expense already deducted from net profit;
+ *   - the view **passes ledger fields through**: `net` is the core's
+ *     `cumulativeNetPnl` (the SSOT) and the cash ledger is reported as `cash` —
+ *     never recomposed into a different figure;
+ *   - there is **no equity arithmetic**. `AccountView` carries neither `equity`
+ *     nor `opening_equity`, and `seeded_total` is 累计 Seed 入金 rather than the
+ *     期初权益 that net profit is measured against, so `seed + net` was simply
+ *     a wrong sum; `equity` is therefore always null (#179, R7.1 L5);
  *   - fees are reported as a cost, and gross profit is `net + fees` — the figure
- *     the cost is charged against;
- *   - the core's cash ledger is never the DRY headline, however far it diverges:
- *     it reseeds from the principal every boot and moves only on that run's
- *     fills, so it is 本金 ＋ 本次会话净利 — a strict subset of what the trade log
- *     already records. The panel shows it only where it is the only figure that
- *     exists, i.e. when the core reports no principal;
- *   - an unknown principal yields NO equity, so a core that does not report its
- *     seed is never accused of drifting against a principal of zero;
+ *     the cost is charged against, on the trade-fold basis;
  *   - closed-trade rows collapse only when they describe the SAME trade: `hft-N`
  *     is a per-boot counter, so 267 distinct trades can carry 240 ids and keying
  *     the dedupe on the id silently deletes real trades from every row-derived
  *     aggregate (the equity curve ended $9.24 short of the summary above it);
+ *
+ * Retired by #179 (kept here as a record, not as live assertions):
+ *
+ *   - 「the headline is 本金 ＋ 净利润, not the core cash ledger」 — the premise
+ *     was that seed was an opening equity. It is not, so the composed headline
+ *     was a number the kernel never published.
+ *   - 「a reset ledger is flagged identityBroken」 — the flag policed
+ *     `cash == seed + net`, which does not hold whenever
+ *     `opening_equity ≠ seeded_total`; `polysimulator`'s $2.31 gap was the same
+ *     defect. Both the flag and the equation behind it are gone.
+ *   - 「an unknown principal yields no equity」 — superseded: equity is null
+ *     unconditionally, and that invariant is pinned by `check:money`
+ *     (`frontend-money-ssot.check.mjs`) for every seed/net combination.
  *
  *   cd ui/webapp/webui && npm run check:balance
  */
@@ -41,89 +51,52 @@ const { dedupeTrades, tradeIdentity } = await import('../src/lib/trades.ts')
 
 const balance = (over) => ({ balance: 0, reserved: 0, available: 0, seed: null, ...over })
 
-console.log('balance basis — 本金 ＋ 净利润')
+console.log('balance basis — ledger fields pass through, no equity arithmetic')
 
-check('the headline is 本金 ＋ 净利润, not the core cash ledger', () => {
-  // The case that started this: cash 1073.29, principal 1000, net 39.44. The
-  // balance shown is 1039.44; cash is a separate figure, not the balance.
+check('net is the core ledger SSOT, passed through untouched', () => {
+  // cash 1073.29, seed 1000, net 39.44 — the figure the kernel published. The
+  // panel reports it as-is; it does not re-derive it from cash − seed (which is
+  // what produced "净利 = 全部余额" on LIVE once the seed was missing).
   const v = balanceView(balance({ balance: 1073.29, available: 1073.29, seed: 1000 }), 39.44, 34.96)
-  assert.equal(Number(v.equity.toFixed(2)), 1039.44)
-  assert.equal(v.cash, 1073.29)
-  assert.notEqual(v.equity, v.cash, 'an unexplained cash surplus is not the balance')
+  assert.equal(v.net, 39.44)
+  assert.equal(v.cash, 1073.29, 'the ledger cash is reported as cash, nothing else')
 })
 
-check('the headline is unmoved by a diverging cash ledger', () => {
-  // The book as measured on 2026-09-16 23:35: seed 1000, core cash 1002.06 (the
-  // ledger had been reseeded at that boot and covered only that run), all-time
-  // net 48.21. The DRY headline is 1048.21 and must stay exactly that: the
-  // ledger's value never enters it, and the panel no longer prints the ledger
-  // beside it — the difference against the log is 本次启动前净利, which the trade
-  // history already shows in full.
+check('the cash ledger is never promoted to equity', () => {
+  // Measured on 2026-09-16: seed 1000, core cash 1002.06 (the ledger had been
+  // reseeded at that boot and covered only that run), all-time net 48.21. The
+  // cash figure is 本金 ＋ 本次会话净利 — a strict subset of the trade log — so
+  // printing it under an equity label reported the wrong amount.
   const v = balanceView(balance({ balance: 1002.06, available: 1002.06, seed: 1000 }), 48.21, 38.69)
-  assert.equal(Number(v.equity.toFixed(2)), 1048.21)
+  assert.equal(v.equity, null, 'no equity on the wire → 「—」, never the cash figure')
   assert.equal(Number(v.cash.toFixed(2)), 1002.06)
-  assert.equal(v.cashGap, undefined, 'no reconciliation against the equity is computed anymore')
+  assert.equal(Number(v.net.toFixed(2)), 48.21)
 })
 
-check('equity is the principal plus the net, whatever the ledger says', () => {
-  // The same trade with wildly different cash figures: the equity is untouched,
-  // which is the point — a basis difference cannot move the balance.
+check('equity is null however the ledger moves', () => {
+  // A different ledger cannot change an equity the panel does not have.
   const a = balanceView(balance({ balance: 1039.44, available: 1039.44, seed: 1000 }), 39.44, 0)
   const b = balanceView(balance({ balance: 900, available: 900, seed: 1000 }), 39.44, 0)
-  assert.equal(a.equity, b.equity, 'a different cash ledger is not a different balance')
-  assert.equal(Number(a.equity.toFixed(2)), 1039.44)
-})
-
-check('a reset ledger is flagged identityBroken — the tile stops composing the equation', () => {
-  // 2026-11-08 live find: default's ledger was reset to a fresh $1,000 seed
-  // while its 36 pre-reset trades (net −$3.08) stayed in the log; seed+net
-  // composed $996.92 — a number that was NEITHER the real cash ($1,000) nor
-  // the fold (−$3.08). polysimulator grew the same gap ($2.31) once the fee
-  // cash-truth (#995) desynced the ledger's fee movements from the rows'
-  // model fees. balanceView flags the broken identity so the tile shows the
-  // LEDGER cash and labels the net/fees 全史累计 instead of composing.
-  const broken = balanceView(balance({ balance: 1000, available: 1000, seed: 1000 }), -3.08, 1.86)
-  assert.equal(broken.identityBroken, true, 'cash ≠ seed+net beyond rounding → the equation is dead')
-  assert.equal(broken.equity, 996.92, 'the composed figure still computes — the TILE chooses the ledger')
-  assert.equal(broken.cash, 1000, 'the ledger figure the tile falls back to')
-  // Within rounding (cents) the identity holds and nothing changes.
-  const ok = balanceView(balance({ balance: 1039.44, available: 1039.44, seed: 1000 }), 39.44, 0)
-  assert.equal(ok.identityBroken, false, 'a cent-rounding gap is not a broken identity')
-  // No principal: the identity question does not arise (the LIVE headline is cash anyway).
-  const live = balanceView(balance({ balance: 1073.29, available: 1073.29, seed: null }), 39.44, 34.96)
-  assert.equal(live.identityBroken, false, 'no seed → no equation to break')
+  assert.equal(a.equity, null)
+  assert.equal(b.equity, null)
 })
 
 check('a fee is an expense: it reduces net profit, never the principal', () => {
-  // Same trade with and without fees. The principal is untouched; the net profit
-  // absorbs the cost; gross is the pre-cost figure fees are charged against.
+  // Same trade with and without fees. The net profit absorbs the cost; gross is
+  // the pre-cost figure fees are charged against (trade-fold basis, not ledger).
   const withFees = balanceView(balance({ balance: 1039.44, available: 1039.44, seed: 1000 }), 39.44, 34.96)
-  assert.equal(withFees.seed, 1000, 'fees do not move the principal')
   assert.equal(Number(withFees.gross.toFixed(2)), 74.40, 'gross = net + fees')
   assert.equal(Number(withFees.net.toFixed(2)), 39.44, 'net is already after fees')
   assert.ok(withFees.gross > withFees.net, 'the expense is deducted from gross, not added')
 })
 
-check('reserved cash is reported, never folded into the equity', () => {
+check('reserved cash is reported, never folded into anything', () => {
   // 1050 cash with 10.56 tied up in resting buys is 1039.44 of free cash. The
-  // reservation is surfaced on its own for LIVE; it is not profit either way.
+  // reservation is surfaced on its own; it is not profit and not equity.
   const v = balanceView(balance({ balance: 1050, reserved: 10.56, available: 1039.44, seed: 1000 }), 39.44, 0)
   assert.equal(v.reserved, 10.56)
   assert.equal(v.available, 1039.44)
-  assert.equal(Number(v.equity.toFixed(2)), 1039.44, 'a reservation is not profit')
-})
-
-check('an unknown principal yields no equity, not a fabricated one', () => {
-  // LIVE, or a core older than the `seed` field. Treating the missing principal
-  // as 0 would report the whole balance as a drift against a principal of zero,
-  // which is why `equity` is null rather than the cash figure.
-  const v = balanceView(balance({ balance: 1073.29, available: 1073.29, seed: null }), 39.44, 34.96)
-  assert.equal(v.seed, null)
   assert.equal(v.equity, null)
-  // The cash ledger and the cost are still known and still reported — this is
-  // the case where the ledger is the figure the panel shows.
-  assert.equal(v.cash, 1073.29)
-  assert.equal(Number(v.gross.toFixed(2)), 74.40)
 })
 
 check('a missing balance object degrades to zeros, not NaN', () => {
@@ -133,11 +106,11 @@ check('a missing balance object degrades to zeros, not NaN', () => {
   assert.ok(Number.isFinite(v.gross), 'gross must stay a number')
 })
 
-check('a loss keeps its sign through equity and net', () => {
+check('a loss keeps its sign through net (equity stays unknown)', () => {
   const v = balanceView(balance({ balance: 900, available: 900, seed: 1000 }), -50, 0)
-  assert.equal(Number(v.equity.toFixed(6)), 950)
-  assert.equal(Number(v.net.toFixed(6)), -50)
-  assert.ok(v.equity < v.seed, 'a loss lands below the principal')
+  assert.equal(v.net, -50)
+  assert.equal(v.equity, null, 'a loss does not make an unavailable equity computable')
+  assert.equal(Number(v.cash.toFixed(6)), 900)
 })
 
 console.log('\nclosed-trade dedupe')

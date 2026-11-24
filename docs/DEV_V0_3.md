@@ -2278,7 +2278,7 @@ end
   "api": "1.0",
   "entry": "strategy.lua",
   "sha256": "PLACEHOLDER_REPLACE_WITH_SHA256_OF_strategy.lua",
-  "author": "ceer-quant",
+  "author": "BlitzkriegBot",
   "description": "Lua 5.4 reference strategy: mid-price momentum band entry on binary outcome wheels.",
   "tunables": {
     "band_lo":    { "type": "decimal", "default": "0.35" },

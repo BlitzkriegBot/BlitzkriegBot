@@ -274,7 +274,7 @@ mutator，#825 起该 feature 不再在 default 里——release 构建照旧走
 
 ## 许可证
 
-[MIT](./LICENSE) © 2026 BlitzkriegBot contributors (ceer-quant)。欢迎贡献：请先读 [`CONTRIBUTING.md`](./CONTRIBUTING.md)。
+[MIT](./LICENSE) © 2026 BlitzkriegBot contributors (BlitzkriegBot)。欢迎贡献：请先读 [`CONTRIBUTING.md`](./CONTRIBUTING.md)。
 
 ---
 

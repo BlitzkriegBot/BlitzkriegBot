@@ -713,7 +713,7 @@ Format: [Keep a Changelog](https://keepachangelog.com); versioning: semver.
 
 ### Changed
 
-- License copyright line moves to `BlitzkriegBot contributors (ceer-quant)`.
+- License copyright line moves to `BlitzkriegBot contributors (BlitzkriegBot)`.
 - `docs/` reorganized: Rust system documentation stays public
   (`docs/`, `docs/rust-core/`); internal development working documents move
   to `dev-docs/` (not published).

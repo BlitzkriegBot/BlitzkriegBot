@@ -35,6 +35,12 @@ pub mod cli;
 /// needed the market seam, consumed by service-side handshake sites.
 pub mod compat;
 pub mod config;
+/// v0.4.3 architecture contracts, frozen (Gitea #190 / T0).
+///
+/// Definition-only: traits/structs/enums plus docs — no call sites, no
+/// behaviour change. Each contract names the defect it abolishes and the task
+/// that consumes it; wiring lands in T1–T11 after operator approval.
+pub mod contracts;
 pub mod data_lock;
 pub mod data_source;
 /// #1189: SQLite persistence — credential encryption (AES-256-GCM, one random

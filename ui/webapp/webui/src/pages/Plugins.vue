@@ -165,7 +165,7 @@ const segments = computed(() => [
       </CardHeader>
       <!-- 绑定即启用（2026-10-16 裁决）：注册表是状态视图，启停写动词已移交。
            每张插件卡都带这行说明，操作员不会在这里找不存在的开关。 -->
-      <p class="px-3 pt-2.5 text-[12px] text-muted-fg">
+      <p class="mb-3 text-[12px] text-muted-fg">
         插件启用由账户绑定派生：在账户切换器里给账户绑定交易所即启用对应插件（绑定即启用）。
       </p>
       <div class="-mx-2 overflow-x-auto">

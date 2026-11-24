@@ -344,13 +344,19 @@ onMounted(() => void loadRisk())
       </div>
 
       <!-- issue 393 (①): 账户生效执行参数（可编辑）插进来 —— 有运行时写路径的
-           风控参数与系统限额同卡呈现，各归各位（插槽内容来自编排壳）。 -->
+           风控参数与系统限额同卡呈现，各归各位（插槽内容来自编排壳）。
+           参数与规则同属 execution_policy 的【一个账户段】，由底部唯一的保存按钮
+           整段提交 —— 拆成两个按钮时，各自只发半段，内核按「缺省即清扫」把另一半
+           抹掉（2026-11-24 修复：两个保存按钮互相排斥）。 -->
       <slot name="params" />
+
+      <!-- 执行策略规则：与上方参数同一个账户段，共用同一个保存按钮。 -->
+      <slot name="rules" />
 
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <Button
           size="sm" :disabled="riskSaving || riskBusy"
-          title="把本卡三部分（账户级限额 / 退出纪律 / 账户生效参数）一次性提交给内核"
+          title="把本卡全部内容（账户级限额 / 退出纪律 / 账户生效参数 / 执行策略规则）一次性提交给内核"
           @click="$emit('save-all')"
         >
           <Save class="size-3.5" />{{ riskSaving ? '保存中…' : '保存' }}

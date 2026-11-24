@@ -1,20 +1,21 @@
 <script setup lang="ts">
 /**
- * 设置 · 风控与策略 —— 生效风控域的编排壳（参数化补全后的结构）。
+ * 设置 · 风控与策略 —— 生效风控域的编排壳（单卡单保存）。
  *
- * 三个部分，一个数据源：
+ * 四个部分，一个数据源，一张卡，一个保存按钮：
  *   1. 生效风控读数（SettingsRiskLimits）—— 九项系统限额 + 退出纪律，boot
  *      快照，改配置需重启，无运行时写路径（E26 设计如此），保持只读；
  *   2. 账户生效参数 —— budgetRatio/min/max/minEquity/maxPositionsPerAsset，
  *      经由 SettingsRiskLimits 卡的 #params 插槽就地可编辑；
- *   3. 执行策略规则（SettingsExecutionPolicy 的 #rules 插槽）—— 规则编辑器、
- *      预览与审计流水。
+ *   3. 执行策略规则 —— 规则编辑器、预览与审计流水，走同一个卡的 #rules 插槽；
+ *   4. 底部唯一的保存按钮 → 一次提交。
  *
- * 为什么壳持有全部状态：`execution_policy.set` 写的是【整个账户段】——
- * 参数与规则同段落盘（内核把段整体替换，漏写 rules 就等于清空规则）。
- * 参数在风控卡编辑、规则在规则卡编辑，但缓冲区只有一份、保存只有一个，
- * 两半永远不可能互相覆盖。写路径仍是 `execution_policy.set`（内核验证→
- * 落盘→重读→落审计后才应答），不新增任何旁路。
+ * 为什么必须只有一个保存按钮：`execution_policy.set` 写的是【整个账户段】——
+ * 六个键是该段的全部足迹，**缺省字段被清扫**（内核 section_env_state 的
+ * TOML 段替换语义）。历史上参数与规则分成两个按钮、各自只发半段，于是
+ * 保存参数会把规则清空、保存规则会把参数清空（2026-11-24 操作者实报）。
+ * 现在两半共用一份缓冲、一个动作，永远不可能互相覆盖。写路径仍是
+ * `execution_policy.set`（内核验证→落盘→重读→落审计后才应答），不新增任何旁路。
  */
 import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
@@ -34,7 +35,6 @@ import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
 import SettingsRiskLimits from './SettingsRiskLimits.vue'
-import SettingsExecutionPolicy from './SettingsExecutionPolicy.vue'
 import PolicyRulesEditor from './PolicyRulesEditor.vue'
 
 const store = usePanelStore()
@@ -200,6 +200,9 @@ function resetToDefaultsLocal(): void {
 }
 
 // ── 保存 / 回滚 ──
+/** `execution_policy.set` 发的是【整个账户段】：六个键缺任何一个都会被内核
+ *  当成「该字段应被清扫」。所以这里一律把缓冲里的六项全量发出（含空串 →
+ *  undefined 只在真的没有值时），绝不发半段。 */
 function buildSetParams(): ExecutionPolicySetParams {
   const params: ExecutionPolicySetParams = { accountId: policyAccountId.value }
   if (editBudgetRatio.value) params.budgetRatio = editBudgetRatio.value
@@ -208,16 +211,15 @@ function buildSetParams(): ExecutionPolicySetParams {
   if (editMinEquityUsd.value) params.minEquityUsd = editMinEquityUsd.value
   const maxPos = Number(editMaxPositionsPerAsset.value)
   if (Number.isInteger(maxPos) && maxPos > 0) params.maxPositionsPerAsset = maxPos
+  // 规则永远随段提交：段替换语义下漏发 rules 等于清空规则。
+  params.rules = editRules.value
   return params
 }
 
-function buildRuleSetParams(): ExecutionPolicySetParams {
-  return { accountId: policyAccountId.value, rules: editRules.value }
-}
-
-/** 保存 = 把表单内全部字段（限额 + 退出纪律 + 生效参数）一次性写入内核。
- *  成功不弹回执（页面本身就是内核确认过的状态）；只有「没改动」和非法输入
- *  这类需要操作者知道的结论走 warn 横幅。 */
+/** 保存 = 把本卡全部内容一次性写入内核：系统限额、退出纪律、账户生效参数、
+ *  执行策略规则。参数与规则同属一个账户段，必须同一次 set 提交 —— 分成两次
+ *  会互相清扫（段替换语义）。成功不弹回执（页面本身就是内核确认过的状态）；
+ *  只有「没改动」和非法输入这类需要操作者知道的结论走 warn 横幅。 */
 async function saveAll(): Promise<void> {
   policySaving.value = true
   policyErr.value = null
@@ -237,15 +239,24 @@ async function saveAll(): Promise<void> {
       policyErr.value = exitPatch
       return
     }
-    // 3. 收集 execution_policy 参数（来自本组件编辑缓冲）
+    // 3. 收集 execution_policy 整段（六项参数 + 规则）
     const policyParams = buildSetParams()
     const keys = Object.keys(limitsPatch ?? {})
     const exitKeys = Object.keys(exitPatch ?? {})
-    if (keys.length === 0 && exitKeys.length === 0 && !policyParams.budgetRatio && !policyParams.minBudgetUsd && !policyParams.maxBudgetUsd && !policyParams.minEquityUsd && !policyParams.maxPositionsPerAsset) {
-      policyErr.value = '没有改动 —— 六项系统限额、退出纪律与执行参数都与内核当前生效值一致。'
+    if (
+      keys.length === 0 &&
+      exitKeys.length === 0 &&
+      !policyParams.budgetRatio &&
+      !policyParams.minBudgetUsd &&
+      !policyParams.maxBudgetUsd &&
+      !policyParams.minEquityUsd &&
+      !policyParams.maxPositionsPerAsset &&
+      !editDirty.value
+    ) {
+      policyErr.value = '没有改动 —— 六项系统限额、退出纪律、执行参数与规则都与内核当前生效值一致。'
       return
     }
-    // 4. 一次性写入：系统限额、退出纪律、执行参数
+    // 4. 一次性写入：系统限额、退出纪律、执行策略整段（参数 + 规则）
     if (keys.length > 0) {
       const res = await api.riskSetSystemic({ ...limitsPatch, reason: 'webui 面板编辑（生效风控卡）' })
       if (res.error) throw new Error(res.error)
@@ -268,22 +279,8 @@ async function saveAll(): Promise<void> {
   }
 }
 
-async function saveRules(): Promise<void> {
-  policySaving.value = true
-  policyErr.value = null
-  try {
-    const res = await api.executionPolicySet(buildRuleSetParams())
-    if (res.error) throw new Error(res.error)
-    editDirty.value = false
-    await loadPolicy()
-  } catch (e) {
-    policyErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    policySaving.value = false
-  }
-}
-
-/** 回滚 = 取该账户最近一次 set 的 before 状态写回（版本号 = 审计记录数）。 */
+/** 回滚 = 取该账户最近一次 set 的 before 状态整段写回（版本号 = 审计记录数）。
+ *  before 是完整段快照，所以回滚本身也是整段提交，不会清扫任何字段。 */
 const policyVersion = computed(() => policyHistory.value.length)
 async function rollbackPolicy(): Promise<void> {
   const lastSet = [...policyHistory.value]
@@ -322,7 +319,7 @@ async function rollbackPolicy(): Promise<void> {
       {{ policyErr }}
     </AlertBanner>
 
-    <!-- 账户 chips：defaults + 各账户 —— 一行选择，两张卡（参数/规则）同源。 -->
+    <!-- 账户 chips：defaults + 各账户 —— 一行选择，一张卡承载本账户的全部可写面。 -->
     <div class="mb-3.5 flex flex-wrap items-center gap-1.5">
       <button
         v-for="chip in policyChips"
@@ -424,14 +421,16 @@ async function rollbackPolicy(): Promise<void> {
       </div>
     </Card>
 
-    <!-- 生效风控读数（只读，boot 快照）+ 就地可编辑的账户生效参数（#params）。 -->
+    <!-- 生效风控：一张卡承载本账户的全部可写面 —— 系统限额 / 退出纪律 /
+         账户生效参数（#params）/ 执行策略规则（#rules），底部一个保存按钮。
+         参数与规则同属 execution_policy 的一个账户段，必须一次整段提交。 -->
     <SettingsRiskLimits ref="limitsRef" @save-all="saveAll">
       <template #params>
         <div v-if="policySection" class="mt-3 border-t border-line pt-3">
           <div class="label-micro">账户生效参数</div>
           <p class="mt-1 text-[11px] leading-snug text-faint-fg">
             下单前内核按这组基础参数给每一单定预算、设门槛 —— 与下方规则同属一个账户段，
-            一并保存（内核验证→落盘→重读→落审计后才应答）。
+            与规则一起由底部「保存」整段提交（内核验证→落盘→重读→落审计后才应答）。
           </p>
           <div class="mt-2 grid gap-2 sm:grid-cols-2">
             <label class="block">
@@ -464,19 +463,15 @@ async function rollbackPolicy(): Promise<void> {
           读不到策略视图 —— 这个内核可能不认识 execution_policy。
         </AlertBanner>
       </template>
-    </SettingsRiskLimits>
 
-    <!-- 执行策略规则：编辑器（列表 + 构建器 + 预览 + 保存条）——同一个账户段
-         的另一半 —— 规则卡只管规则，保存只写 rules；账户生效参数由上方风控卡的「保存」一并保存。 -->
-    <SettingsExecutionPolicy
-      class="mt-3.5"
-      :version="policyVersion"
-      :busy="policyBusy"
-      :saving="policySaving"
-      @save="saveRules"
-    >
+      <!-- 执行策略规则：与上方参数同一个账户段，共用底部唯一的保存按钮。 -->
       <template #rules>
-        <div v-if="policySection" class="mt-4">
+        <div v-if="policySection" class="mt-3 border-t border-line pt-3">
+          <div class="label-micro">执行策略规则</div>
+          <p class="mt-1 text-[11px] leading-snug text-faint-fg">
+            下单前内核按「基础参数 → 规则（priority 升序，取第一个命中）」裁决每一单：
+            放行 / 跳过 / 冷静期。生效视图由内核折叠后下发，浏览器不读配置文件。
+          </p>
           <PolicyRulesEditor
             v-model="editRules"
             :preview="policyPreview"
@@ -484,13 +479,12 @@ async function rollbackPolicy(): Promise<void> {
             :busy="policyBusy"
             :saving="policySaving"
             @touch="editDirty = true"
-            @save="saveRules"
             @rollback="rollbackPolicy"
             @invalid="policyErr = $event"
           />
           <span v-if="editDirty" class="sr-only">有未保存的修改</span>
         </div>
       </template>
-    </SettingsExecutionPolicy>
+    </SettingsRiskLimits>
   </div>
 </template>

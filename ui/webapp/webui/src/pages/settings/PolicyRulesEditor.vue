@@ -7,7 +7,7 @@
  */
 import { ref } from 'vue'
 import type { ExecutionPolicyPreviewDoc, PolicyRuleView, PolicyThenView } from '@/api/client'
-import { Plus, RotateCcw, Save } from 'lucide-vue-next'
+import { Plus, RotateCcw } from 'lucide-vue-next'
 import { dateTime } from '@/lib/format'
 import { clonePlain } from '@/lib/clone-plain'
 import Badge from '@/components/ui/badge/Badge.vue'
@@ -27,7 +27,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   touch: []
-  save: []
   rollback: []
   invalid: [message: string]
 }>()
@@ -53,7 +52,7 @@ function startAddRule(): void {
 
 /** 深拷贝一条规则进编辑缓冲。规则对象来自内核应答（经 v-model 的响应式
  *  代理），structuredClone 遇 Proxy 抛 DataCloneError —— 「编辑」按钮
- *  因此静默无反应（issue #411）。统一走 clonePlain，与保存前的
+ *  因此静默无反应（issue 411）。统一走 clonePlain，与保存前的
  *  loadEditorFromSection 同一条路径。 */
 function cloneRule(r: PolicyRuleView): PolicyRuleView {
   return clonePlain(r)
@@ -195,11 +194,11 @@ function verdictBadge(v: string): { text: string; variant: 'up' | 'down' | 'gold
       </div>
     </div>
 
-    <!-- 版本与保存 -->
+    <!-- 版本与回滚：保存按钮已上移到「生效风控」卡的底部（唯一保存点）。
+         拆两个保存按钮时，每个只发账户段的一半，内核按「缺省即清扫」把另一半
+         抹掉 —— 保存必须整段提交，只能有一个入口。回滚是独立动作（取最近一次
+         set 的 before 整段写回），保留在这里就近呈现。 -->
     <div class="mt-4 flex flex-wrap items-center gap-2">
-      <Button size="sm" :disabled="saving || busy" @click="emit('save')">
-        <Save class="size-3.5" />{{ saving ? '保存中…' : '保存' }}
-      </Button>
       <Button
         variant="outline"
         size="sm"
@@ -207,7 +206,7 @@ function verdictBadge(v: string): { text: string; variant: 'up' | 'down' | 'gold
         :title="version === 0 ? '还没有可回滚的历史' : `回滚到 v${version - 1}（取最近一次 set 的 before 状态写回）`"
         @click="emit('rollback')"
       ><RotateCcw class="size-3.5" />回滚到 v{{ Math.max(version - 1, 0) }}</Button>
-      <span class="text-[11px] text-faint-fg">版本号 = 审计记录数（当前 v{{ version }}）</span>
+      <span class="text-[11px] text-faint-fg">版本号 = 审计记录数（当前 v{{ version }}）· 保存请用本卡上方「生效风控」的保存按钮</span>
     </div>
   </div>
 </template>

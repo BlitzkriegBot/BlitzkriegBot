@@ -132,7 +132,7 @@
     "retryableRedemptions": 0,
     "settledPositions": 0,
     "trackedMarkets": 0,
-    "unverifiedExpiryPolicy": "cash"
+    "unverifiedExpiryPolicy": "receivable"
   },
   "signals": 0,
   "sizing": {

@@ -467,7 +467,7 @@ async fn fetch_bytes(
 }
 
 /// The GitHub repo whose releases are staged from (matches `fetch_latest`).
-const GITHUB_REPO: &str = "ceer-quant/BlitzkriegBot";
+const GITHUB_REPO: &str = "BlitzkriegBot/BlitzkriegBot";
 /// The manifest asset the release workflow publishes (`SHA256SUMS`).
 const SUMS_ASSET: &str = "SHA256SUMS";
 
@@ -840,7 +840,7 @@ async fn fetch_latest_impl(token: Option<&str>) -> Result<String, String> {
     Ok(format!(r#"{{"tag_name":"{tag}","html_url":"{url}"}}"#))
 }
 
-const RELEASES_LATEST: &str = "https://github.com/ceer-quant/BlitzkriegBot/releases/latest";
+const RELEASES_LATEST: &str = "https://github.com/BlitzkriegBot/BlitzkriegBot/releases/latest";
 
 /// One check, and the verdict PERSISTED. Every real caller (startup, the
 /// auto scheduler, the manual `system.update.check` arm) wants the same two

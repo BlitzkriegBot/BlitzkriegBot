@@ -949,7 +949,7 @@ pub mod method {
     "autoUpdate": false,
     "checkEnabled": true,
     "lastCheckMs": 1790318400000,
-    "releaseUrl": "https://github.com/ceer-quant/BlitzkriegBot/releases/tag/v0.2.2"
+    "releaseUrl": "https://github.com/BlitzkriegBot/BlitzkriegBot/releases/tag/v0.2.2"
   }
 }
 ```
@@ -1283,7 +1283,7 @@ check('TUI 设置页 ↔ WebUI 设置页版本卡片同源', () => {
 内核启动
   ├─ 读配置（CLI > env > TOML > 默认）→ check_enabled? auto_update?
   ├─ 不阻塞启动：spawn 一个 detached 任务（仅当 check_enabled）
-  │     └─ GET https://api.github.com/repos/ceer-quant/BlitzkriegBot/releases/latest
+  │     └─ GET https://api.github.com/repos/BlitzkriegBot/BlitzkriegBot/releases/latest
   │           → 解析 tag_name
   │           → semver 比较（唯一比较点）
   │           → 写 UpdateState（内存 + data/update/state.json）
@@ -1618,7 +1618,7 @@ mod tests {
 // 不用 `curl` 子进程：一个交易内核不该靠外部二进制的存在来回答「有没有新版本」。
 
 const RELEASES_LATEST: &str =
-    "https://api.github.com/repos/ceer-quant/BlitzkriegBot/releases/latest";
+    "https://api.github.com/repos/BlitzkriegBot/BlitzkriegBot/releases/latest";
 
 /// 真实的一次抓取。GitHub 要求 User-Agent；超时短（检查失败无害，
 /// 不能拖住任何东西）。
@@ -2034,7 +2034,7 @@ pub struct InstallReport {
 ```
 $ blitzkrieg update --check
 BlitzkriegBot 0.2.1 → 0.2.2 available
-  release  https://github.com/ceer-quant/BlitzkriegBot/releases/tag/v0.2.2
+  release  https://github.com/BlitzkriegBot/BlitzkriegBot/releases/tag/v0.2.2
   asset    blitzkrieg-0.2.2-aarch64-apple-darwin.tar.gz
   (dry run; 安装请用 --install)
 

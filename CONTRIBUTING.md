@@ -1,6 +1,6 @@
 # Contributing to BlitzkriegBot
 
-Thanks for your interest in contributing! (`ceer-quant/BlitzkriegBot`, MIT).
+Thanks for your interest in contributing! (`BlitzkriegBot/BlitzkriegBot`, MIT).
 
 **Build Once, Trade Everywhere.** BlitzkriegBot is the independent trader's
 TradingOS: venues may change (swap an extension crate) and strategies may
@@ -104,7 +104,7 @@ runtime. See
 
 ## Reporting Issues
 
-Open an issue at https://github.com/ceer-quant/BlitzkriegBot/issues with
+Open an issue at https://github.com/BlitzkriegBot/BlitzkriegBot/issues with
 Rust version, steps to reproduce, expected vs actual behavior, and error
 messages/logs.
 

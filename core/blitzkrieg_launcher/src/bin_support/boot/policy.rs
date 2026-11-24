@@ -27,7 +27,7 @@ pub(crate) fn resolve_unverified_expiry_policy(
     // change requires a restart (documented in .env.example).
     let policy_raw = env.text("BK_UNVERIFIED_EXPIRY_POLICY");
     let unverified_expiry_policy = match policy_raw.as_deref().map(str::trim) {
-        None => blitzkrieg_core::service::UnverifiedExpiryPolicy::Cash,
+        None => blitzkrieg_core::service::UnverifiedExpiryPolicy::Receivable,
         Some(raw) => match blitzkrieg_core::service::UnverifiedExpiryPolicy::parse(raw) {
             Some(policy) => {
                 report.push(format!(

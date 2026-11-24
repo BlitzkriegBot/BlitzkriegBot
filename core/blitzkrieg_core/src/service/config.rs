@@ -703,11 +703,11 @@ impl Default for CoreConfig {
             replay_scheduling: false,
             // Event-driven live evaluation on by default (see the field).
             event_driven_eval: true,
-            // Issue #991/#1002: the #684 cash model stays the default — the
-            // operator's receivable model is opt-in, so no existing
-            // deployment (or test) changes behaviour without naming the
-            // policy explicitly.
-            unverified_expiry_policy: UnverifiedExpiryPolicy::Cash,
+            // Issue #991/#1002/#1273: unverifiable expiry books a receivable
+            // claim by default — estimated money is not spendable cash until
+            // venue truth redeems it. `Cash` (#684 byte-identical behaviour)
+            // stays opt-in via BK_UNVERIFIED_EXPIRY_POLICY=cash.
+            unverified_expiry_policy: UnverifiedExpiryPolicy::Receivable,
             // Issue #991 boundary 1: the shipped 48h aging bound.
             receivable_max_age_ms: RECEIVABLE_MAX_AGE_MS_DEFAULT,
         }

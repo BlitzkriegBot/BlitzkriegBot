@@ -8,7 +8,7 @@ use super::*;
 
 use crate::ipc::server::session::{MAX_LINE_BYTES, spawn_session};
 use crate::service::{Core, CoreConfig};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
@@ -182,14 +182,49 @@ async fn a_stalled_writer_drops_notifications_without_losing_responses() {
     })
     .expect("bus must stay alive");
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let (acc, done) = read_lines(&mut client_read, FLOOD as usize, Duration::from_secs(30)).await;
+    // 契约：全部 4000 条响应「最终」按序到达。会话流里还夹着服务端
+    // 广播的 Ready 通知（bus.send 上方），主机抖动下它可能先于最后一
+    // 条响应到达——按「带 id 的响应行」计数，不按总行数截断，避免
+    // 把一条通知当成响应而把响应 4000 挤出窗口。总预算 5 分钟（并发
+    // 门禁满载全部核时调度抖动可很大），单次读 30 s。
+    let mut ids: Vec<u64> = Vec::with_capacity(FLOOD as usize);
+    let mut response_text = Vec::new();
+    let start = Instant::now();
+    let hard_cap = Duration::from_secs(300);
+    while ids.len() < FLOOD as usize && start.elapsed() < hard_cap {
+        let (more, _done) = read_lines(&mut client_read, 4096, Duration::from_secs(30)).await;
+        if more.is_empty() {
+            break;
+        }
+        for line in more.split(|&b| b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) {
+                if let Some(id) = v.get("id").and_then(|v| v.as_u64()) {
+                    ids.push(id);
+                    response_text.extend_from_slice(line);
+                    response_text.push(b'\n');
+                }
+            }
+        }
+    }
     assert!(
-        done,
-        "expected {FLOOD} responses, got {} lines / {} bytes",
-        acc.iter().filter(|&&b| b == b'\n').count(),
-        acc.len()
+        ids.len() == FLOOD as usize,
+        "expected {FLOOD} responses within budget, got {}",
+        ids.len()
     );
-    let text = String::from_utf8(acc).expect("responses are utf-8");
+    assert_eq!(
+        ids,
+        (1..=FLOOD).collect::<Vec<u64>>(),
+        "the response path must lose nothing and stay in order"
+    );
+    let text = String::from_utf8(response_text).expect("responses are utf-8");
+    // 响应路径里不得掺入通知：被满队列丢弃的通知不得晚到并伪装成响应。
+    assert!(
+        !text.contains("\"core.event\""),
+        "a notification dropped against a full queue must never surface late"
+    );
     flood_writer.await.expect("flood writer must not panic");
     let ids = response_ids(&text);
     let expected: Vec<u64> = (1..=FLOOD).collect();

@@ -95,10 +95,15 @@ jobs:
           fi
 
       - name: Checkout main and rebase PR branch
-        if: success() && [ "$(cat /tmp/auto-merge-skip 2>/dev/null)" = "false" ]
+        if: success()
         env:
           GITEA_CRED: ${{ secrets.GITEACRED }}
         run: |
+          # Skip when check-r6 wrote "true" to the temp file (R6 boundary hit).
+          if [ "$(cat /tmp/auto-merge-skip 2>/dev/null)" = "true" ]; then
+            echo "skipped: R6 manual-approval boundary touched"
+            exit 0
+          fi
           git config --global user.name "ceer_quant"
           git config --global user.email "ceer_quant@users.noreply.github.com"
           PR_NUM=${{ github.event.pull_request.number }}
@@ -125,10 +130,19 @@ jobs:
           rm -rf "$REPO_DIR"
 
       - name: Squash merge via Gitea API
-        if: success() && [ "$(cat /tmp/auto-merge-skip 2>/dev/null)" = "false" ] && [ "$(cat /tmp/auto-merge-rebase-ok 2>/dev/null)" = "true" ]
+        if: success()
         env:
           GITEA_CRED: ${{ secrets.GITEACRED }}
         run: |
+          # Only squash-merge when not skipped AND rebase succeeded.
+          if [ "$(cat /tmp/auto-merge-skip 2>/dev/null)" = "true" ]; then
+            echo "skipped: R6 manual-approval boundary touched"
+            exit 0
+          fi
+          if [ "$(cat /tmp/auto-merge-rebase-ok 2>/dev/null)" != "true" ]; then
+            echo "skipped: rebase did not succeed"
+            exit 0
+          fi
           PR_NUM=${{ github.event.pull_request.number }}
           curl -s -X POST -u "$GITEA_CRED" -H "Content-Type: application/json" \
             -d '{"merge_style":"squash","commit_message":"Auto-merge PR #${PR_NUM} via gate CI"}' \

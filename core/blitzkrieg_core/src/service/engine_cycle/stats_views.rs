@@ -233,7 +233,26 @@ impl Core {
                         .as_ref()
                         .and_then(|e| e.pair_book_stats_rejection_reason(&name, &self.pair_book))
                     {
-                        arb_declared_unaccepted_warn_on_change(&name, reason);
+                        // #189: the memo (and the log line) carry the ACCOUNT
+                        // dimension. One package name runs as independent
+                        // per-account scopes, so the same name can be
+                        // unhappy on more than one account in the same
+                        // cycle — warning once per name let the first
+                        // account's verdict swallow every other account's
+                        // line, and the operator read "only A is broken".
+                        // The verdict predicate is name-keyed today (engine
+                        // API), so every scope sees the same reason; that is
+                        // exactly why the per-(account, name) memo is the
+                        // right shape: it can never hide a scope, and when
+                        // the predicate gains a per-account book the memo
+                        // already has the dimension. Same-(account, strategy)
+                        // repeats stay silent (the #1164 contract).
+                        for account in accounts
+                            .iter()
+                            .map(|a| crate::model::AccountId::from(a.as_str()))
+                        {
+                            arb_declared_unaccepted_warn_on_change(&account, &name, reason);
+                        }
                     }
                     row["arbNetPnlUsd"] = dec_json(acc.net_pnl_usd);
                     row["arbWins"] = serde_json::json!(acc.wins);

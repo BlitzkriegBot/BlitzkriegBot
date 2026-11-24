@@ -1,8 +1,10 @@
-//! #1164: declared-but-NOT-accepted WARN rate-limited per (strategy, reason)
-//! — same strategy + same reason prints once (memo remembers the last
-//! reason), a changed reason prints once more; memos are bucketed by
-//! strategy name so tests are isolated. Moved verbatim from
-//! `dispatch_cap_gate_tests.rs` (pure code motion).
+//! #1164: declared-but-NOT-accepted WARN rate-limited per
+//! (account, strategy, reason) — same account + same strategy + same reason
+//! prints once (the memo remembers the last reason), a changed reason prints
+//! once more, and (#189) a DIFFERENT account's verdict is never suppressed by
+//! another account's memo cell. Memos are bucketed by (account, strategy) so
+//! tests are isolated. Moved verbatim from `dispatch_cap_gate_tests.rs` (pure
+//! code motion) + the #189 account-dimension teeth.
 
 use super::super::*;
 use super::helpers::core_with_cross_venue_arb;
@@ -43,15 +45,16 @@ where
 #[test]
 fn declared_unaccepted_warn_is_rate_limited_to_the_verdict() {
     let name = "arb-1164-memo-probe"; // 独立备忘桶：进程级 static 与其它测试隔离
+    let account = crate::model::AccountId::from("default");
     use tracing_subscriber::layer::SubscriberExt as _;
     let capture = ArbWarnCapture::default();
     let got = capture.0.clone();
     tracing::subscriber::with_default(tracing_subscriber::registry().with(capture), || {
         let warn = crate::service::helpers::arb_declared_unaccepted_warn_on_change;
-        warn(name, "atomic_batch not declared");
-        warn(name, "atomic_batch not declared"); // 同原因复读：备忘吃掉
-        warn(name, "no live PairBook entry under this strategy"); // 原因变化：再一条
-        warn(name, "no live PairBook entry under this strategy"); // 新原因复读：备忘吃掉
+        warn(&account, name, "atomic_batch not declared");
+        warn(&account, name, "atomic_batch not declared"); // 同原因复读：备忘吃掉
+        warn(&account, name, "no live PairBook entry under this strategy"); // 原因变化：再一条
+        warn(&account, name, "no live PairBook entry under this strategy"); // 新原因复读：备忘吃掉
     });
     let lines = got.lock().expect("warn capture mutex").clone();
     assert_eq!(
@@ -66,6 +69,54 @@ fn declared_unaccepted_warn_is_rate_limited_to_the_verdict() {
     assert!(
         lines[1].contains("PairBook"),
         "the changed verdict prints once: {lines:?}"
+    );
+}
+
+/// #189 验收：account A 的告警不得抑制 account B 的同类告警 ——
+/// 同一策略名、两个账户、同一原因：两条都打（各自 first sight）；
+/// 各自复读静默；B 的原因变化再打一条。这是「按名字去重」时代
+/// 做不到的：旧 memo 让 A 的 cell 吃掉 B 的整行（或 B 的变因行）。
+#[test]
+fn account_b_warn_is_not_suppressed_by_account_a() {
+    let name = "arb-189-account-dim-probe"; // 独立备忘桶
+    let a = crate::model::AccountId::from("acct-189-a");
+    let b = crate::model::AccountId::from("acct-189-b");
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let capture = ArbWarnCapture::default();
+    let got = capture.0.clone();
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(capture), || {
+        let warn = crate::service::helpers::arb_declared_unaccepted_warn_on_change;
+        // A first sight (one line), then B first sight — the SAME reason.
+        // A name-keyed memo would eat B's line here; the account dimension
+        // must not.
+        warn(&a, name, "atomic_batch not declared");
+        warn(&b, name, "atomic_batch not declared");
+        // Each account's repeat is silence (same-(account, strategy) dedup
+        // unchanged).
+        warn(&a, name, "atomic_batch not declared");
+        warn(&b, name, "atomic_batch not declared");
+        // A verdict FLIP on B prints exactly one more line, A's bucket is
+        // untouched by it.
+        warn(&b, name, "no live PairBook entry under this strategy");
+        warn(&b, name, "no live PairBook entry under this strategy");
+    });
+    let lines = got.lock().expect("warn capture mutex").clone();
+    assert_eq!(
+        lines.len(),
+        3,
+        "A first sight + B first sight + B's changed verdict (repeats silent): {lines:?}"
+    );
+    assert!(
+        lines[0].contains("acct-189-a") && lines[1].contains("acct-189-b"),
+        "the first two lines are the two accounts' first sights, in call order: {lines:?}"
+    );
+    assert!(
+        lines[2].contains("acct-189-b") && lines[2].contains("PairBook"),
+        "B's changed verdict carries B's account id: {lines:?}"
+    );
+    assert!(
+        !lines[2].contains("acct-189-a"),
+        "A's bucket must not leak into B's line: {lines:?}"
     );
 }
 

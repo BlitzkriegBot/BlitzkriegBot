@@ -334,3 +334,69 @@ fn blueprint_save_tunables_register_as_evolvable_knobs() {
     assert!(adapter.shadow_factory().is_some(), "knobs ⇒ twin factory");
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+/// #189: the package vault is SINGLE-REGISTRY, and per-account scopes are
+/// instances of the SAME package content — never per-account packages. This
+/// pins the domain shape the registry encodes (manifest name == dir name +
+/// sha256 pin ⇒ one directory, one hash, one cell): two accounts building
+/// scopes of one name must both resolve their knob specs from the ONE cell,
+/// and the cell count for the name must stay 1 regardless of how many
+/// account scopes exist.
+#[test]
+fn one_package_name_serves_every_account_scope_from_one_cell() {
+    let tmp = std::env::temp_dir().join(format!("bk-lua-acctdim-{}", std::process::id()));
+    let pkg = write_package(&tmp.join("lua_acctdim"), "lua_acctdim", &[]);
+    with_manifest(&pkg, |m| {
+        m["tunables"] = serde_json::json!({
+            "entry_max_price": {
+                "type": "decimal", "default": "0.40", "min": "0.05", "max": "0.95"
+            }
+        });
+    });
+
+    // Two loads of the SAME package under the SAME name (the default-scope
+    // load, then an account scope's rebuild — exactly the production shape).
+    let first = load_lua_package(&pkg).expect("loads");
+    let scope_a = LuaEngineAdapter::scoped_new(
+        first.strategy,
+        first.tunables.clone(),
+        "acct-189-a".to_string(),
+    );
+    let second = load_lua_package(&pkg).expect("re-loads for the second scope");
+    let scope_b = LuaEngineAdapter::scoped_new(
+        second.strategy,
+        second.tunables.clone(),
+        "acct-189-b".to_string(),
+    );
+
+    // The invariant: one name → one cell, no account dimension in the key.
+    let map = PACKAGE_SOURCES
+        .get()
+        .expect("the vault initialized by the loads above");
+    let keys: Vec<String> = map.lock().expect("vault mutex").keys().cloned().collect();
+    assert_eq!(
+        keys.iter().filter(|k| k.as_str() == "lua_acctdim").count(),
+        1,
+        "one package name must occupy exactly ONE registry cell \
+         (单包注册表语义，禁止 per-account 同名包): {keys:?}"
+    );
+    assert!(
+        !keys
+            .iter()
+            .any(|k| k.contains("acct-189-a") || k.contains("acct-189-b")),
+        "the registry must carry NO account dimension — scopes are instances, \
+         not packages: {keys:?}"
+    );
+
+    // Both scopes read the SAME knob declaration from that one cell.
+    let knobs_a = scope_a.evolvable_knobs();
+    let knobs_b = scope_b.evolvable_knobs();
+    assert_eq!(knobs_a.len(), 1, "scope A sees the declared knob");
+    assert_eq!(knobs_b.len(), 1, "scope B sees the declared knob");
+    assert_eq!(
+        knobs_a[0].name, knobs_b[0].name,
+        "two accounts host the same package declaration, not two packages"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}

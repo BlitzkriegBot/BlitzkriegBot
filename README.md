@@ -109,9 +109,9 @@ Polymarket、Kalshi、predict.fun、PolySimulator 连接器各自验证范围见
 
 交易核心与服务进程使用 Rust，策略宿主内嵌 Lua，Web 面板使用 Vue。运行预编译发行包无需另装 Node 或 Python；开发与构建依赖见下方文档。
 
-[![CI](https://github.com/ceer-quant/BlitzkriegBot/actions/workflows/ci.yml/badge.svg)](https://github.com/ceer-quant/BlitzkriegBot/actions/workflows/ci.yml)
-[![Security](https://github.com/ceer-quant/BlitzkriegBot/actions/workflows/security.yml/badge.svg)](https://github.com/ceer-quant/BlitzkriegBot/actions/workflows/security.yml)
-[![Release](https://github.com/ceer-quant/BlitzkriegBot/actions/workflows/release.yml/badge.svg)](https://github.com/ceer-quant/BlitzkriegBot/releases)
+[![CI](https://github.com/BlitzkriegBot/BlitzkriegBot/actions/workflows/ci.yml/badge.svg)](https://github.com/BlitzkriegBot/BlitzkriegBot/actions/workflows/ci.yml)
+[![Security](https://github.com/BlitzkriegBot/BlitzkriegBot/actions/workflows/security.yml/badge.svg)](https://github.com/BlitzkriegBot/BlitzkriegBot/actions/workflows/security.yml)
+[![Release](https://github.com/BlitzkriegBot/BlitzkriegBot/actions/workflows/release.yml/badge.svg)](https://github.com/BlitzkriegBot/BlitzkriegBot/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
 <a id="quickstart"></a>
@@ -120,7 +120,7 @@ Polymarket、Kalshi、predict.fun、PolySimulator 连接器各自验证范围见
 
 **路线 A：运行预编译发行包**
 
-到 [Releases](https://github.com/ceer-quant/BlitzkriegBot/releases) 下载对应平台（Linux x86_64 / macOS aarch64）的 `tar.gz`，解压后：
+到 [Releases](https://github.com/BlitzkriegBot/BlitzkriegBot/releases) 下载对应平台（Linux x86_64 / macOS aarch64）的 `tar.gz`，解压后：
 
 ```bash
 cd <解压目录>
@@ -134,7 +134,7 @@ bin/blitzkrieg run
 **路线 B：源码构建（开发者）**
 
 ```bash
-git clone https://github.com/ceer-quant/BlitzkriegBot.git
+git clone https://github.com/BlitzkriegBot/BlitzkriegBot.git
 cd BlitzkriegBot && cargo build --release --workspace --locked
 (cd ui/webapp/webui && npm ci && npm run build)   # 必需：Vue 面板产物 dist 不入库
 bash scripts/install-blitzkrieg-shim.sh          # 可选：把 blitzkrieg 装进 PATH
@@ -155,7 +155,7 @@ blitzkrieg run
    ```
 3. **代码必须放在 WSL 文件系统里**（`~` 下），不要放 `/mnt/c/...`（9P 跨盘 I/O 慢一个数量级）：
    ```bash
-   git clone https://github.com/ceer-quant/BlitzkriegBot.git && cd BlitzkriegBot
+   git clone https://github.com/BlitzkriegBot/BlitzkriegBot.git && cd BlitzkriegBot
    cargo build --release --workspace --locked && bash scripts/install-blitzkrieg-shim.sh && blitzkrieg run
    ```
 4. Windows 浏览器直接打开 `http://127.0.0.1:51888/panel`（WSL2 localhost 自动转发，`wsl hostname -I` 的内部 IP 不用）。
@@ -182,7 +182,7 @@ blitzkrieg run
 
 **Q：数据存哪里？** 账户、风控、账本、交易与运行时状态在 SQLite（`data/blitzkrieg.sqlite`，凭证为 AES-256-GCM 密文）；历史 JSONL 文件只读留档。`blitzkrieg backup` 一键备份（每日轻量 + 周日全量）。
 
-**Q：怎么升级？** `blitzkrieg upgrade`（构建 → 停栈 → 换装 → 起栈 → 身份校验，全自动，上一代日志轮转保留）；或 `git pull && cargo build --release --workspace --locked`。正式版本以 [Releases](https://github.com/ceer-quant/BlitzkriegBot/releases) tag 为准（当前 **0.4.2**）。
+**Q：怎么升级？** `blitzkrieg upgrade`（构建 → 停栈 → 换装 → 起栈 → 身份校验，全自动，上一代日志轮转保留）；或 `git pull && cargo build --release --workspace --locked`。正式版本以 [Releases](https://github.com/BlitzkriegBot/BlitzkriegBot/releases) tag 为准（当前 **0.4.2**）。
 
 **Q：能拿真钱跑吗？** 平台实现了 live 模式，但开启需真人明确授权。已有文档记录部分场地下单/撤单验证，不能等同于全部场地、成交和结算链路完成端到端验收；详见 [docs/FEATURES.md](./docs/FEATURES.md)。钱包里放你亏得起的钱，本项目不对任何损失负责。
 

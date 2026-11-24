@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent GitHub-side bootstrap for ceer-quant/BlitzkriegBot.
+# Idempotent GitHub-side bootstrap for BlitzkriegBot/BlitzkriegBot.
 #
 # This script performs the SERVER-SIDE steps of the repository-governance plan
 # that cannot be done from the working tree: create the private repo, push,
@@ -30,7 +30,7 @@
 #   Upgrade the plan, then re-run this script to turn on server-side enforcement.
 set -uo pipefail
 
-ORG="ceer-quant"
+ORG="BlitzkriegBot"
 REPO="BlitzkriegBot"
 FULL="${ORG}/${REPO}"
 UPSTREAM_FORBIDDEN="alsk1992/BlitzkriegBot"

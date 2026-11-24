@@ -3,7 +3,7 @@
  * Source: the public GitHub API for this repo. A failed or empty response
  * is null — callers hide the widget. Nothing here is a checked-in version.
  */
-const REPO = 'ceer-quant/BlitzkriegBot'
+const REPO = 'BlitzkriegBot/BlitzkriegBot'
 const API = 'https://api.github.com'
 
 export type ReleaseBanner = {

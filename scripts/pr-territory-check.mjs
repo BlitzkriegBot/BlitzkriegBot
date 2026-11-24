@@ -31,7 +31,7 @@ if (!pr || !/^\d+$/.test(pr)) {
 let view;
 try {
   view = JSON.parse(
-    execFileSync('gh', ['pr', 'view', pr, '--repo', 'ceer-quant/BlitzkriegBot',
+    execFileSync('gh', ['pr', 'view', pr, '--repo', 'BlitzkriegBot/BlitzkriegBot',
       '--json', 'number,title,body,files'], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }),
   );
 } catch (e) {

@@ -34,9 +34,19 @@ pub const MIGRATIONS: &[Migration] = &[
         // (orders/fills/positions/trades/ledger_entries) had zero runtime
         // writers — the live truth is the JSONL files. The v2 drop makes the
         // schema stop advertising storage nothing reads.
-        version: schema::SCHEMA_VERSION,
+        version: 2,
         name: "v2: drop zero-runtime-write ledger tables (orders/fills/positions/trades/ledger_entries, #1199 T-02)",
         sql: schema::SCHEMA_V2,
+    },
+    Migration {
+        // #185: the durable order-intent ledger. Before v3, dedup was memory
+        // state (the OME's live-only key + Lua process tables), so a
+        // cancel/reject plus reload/restart inside the same round window
+        // placed a second order. The unique intent index is the hard gate;
+        // the row replays the first submit's real outcome.
+        version: schema::SCHEMA_VERSION,
+        name: "v3: order_intents durable intent ledger + uq_intent (#185)",
+        sql: schema::SCHEMA_V3,
     },
 ];
 
@@ -290,8 +300,8 @@ mod tests {
         assert_eq!(current_version(&conn).unwrap(), schema::SCHEMA_VERSION);
         assert_eq!(
             applied_versions(&conn).unwrap(),
-            vec![1, 2],
-            "both migrations recorded"
+            (1..=schema::SCHEMA_VERSION).collect::<Vec<_>>(),
+            "every migration recorded"
         );
 
         // The five tables (and their indexes) are gone.

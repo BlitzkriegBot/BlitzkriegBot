@@ -38,6 +38,7 @@
 //! boundary through `rust_decimal` and its string form, never a binary float.
 
 pub mod credentials;
+pub mod intents;
 pub mod migrations;
 pub mod schema;
 

@@ -833,7 +833,16 @@ impl Core {
         // 会计四面 + 账本里的每个 Ledger 共享同一个存储后端（运行时
         // account.create 补出来的账本，由 AccountLedgers::insert 同份 store）。
         accounts.install_store(store.clone());
+        // Issue #185: the intent ledger rides the SAME database as the rest of
+        // the durable state (one file, one single-writer discipline). With no
+        // store wired (backtester / in-process tests) it is `None` and the
+        // live-key dedup stays the only guard — that boundary is documented on
+        // the field and on `Core::intent_gate`.
+        let intent_ledger = sqlite
+            .as_ref()
+            .map(|s| crate::db::intents::IntentLedger::new(s.risk_db().db().clone()));
         let mut core = Self {
+            intent_ledger,
             risk: RiskGate::new(config.risk.clone()),
             account_risk_db: None,
             store,

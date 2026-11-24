@@ -22,7 +22,7 @@
 
 /// The schema version this module defines. Bumped whenever [`SCHEMA_V1`] is
 /// superseded by a new migration (never edited in place).
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Every table the CURRENT schema creates, in dependency order (parents first).
 ///
@@ -44,11 +44,21 @@ pub const TABLES: &[&str] = &[
     "rounds",
     "arb_pairs",
     "audit_log",
+    // v3 (#185): the durable order-intent ledger.
+    "order_intents",
 ];
 
 /// Every index the CURRENT schema creates. Since v2 (#1199 T-02) the five
-/// per-account ledger indexes went with their tables.
-pub const INDEXES: &[&str] = &["idx_audit_ts", "idx_rounds_account", "idx_markets_venue"];
+/// per-account ledger indexes went with their tables; v3 (#185) adds the
+/// intent ledger's unique intent index plus the age index its capacity
+/// policy prunes by.
+pub const INDEXES: &[&str] = &[
+    "idx_audit_ts",
+    "idx_rounds_account",
+    "idx_markets_venue",
+    "uq_intent",
+    "idx_intents_created",
+];
 
 /// The complete v1 schema.
 ///
@@ -263,6 +273,84 @@ DROP TABLE IF EXISTS ledger_entries;
 DROP TABLE IF EXISTS positions;
 DROP TABLE IF EXISTS trades;
 DROP TABLE IF EXISTS orders;
+"#;
+
+/// The v3 migration (issue #185 — order-intent idempotency): the durable
+/// intent ledger.
+///
+/// # Why this table exists
+///
+/// Before v3, idempotency was implemented as MEMORY state: the OME's
+/// `internal_key` dedup (`has_pending`) only refuses while the first order is
+/// still `is_live()`, and a Lua package's own `quoted` / `slot_seen` tables
+/// live inside the process. A cancel/reject followed by `strategy.reload` (or
+/// any restart) inside the same 45–60 s round window therefore let the SAME
+/// `(strategy, asset, direction, slot)` intent place a second order. The
+/// `orders` table could never have blocked it: its key was the locally-minted
+/// order id (and since v2 that table is gone entirely).
+///
+/// `order_intents` is that missing structure: ONE row per intent identity,
+/// claimed BEFORE any ledger/order-state write, carrying the FIRST submit's
+/// outcome so a duplicate replays it instead of placing again.
+///
+/// # Capacity (bounded, with an explicit policy)
+///
+/// The table is bounded by BOTH an age window and a hard row cap; the policy
+/// lives in `crate::db::intents` and is pruned on every claim transaction:
+///
+/// * rows older than [`INTENT_RETENTION_MS`] are deleted — the registry is a
+///   dedup window, not an audit trail (the order log is the audit trail), and
+///   a round slot is dead long before that window closes;
+/// * if more than [`INTENT_MAX_ROWS`] rows remain, the OLDEST are deleted
+///   down to the cap (LRU-by-age: the newest intents are the ones a retry can
+///   still collide with).
+///
+/// Pruning only ever removes rows that can no longer be retried inside a live
+/// round window, so it can never open a duplicate-placement hole; and a
+/// failed prune is fail-open for the CLAIM (a too-large table is still
+/// correct, only unbounded — the log line says so).
+///
+/// # States
+///
+/// `state` carries the first submit's lifecycle:
+/// `reserved` (claimed, submit in flight), `ordered` (order id persisted),
+/// `refused` (first submit was refused — code + message replayed),
+/// `consumed`/`abandoned` are terminal for rows whose round is over.
+pub const SCHEMA_V3: &str = r#"
+-- Issue #185: the durable order-intent ledger. One row per intent identity
+-- (account, strategy, condition, round slot, direction). The UNIQUE index is
+-- the hard gate: a duplicate insert fails, and the caller replays the stored
+-- first outcome instead of placing a second order.
+CREATE TABLE IF NOT EXISTS order_intents (
+  account_id     TEXT NOT NULL,
+  strategy       TEXT NOT NULL,
+  condition_id   TEXT NOT NULL,
+  round_slot     INTEGER NOT NULL,
+  direction      TEXT NOT NULL,
+  -- IntentState as lowercase text: reserved | ordered | refused | consumed | abandoned
+  state          TEXT NOT NULL,
+  -- The FIRST submit's order id (ordered/consumed only). NULL while reserved.
+  order_id       TEXT,
+  -- The FIRST submit's refusal (refused only), replayed byte-identically.
+  reject_code    TEXT,
+  reject_message TEXT,
+  -- The first submit's order status at claim time (ordered only), so a
+  -- duplicate answers the same status the first caller saw.
+  order_status   TEXT,
+  created_at_ms  INTEGER NOT NULL,
+  updated_at_ms  INTEGER NOT NULL,
+  PRIMARY KEY (account_id, strategy, condition_id, round_slot, direction)
+);
+
+-- The contract's unique intent index (the PRIMARY KEY above already enforces
+-- it; this named index is what a schema reader greps for and what a future
+-- ALTER can rely on). It is declared explicitly per the #185 contract.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_intent
+  ON order_intents(account_id, strategy, condition_id, round_slot, direction);
+
+-- Capacity policy's prune cursor: oldest-first deletes scan this index.
+CREATE INDEX IF NOT EXISTS idx_intents_created
+  ON order_intents(created_at_ms);
 "#;
 
 #[cfg(test)]

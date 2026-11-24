@@ -54,6 +54,19 @@ impl Core {
         self.refuse_unsubscribed_duration(&req)?;
         self.risk
             .check_with_equity(&req, self.accounts.ledger_of(&req.account_id)?.balance())?;
+        // issue #185: the durable intent gate, in the same position as in
+        // `place_gated` — after every refusal gate, before the first write
+        // (the reservation). The live adapter's async POST rides this path, so
+        // a duplicate intent must be answered from the first submit's recorded
+        // result here too.
+        let intent_owned = match self.intent_gate(&req, now_ms)? {
+            crate::service::IntentGate::Open => None,
+            crate::service::IntentGate::Replay(outcome) => {
+                return Ok((outcome.order_id, outcome.status));
+            }
+            crate::service::IntentGate::ReplayRefusal(err) => return Err(err),
+            crate::service::IntentGate::Claimed(key) => Some(key),
+        };
         let id = self.new_order_id();
         let buy = req.side == Side::Buy;
         let req_account = req.account_id.clone();
@@ -86,9 +99,28 @@ impl Core {
             if buy && let Some(l) = self.accounts.get_mut(&req_account).ok() {
                 l.release(&id);
             }
+            // #185: no order exists behind this claim — release it.
+            if let Some(key) = &intent_owned {
+                self.abandon_intent(key, now_ms);
+            }
             return Err(e);
         }
         self.emit_order(&id);
+        // #185: record the first submit's real result. `place_pending` hands
+        // the caller a Pending order; the venue's later confirm/reject rides
+        // its own paths and does not rewrite this row (the row replays the
+        // SUBMIT's result, which is what a duplicate would be answering).
+        if let Some(key) = &intent_owned {
+            self.settle_intent_ordered(
+                key,
+                &crate::service::PlaceOutcome {
+                    order_id: id.clone(),
+                    status: OrderStatus::Pending,
+                    rejection: None,
+                },
+                now_ms,
+            );
+        }
         Ok((id, OrderStatus::Pending))
     }
 

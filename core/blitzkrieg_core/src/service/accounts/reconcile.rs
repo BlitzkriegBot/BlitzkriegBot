@@ -362,8 +362,12 @@ impl Core {
         }
         // Trades on orders the OME never issued (manual closes made directly
         // on the venue): fold them into the position book so the position
-        // cannot haunt the exit rules forever.
-        self.apply_external_fills(&report.unknown_fills, snap.now_ms);
+        // cannot haunt the exit rules forever. Every trade gets a VERDICT
+        // (#175) — an attributed row folds into exactly its own account's
+        // position, an unattributed or ambiguous one is PARKED and reported
+        // rather than guessed into some book.
+        let fold_verdicts = self.apply_external_fills(&report.unknown_fills, venue, snap.now_ms);
+        self.report_parked_fills(&fold_verdicts, snap.now_ms);
         // #987, issue 991: reconcile backfill — venue cash truth has caught up for any
         // token showing a venue fill. Mark fallback-closed positions on those
         // tokens `source == "reconciled"`, keeping the fallback exit price
@@ -552,184 +556,184 @@ impl Core {
         Ok(report)
     }
 
-    /// Fold external fills (venue trades on orders the OME does not track) into
-    /// the position book. Only SELLs are applied: a manual close reduces the
-    /// matching position by token id, settling the ledger for the cash that
-    /// actually moved, and closes the position outright when it empties.
-    /// Manual BUYS are skipped — cash truth comes from the periodic
-    /// `venue_free_balance` realign, and inventing an unmanaged position here
-    /// would fight the engine. Dedup is a persisted watermark: only fills
-    /// strictly newer than the last applied one count, so a restart cannot
-    /// re-apply what the sweep still reports.
+    /// #175: the account that OWNS a venue's cash — the attribution source for
+    /// market plugins that cannot name an account themselves (their credential
+    /// is process-wide, so they know the venue, not the account).
     ///
-    /// F2: the venue adapter only forwards legs it proved belong to our
-    /// funder, and this loop stays conservative anyway — an unknown SELL is
-    /// never booked beyond the inventory the token's position can actually
-    /// attribute: size AND proceeds are truncated to what is held, so a
-    /// mis-attributed over-sell cannot mint cash.
-    pub(super) fn apply_external_fills(
+    /// This is not a default and not a guess: it is the same binding venue cash
+    /// reports are folded into (`venue_cash_account`, #646). `None` means the
+    /// venue has no unique owner (unbound with several books on file, or
+    /// several accounts sharing it) — the caller must then leave the trade
+    /// unattributed rather than pick one, and the fold parks it.
+    pub fn account_owning_venue_cash(&self, venue: &str) -> Option<AccountId> {
+        self.venue_cash_account(venue)
+    }
+
+    /// #175: which account a venue-routed fill provably moves — the live-WS
+    /// hop's attribution, using the SAME two proofs as the reconcile fold and
+    /// no default constant.
+    ///
+    /// The market-plugin contract (`MarketFill`) carries no account, so the
+    /// owner comes from the kernel's own order book: the order the fill names,
+    /// else the single live order on (token, side). Zero or 2+ candidates is
+    /// `None` and the caller refuses the fill — after parking it via
+    /// [`Self::park_unattributed_venue_fill`].
+    pub fn account_for_market_fill(
+        &self,
+        external_order_id: &str,
+        token_id: &str,
+        side: crate::model::Side,
+    ) -> Option<AccountId> {
+        self.ome
+            .resolve_account_for(external_order_id, token_id, side)
+    }
+
+    /// #175: record one unattributed venue fill — report row, `RiskAlert` and
+    /// audit row — for callers that never reach `apply_external_fills` (the
+    /// live user-WS hop, where the fill arrives as a `MarketFill` and the core
+    /// refuses to construct a `Fill` without a proven account).
+    ///
+    /// Deduped by (venue, trade id) like the reconcile fold, so a stream that
+    /// re-delivers the same execution does not page the operator twice.
+    pub fn park_unattributed_venue_fill(
         &mut self,
-        fills: &[crate::reconcile::VenueTrade],
+        fill: crate::reconcile::UnattributedFill,
         now_ms: i64,
     ) {
-        if fills.is_empty() {
+        if !self.positions.park_unattributed_fill(fill.clone()) {
             return;
+        }
+        let message = format!(
+            "unattributed_fill reason={} count=1 venue={} token={} account={} first_trade={} size={} price={} — parked on the unverified-exposure report, nothing booked",
+            fill.reason.as_str(),
+            fill.venue,
+            fill.token_id,
+            fill.account.as_ref().map(|a| a.as_str()).unwrap_or("-"),
+            if fill.trade_id.is_empty() {
+                "-"
+            } else {
+                &fill.trade_id
+            },
+            fill.size,
+            fill.price,
+        );
+        tracing::error!(
+            reason = fill.reason.as_str(),
+            venue = %fill.venue,
+            token = %fill.token_id,
+            order = %fill.venue_order_id,
+            "venue fill could not be attributed — parked, nothing booked (#175)"
+        );
+        self.emit(Event::RiskAlert {
+            code: CoreErrorCode::Internal,
+            message,
+        });
+        self.persist_audit_value(serde_json::json!({
+            "atMs": now_ms,
+            "event": "unattributed_fill",
+            "reason": fill.reason.as_str(),
+            "count": 1,
+            "fills": [{
+                "venue": fill.venue,
+                "venueOrderId": fill.venue_order_id,
+                "tradeId": fill.trade_id,
+                "tokenId": fill.token_id,
+                "account": fill.account.as_ref().map(|a| a.as_str()),
+                "side": fill.side.as_str(),
+                "size": fill.size.to_string(),
+                "price": fill.price.to_string(),
+                "tsMs": fill.ts_ms,
+            }],
+        }));
+    }
+
+    /// Fold external fills (venue trades on orders the OME does not track) into
+    /// the position book, one ATTRIBUTION VERDICT per trade (issue #175).
+    ///
+    /// A manual SELL reduces a position and settles its account's ledger for
+    /// the cash that actually moved; a manual BUY rebuilds a position a
+    /// place-timeout order really filled (#462). Both need the SAME fact the
+    /// venue row used to omit: WHICH ACCOUNT. A token can be held by several
+    /// accounts at once (`pending_tokens` is keyed `(account, token)`), so
+    /// token-only matching is not a heuristic, it is a cross-account bank
+    /// transfer: account B's manual sell closed account A's position, booked A
+    /// the realized gain, and left B's cash gone with B's shares still on the
+    /// book.
+    ///
+    /// Rules, in order:
+    /// 1. no account on the trade → [`FoldVerdict::Parked`] with
+    ///    `MissingAccount`. Never `default_account_id()`.
+    /// 2. account named, exactly one open position for (account, token) → fold
+    ///    into THAT row.
+    /// 3. account named, two or more positions match → `Parked` with
+    ///    `AmbiguousPosition`: the book cannot say which row the sell reduces,
+    ///    so it touches neither.
+    /// 4. account named, no open position of ours on that token → `Parked` with
+    ///    `UnknownPosition` (inventory this kernel never opened).
+    ///
+    /// Parked verdicts go to the caller, which reports them on
+    /// `positions.unverified_exposure` and raises a `RiskAlert` — an unknown
+    /// owner is a first-class state, never a default (L4).
+    ///
+    /// Dedup is a persisted watermark: only fills strictly newer than the last
+    /// applied one count, so a restart cannot re-apply what the sweep still
+    /// reports. The watermark advances over parked rows too — they are booked
+    /// in the unverified-exposure report, and re-parking them every sweep would
+    /// turn one unknown into a permanent alert storm.
+    ///
+    /// F2 still truncates an attributed SELL to the inventory it can actually
+    /// prove (size AND proceeds), so a mis-sized venue row cannot mint cash.
+    /// #175: the attribution VERDICT seam. `pub(crate)` (not `pub(super)`):
+    /// the falsification tests live in `service::tests::reconcile_attribution_tests`
+    /// and must assert the verdict directly — the skill under test is the
+    /// refusal, not just its report row.
+    pub(crate) fn apply_external_fills(
+        &mut self,
+        fills: &[crate::reconcile::VenueTrade],
+        venue: &str,
+        now_ms: i64,
+    ) -> Vec<crate::reconcile::FoldVerdict> {
+        use crate::reconcile::{FoldVerdict, UnattributedFill, UnattributedReason};
+
+        if fills.is_empty() {
+            return Vec::new();
         }
         let fresh: Vec<&crate::reconcile::VenueTrade> = fills
             .iter()
             .filter(|t| t.ts_ms > self.recon_watermark_ms)
             .collect();
         if fresh.is_empty() {
-            return;
+            return Vec::new();
         }
-        let mut applied = 0usize;
+        let mut verdicts: Vec<FoldVerdict> = Vec::with_capacity(fresh.len());
         for t in &fresh {
-            if t.side != Side::Sell {
-                continue;
-            }
-            let Some((position_id, held, position_account)) = self
-                .positions
-                .open_positions()
-                .iter()
-                .find(|p| p.token_id == t.token_id)
-                .map(|p| (p.id.clone(), p.shares, p.account_id.clone()))
-            else {
+            // A venue row with no account cannot be attributed at all. This
+            // check runs BEFORE the side split: an unattributed BUY used to be
+            // force-landed on `default`, and an unattributed SELL used to be
+            // matched by token alone. Both are the same defect.
+            let Some(account) = t.account.clone() else {
+                verdicts.push(FoldVerdict::Parked(UnattributedFill {
+                    venue: venue.to_string(),
+                    venue_order_id: t.venue_order_id.clone(),
+                    trade_id: t.trade_id.clone(),
+                    token_id: t.token_id.clone(),
+                    account: None,
+                    side: t.side,
+                    size: t.size,
+                    price: t.price,
+                    ts_ms: t.ts_ms,
+                    reason: UnattributedReason::MissingAccount,
+                }));
                 continue;
             };
-            // F2: clamp the size to attributable inventory and price the cash
-            // on the CLAMPED size — truncating the size while keeping the full
-            // notional would still book the counterparty's money.
-            let size = t.size.min(held);
-            if size <= Decimal::ZERO {
-                continue;
-            }
-            let notional = t.price * size;
-            let fee_usd = if t.maker == Some(true) {
-                Decimal::ZERO
-            } else {
-                // The fee follows the schedule in force, under the same
-                // replay-only guard the fill choke point uses (#234, item 4).
-                (self.live_taker_fee_pct(t.price) / Decimal::ONE_HUNDRED) * notional
-            };
-            // E28: a manual (external) close settles into the POSITION'S OWN
-            // book — the proceeds belong to the account that paid for the
-            // shares. An unknown account is logged and skipped (no implicit
-            // book, no silent mint).
-            if let Ok(l) = self.accounts.get_mut(&position_account) {
-                l.settle_sell_fill(notional, fee_usd);
-            } else {
-                tracing::error!(
-                    token = %t.token_id,
-                    account = %position_account.as_str(),
-                    "external sell for an unknown account dropped — proceeds not booked"
-                );
-                continue;
-            }
-            let role = if t.maker == Some(true) {
-                crate::model::OrderRole::Maker
-            } else {
-                crate::model::OrderRole::Taker
-            };
-            let remaining = self
-                .positions
-                .apply_exit_fill(&position_id, size, t.price, fee_usd, role, Decimal::ZERO)
-                .unwrap_or(Decimal::ZERO);
-            if remaining == Decimal::ZERO {
-                // F10: a manual full close must hit the SAME close ledger the
-                // engine's own fills do — TradeDb, strategy PnL, win/loss and
-                // the consecutive-loss breaker. `close()` removes the position
-                // from the book, so re-reporting the same trade cannot close
-                // it twice: that removal IS the idempotence guard.
-                if let Some(closed) = self.positions.close(
-                    &position_id,
-                    t.price,
-                    ExitReason::Manual,
-                    t.maker == Some(true),
-                    now_ms,
-                    "venue",
-                ) {
-                    self.persist_positions();
-                    self.on_position_closed(&closed, now_ms);
+            match t.side {
+                Side::Sell => {
+                    verdicts.push(self.fold_external_sell(t, &account, venue, now_ms));
                 }
-                // Belt and braces: this path can close without the OME ever
-                // issuing an order, and the pending-close reason must not
-                // outlive the position it belonged to (issue #190) — the
-                // reason is retired here even if no closed record came back.
-                self.clear_exit_reason(&t.token_id);
+                Side::Buy => {
+                    verdicts.push(self.fold_external_buy(t, &account, venue, now_ms));
+                }
             }
-            self.persist_positions();
-            applied += 1;
-            tracing::info!(
-                token = %t.token_id,
-                requested_size = %t.size,
-                applied_size = %size,
-                price = %t.price,
-                remaining = %remaining,
-                "external close reconciled (manual venue sell folded into the position book)"
-            );
-        }
-        // #462: fold unknown BUYs into the position book — a place-timeout
-        // order the venue really filled arrives here (the OME never saw the
-        // order id), and skipping it left real shares unmanaged while the
-        // cash was already gone. Rebuilt through `apply_delta_effects`, the
-        // ONE ledger+position+event path every other fill takes, so the
-        // reconstructed position feeds exits/settlement exactly like an
-        // engine-placed one. Metadata (strategy/condition/slot/direction)
-        // comes from the engine's market registry for the token; a token no
-        // live market names stays skipped (no inventable metadata), and the
-        // default account takes the position (the ABI carries no account on
-        // venue trades — the same default the SELL fold settles into).
-        for t in fresh.iter().filter(|t| t.side == Side::Buy) {
-            let Some(market) = self.engine.as_ref().and_then(|e| {
-                e.scanner()
-                    .markets()
-                    .iter()
-                    .find(|m| m.up_token_id == t.token_id || m.down_token_id == t.token_id)
-            }) else {
-                continue;
-            };
-            let direction = if market.up_token_id == t.token_id {
-                "up"
-            } else {
-                "down"
-            };
-            let role = if t.maker == Some(true) {
-                crate::model::OrderRole::Maker
-            } else {
-                crate::model::OrderRole::Taker
-            };
-            let d = crate::ome::FillDelta {
-                order_id: format!("recon:{}", t.venue_order_id),
-                token_id: t.token_id.clone(),
-                account_id: crate::model::default_account_id(),
-                side: Side::Buy,
-                delta: t.size,
-                price: t.price,
-                cumulative: t.size,
-                strategy: "reconciled".to_string(),
-                asset: market.asset.clone(),
-                direction: direction.to_string(),
-                condition_id: market.condition_id.clone(),
-                round_slot: market.round_slot,
-                mode: crate::model::FillPolicy::Taker,
-                role,
-                limit_price: t.price,
-                trade_id: t.trade_id.clone(),
-            };
-            tracing::warn!(
-                token = %t.token_id,
-                venue_order = %t.venue_order_id,
-                size = %t.size,
-                price = %t.price,
-                "external BUY reconciled — position rebuilt (a timed-out place the venue really filled, #462)"
-            );
-            self.apply_delta_effects(d, now_ms);
-        }
-        // Sells with no matching position are expected noise; one line per
-        // sweep keeps the log honest. BUYs are folded above (#462).
-        let unmatched = fresh.iter().filter(|t| t.side == Side::Sell).count() - applied;
-        if unmatched > 0 {
-            eprintln!("core: external fills not matched to a position: sells={unmatched}");
         }
         let new_mark = fresh
             .iter()
@@ -739,6 +743,345 @@ impl Core {
         self.recon_watermark_ms = self.recon_watermark_ms.max(new_mark);
         if let Some(db) = self.position_db.as_ref() {
             db.save_watermark(self.recon_watermark_ms);
+        }
+        verdicts
+    }
+
+    /// #175: the (account, token) → position resolution used by the SELL fold.
+    /// Returns the ONE position the trade is proven to belong to, or the REASON
+    /// it cannot be resolved. The reason is deliberately the small enum rather
+    /// than a built `UnattributedFill`: a fill-shaped (168-byte) error variant
+    /// is a `result_large_err` clippy failure, and the caller owns the fill's
+    /// other fields anyway.
+    fn resolve_external_target(
+        &self,
+        t: &crate::reconcile::VenueTrade,
+        account: &AccountId,
+    ) -> Result<(String, Decimal), crate::reconcile::UnattributedReason> {
+        use crate::reconcile::UnattributedReason;
+
+        let mut matches = self
+            .positions
+            .open_positions()
+            .iter()
+            .filter(|p| p.token_id == t.token_id && p.account_id == *account);
+        let first = matches.next().map(|p| (p.id.clone(), p.shares));
+        let second = matches.next();
+        match (first, second) {
+            (Some(found), None) => Ok(found),
+            (Some(_), Some(_)) => Err(UnattributedReason::AmbiguousPosition),
+            (None, _) => Err(UnattributedReason::UnknownPosition),
+        }
+    }
+
+    /// #175: one attributed external SELL. Size is clamped to the matched
+    /// position's inventory and the cash is priced on the CLAMPED size; a
+    /// manual full close takes the same close ledger an engine fill does (F10).
+    fn fold_external_sell(
+        &mut self,
+        t: &crate::reconcile::VenueTrade,
+        account: &AccountId,
+        venue: &str,
+        now_ms: i64,
+    ) -> crate::reconcile::FoldVerdict {
+        use crate::reconcile::FoldVerdict;
+
+        let (position_id, held) = match self.resolve_external_target(t, account) {
+            Ok(target) => target,
+            Err(reason) => {
+                // The one place a buildable `UnattributedFill` is made from a
+                // resolution failure: the caller knows venue and the named
+                // account, which `resolve_external_target` deliberately does not
+                // carry (see its doc comment).
+                return FoldVerdict::Parked(crate::reconcile::UnattributedFill {
+                    venue: venue.to_string(),
+                    venue_order_id: t.venue_order_id.clone(),
+                    trade_id: t.trade_id.clone(),
+                    token_id: t.token_id.clone(),
+                    account: Some(account.clone()),
+                    side: t.side,
+                    size: t.size,
+                    price: t.price,
+                    ts_ms: t.ts_ms,
+                    reason,
+                });
+            }
+        };
+        // F2: clamp the size to attributable inventory and price the cash on
+        // the CLAMPED size — truncating the size while keeping the full
+        // notional would still book the counterparty's money.
+        let size = t.size.min(held);
+        if size <= Decimal::ZERO {
+            // Nothing left to reduce: the venue sold inventory this book no
+            // longer holds. That is not a fold (no cash may be attributed), and
+            // it is not "the trade has no owner" either — the owner IS known,
+            // the inventory is not. Parked keeps it visible either way.
+            return FoldVerdict::Parked(crate::reconcile::UnattributedFill {
+                venue: venue.to_string(),
+                venue_order_id: t.venue_order_id.clone(),
+                trade_id: t.trade_id.clone(),
+                token_id: t.token_id.clone(),
+                account: Some(account.clone()),
+                side: t.side,
+                size: t.size,
+                price: t.price,
+                ts_ms: t.ts_ms,
+                reason: crate::reconcile::UnattributedReason::UnknownPosition,
+            });
+        }
+        let notional = t.price * size;
+        let fee_usd = if t.maker == Some(true) {
+            Decimal::ZERO
+        } else {
+            // The fee follows the schedule in force, under the same
+            // replay-only guard the fill choke point uses (#234, item 4).
+            (self.live_taker_fee_pct(t.price) / Decimal::ONE_HUNDRED) * notional
+        };
+        // E28: a manual (external) close settles into the POSITION'S OWN book —
+        // the proceeds belong to the account that paid for the shares. The
+        // account here came from the venue row and was proven to own the
+        // position above, so this settle cannot land in a sibling's book.
+        if let Ok(l) = self.accounts.get_mut(account) {
+            l.settle_sell_fill(notional, fee_usd);
+        } else {
+            tracing::error!(
+                token = %t.token_id,
+                account = %account.as_str(),
+                "external sell for an unknown account dropped — proceeds not booked"
+            );
+            return FoldVerdict::Parked(crate::reconcile::UnattributedFill {
+                venue: venue.to_string(),
+                venue_order_id: t.venue_order_id.clone(),
+                trade_id: t.trade_id.clone(),
+                token_id: t.token_id.clone(),
+                account: Some(account.clone()),
+                side: t.side,
+                size: t.size,
+                price: t.price,
+                ts_ms: t.ts_ms,
+                reason: crate::reconcile::UnattributedReason::UnknownPosition,
+            });
+        }
+        let role = if t.maker == Some(true) {
+            crate::model::OrderRole::Maker
+        } else {
+            crate::model::OrderRole::Taker
+        };
+        let remaining = self
+            .positions
+            .apply_exit_fill(&position_id, size, t.price, fee_usd, role, Decimal::ZERO)
+            .unwrap_or(Decimal::ZERO);
+        if remaining == Decimal::ZERO {
+            // F10: a manual full close must hit the SAME close ledger the
+            // engine's own fills do — TradeDb, strategy PnL, win/loss and
+            // the consecutive-loss breaker. `close()` removes the position
+            // from the book, so re-reporting the same trade cannot close
+            // it twice: that removal IS the idempotence guard.
+            if let Some(closed) = self.positions.close(
+                &position_id,
+                t.price,
+                ExitReason::Manual,
+                t.maker == Some(true),
+                now_ms,
+                "venue",
+            ) {
+                self.persist_positions();
+                self.on_position_closed(&closed, now_ms);
+            }
+            // Belt and braces: this path can close without the OME ever
+            // issuing an order, and the pending-close reason must not
+            // outlive the position it belonged to (issue #190) — the
+            // reason is retired here even if no closed record came back.
+            self.clear_exit_reason(&t.token_id);
+        }
+        self.persist_positions();
+        tracing::info!(
+            token = %t.token_id,
+            account = %account.as_str(),
+            position = %position_id,
+            requested_size = %t.size,
+            applied_size = %size,
+            price = %t.price,
+            remaining = %remaining,
+            "external close reconciled (manual venue sell folded into the position book)"
+        );
+        FoldVerdict::Folded {
+            position: position_id,
+            account: account.clone(),
+        }
+    }
+
+    /// #175: one attributed external BUY — a place-timeout order the venue
+    /// really filled (#462), rebuilt through the ONE ledger+position+event path
+    /// every other fill takes so the reconstructed position feeds exits and
+    /// settlement exactly like an engine-placed one. The account comes from the
+    /// venue row and is REQUIRED: the old hard-coded `default_account_id()` is
+    /// what put a non-default account's fill into the default book.
+    fn fold_external_buy(
+        &mut self,
+        t: &crate::reconcile::VenueTrade,
+        account: &AccountId,
+        venue: &str,
+        now_ms: i64,
+    ) -> crate::reconcile::FoldVerdict {
+        use crate::reconcile::FoldVerdict;
+
+        // A token no live market names has no inventable metadata
+        // (strategy/condition/slot/direction). Parked, not silently skipped:
+        // the shares and the cash behind them moved at the venue.
+        let Some(market) = self.engine.as_ref().and_then(|e| {
+            e.scanner()
+                .markets()
+                .iter()
+                .find(|m| m.up_token_id == t.token_id || m.down_token_id == t.token_id)
+        }) else {
+            return FoldVerdict::Parked(crate::reconcile::UnattributedFill {
+                venue: venue.to_string(),
+                venue_order_id: t.venue_order_id.clone(),
+                trade_id: t.trade_id.clone(),
+                token_id: t.token_id.clone(),
+                account: Some(account.clone()),
+                side: t.side,
+                size: t.size,
+                price: t.price,
+                ts_ms: t.ts_ms,
+                reason: crate::reconcile::UnattributedReason::UnknownPosition,
+            });
+        };
+        let direction = if market.up_token_id == t.token_id {
+            "up"
+        } else {
+            "down"
+        };
+        let role = if t.maker == Some(true) {
+            crate::model::OrderRole::Maker
+        } else {
+            crate::model::OrderRole::Taker
+        };
+        let d = crate::ome::FillDelta {
+            order_id: format!("recon:{}", t.venue_order_id),
+            token_id: t.token_id.clone(),
+            account_id: account.clone(),
+            side: Side::Buy,
+            delta: t.size,
+            price: t.price,
+            cumulative: t.size,
+            strategy: "reconciled".to_string(),
+            asset: market.asset.clone(),
+            direction: direction.to_string(),
+            condition_id: market.condition_id.clone(),
+            round_slot: market.round_slot,
+            mode: crate::model::FillPolicy::Taker,
+            role,
+            limit_price: t.price,
+            trade_id: t.trade_id.clone(),
+        };
+        tracing::warn!(
+            token = %t.token_id,
+            account = %account.as_str(),
+            venue_order = %t.venue_order_id,
+            size = %t.size,
+            price = %t.price,
+            "external BUY reconciled — position rebuilt in the trade's OWN account (a timed-out place the venue really filled, #462)"
+        );
+        self.apply_delta_effects(d, now_ms);
+        FoldVerdict::Folded {
+            position: String::new(),
+            account: account.clone(),
+        }
+    }
+
+    /// #175: surface parked external fills — unknown-owner money is a
+    /// first-class state (L4), so every parked row becomes a `RiskAlert`, an
+    /// audit row AND a row on `positions.unverified_exposure`.
+    ///
+    /// The report row is the durable-ish state an operator reads; the audit
+    /// row is the file record; the alert is the page. Grouped by reason so a
+    /// sweep with ten unattributed rows says so in one alert per reason
+    /// instead of ten identical lines. A trade already parked is not re-parked
+    /// nor re-alerted (the fold's watermark already stops the sweep from
+    /// re-delivering it; the dedupe here covers a plugin that re-reports the
+    /// same trade id with a newer `ts_ms`).
+    pub(crate) fn report_parked_fills(
+        &mut self,
+        verdicts: &[crate::reconcile::FoldVerdict],
+        now_ms: i64,
+    ) {
+        use crate::reconcile::{FoldVerdict, UnattributedReason};
+        use std::collections::BTreeMap;
+
+        let mut by_reason: BTreeMap<&'static str, Vec<&crate::reconcile::UnattributedFill>> =
+            BTreeMap::new();
+        let mut fresh: Vec<&crate::reconcile::UnattributedFill> = Vec::new();
+        for v in verdicts {
+            if let FoldVerdict::Parked(p) = v {
+                // The report keeps a set: a duplicate trade id adds neither a
+                // report row nor an alert (it is the same unknown money).
+                if self.positions.park_unattributed_fill(p.clone()) {
+                    by_reason.entry(p.reason.as_str()).or_default().push(p);
+                    fresh.push(p);
+                }
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        for (reason, parked) in by_reason {
+            let first = parked[0];
+            let message = format!(
+                "unattributed_fill reason={reason} count={} venue={} token={} account={} first_trade={} size={} price={} — parked on the unverified-exposure report, nothing booked",
+                parked.len(),
+                first.venue,
+                first.token_id,
+                first.account.as_ref().map(|a| a.as_str()).unwrap_or("-"),
+                if first.trade_id.is_empty() {
+                    "-"
+                } else {
+                    &first.trade_id
+                },
+                first.size,
+                first.price,
+            );
+            tracing::error!(
+                reason,
+                count = parked.len(),
+                venue = %first.venue,
+                token = %first.token_id,
+                "external fill could not be attributed — parked, nothing booked (#175)"
+            );
+            self.emit(Event::RiskAlert {
+                code: match first.reason {
+                    // Ambiguous/unknown position means the venue moved cash we
+                    // cannot place: a money-truth fault, not a parsing gap.
+                    UnattributedReason::AmbiguousPosition | UnattributedReason::UnknownPosition => {
+                        CoreErrorCode::Internal
+                    }
+                    // Missing attribution is a plugin contract violation — the
+                    // venue side failed to supply whose money this was.
+                    UnattributedReason::MissingAccount => CoreErrorCode::Internal,
+                },
+                message,
+            });
+            self.persist_audit_value(serde_json::json!({
+                "atMs": now_ms,
+                "event": "unattributed_fill",
+                "reason": reason,
+                "count": parked.len(),
+                "fills": parked
+                    .iter()
+                    .map(|p| serde_json::json!({
+                        "venue": p.venue,
+                        "venueOrderId": p.venue_order_id,
+                        "tradeId": p.trade_id,
+                        "tokenId": p.token_id,
+                        "account": p.account.as_ref().map(|a| a.as_str()),
+                        "side": p.side.as_str(),
+                        "size": p.size.to_string(),
+                        "price": p.price.to_string(),
+                        "tsMs": p.ts_ms,
+                    }))
+                    .collect::<Vec<_>>(),
+            }));
         }
     }
 

@@ -868,6 +868,7 @@ mod tests {
     mod pair_entry_maker_tests;
     mod postonly_entry_maker_tests;
     mod receivable_991_tests;
+    mod reconcile_attribution_tests;
     mod release_validation_tests;
     mod risk_bottom_line_963_tests;
     mod round_expiry_tests;

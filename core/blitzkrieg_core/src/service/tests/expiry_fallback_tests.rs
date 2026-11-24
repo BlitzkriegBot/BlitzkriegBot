@@ -738,6 +738,11 @@ fn reconcile_backfill_flips_fallback_to_venue() {
             ts_ms: bound + 2_000,
             tx_hash: None,
             maker: None,
+            // #175: the row names the account whose cash moved. The position is
+            // already fallback-closed, so the fold parks it `unknown_position`
+            // (nothing to reduce); the #991 backfill below is what flips the
+            // closed row — it is token-scoped on purpose.
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: bound + 2_000,
     };

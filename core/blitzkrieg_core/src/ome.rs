@@ -900,15 +900,17 @@ impl Ome {
     }
 
     /// Resolve an inbound fill to a tracked order: exact core/venue id, else
-    /// same token+side live order (SDK user events sometimes only carry token).
+    /// same token+side live order OF THE FILL'S OWN ACCOUNT.
     ///
-    /// The token+side fallback is deliberately account-scoped when the fill
-    /// carries an explicit account: after the operator switches account/round/
-    /// strategy, an old order's late fill (the network-delay window) must still
-    /// land on the account that placed it — never on a sibling account's new
-    /// live order on the same token+side. Venue reports default the account, so
-    /// a default-account fill keeps the legacy newest-live binding (its order id
-    /// nearly always wins the exact match above).
+    /// The token+side fallback is ALWAYS account-scoped (#175). It used to be
+    /// account-scoped only for non-default accounts: a fill stamped `default`
+    /// took the newest live order on the token+side REGARDLESS of account, so
+    /// with two books holding one token a delayed receipt for account B's
+    /// order could be booked onto account A's newer resting order. The default
+    /// book is an account like any other — it gets no cross-account privilege.
+    /// `Fill::account_id` is no longer a fallback stamp (see
+    /// `market::host::fill_from_api`): the live hop resolves the real owner
+    /// before constructing the fill, so this filter compares fact to fact.
     fn resolve(&self, fill: &Fill) -> Option<OrderId> {
         if let Some(o) = self.by_venue_or_id(&fill.order_id) {
             return Some(o.order_id.clone());
@@ -916,17 +918,40 @@ impl Ome {
         let mut cands: Vec<&TrackedOrder> = self
             .live_for(&fill.token_id, fill.side)
             .into_iter()
+            .filter(|o| o.account_id == fill.account_id)
             .collect();
         cands.sort_by_key(|o| std::cmp::Reverse(o.submitted_at_ms));
-        let acct = &fill.account_id;
-        if acct == &default_account_id() {
-            cands.first().map(|o| o.order_id.clone())
-        } else {
-            cands
-                .iter()
-                .find(|o| o.account_id == *acct)
-                .map(|o| o.order_id.clone())
+        cands.first().map(|o| o.order_id.clone())
+    }
+
+    /// #175: whose money a venue-routed fill moved, established WITHOUT a
+    /// token-only guess. Two proofs only:
+    ///
+    /// 1. the fill names an order this OME tracks (by core or venue id) —
+    ///    that order's own account is the answer;
+    /// 2. it does not, but exactly ONE live order exists on that token+side —
+    ///    there is no candidate to choose between, so its account is the
+    ///    answer.
+    ///
+    /// Zero or 2+ candidates is `None`: the caller must refuse the fill and say
+    /// so, never stamp a default book. This is the seam the market host uses
+    /// before it constructs a core `Fill`, whose `account_id` is a required
+    /// field (see `market::host::fill_from_api`).
+    pub fn resolve_account_for(
+        &self,
+        external_order_id: &str,
+        token: &str,
+        side: Side,
+    ) -> Option<AccountId> {
+        if let Some(o) = self.by_venue_or_id(external_order_id) {
+            return Some(o.account_id.clone());
         }
+        let mut cands = self.live_for(token, side).into_iter();
+        let first = cands.next()?;
+        if cands.next().is_some() {
+            return None;
+        }
+        Some(first.account_id.clone())
     }
 
     /// Apply one inbound fill event. Returns a canonical delta when position

@@ -506,7 +506,9 @@ fn family_22_intent_audit_tail_params() {
 
 #[test]
 fn family_23_unverified_exposure_report() {
-    use blitzkrieg_core::position::{UnverifiedExposureEntry, UnverifiedExposureReport};
+    use blitzkrieg_core::position::{
+        UnattributedExposureEntry, UnverifiedExposureEntry, UnverifiedExposureReport,
+    };
     let v = UnverifiedExposureReport {
         entries: vec![UnverifiedExposureEntry {
             position_id: "hft-7".into(),
@@ -529,13 +531,48 @@ fn family_23_unverified_exposure_report() {
         total_shares: d("5"),
         total_cost_usd: d("2"),
         total_percentage_of_closed_cost: d("12.5"),
+        // #175: empty parked list / zero notional — the pre-#175 shape plus
+        // the two additive keys; nothing else about the frozen bytes moves.
+        parked: vec![],
+        parked_total_notional_usd: Decimal::ZERO,
     };
     // The aggregates predate issue 991 and carry Decimal's default (string)
     // serde — their shape is FROZEN as-is (additive-only discipline). The
     // entry-level decimals ride crate::decimal (number-or-string). `source`
-    // is issue 991's additive field, serde(default).
+    // is issue 991's additive field, serde(default); `parked` (#175) is
+    // additive the same way.
     assert_eq!(
         wire(&v),
-        r#"{"entries":[{"positionId":"hft-7","conditionId":"cond","tokenId":"tok","accountId":"default","strategy":"spread_arb","shares":5.0,"costUsd":2.0,"fallbackPrice":0.4,"originalFallbackPrice":0.4,"source":"reconciled","netPnlUsd":-2.0,"exitedAtMs":1758888010000,"percentageOfTotalCost":12.5}],"totalPositions":1,"totalShares":"5","totalCostUsd":"2","totalPercentageOfClosedCost":"12.5"}"#
+        r#"{"entries":[{"positionId":"hft-7","conditionId":"cond","tokenId":"tok","accountId":"default","strategy":"spread_arb","shares":5.0,"costUsd":2.0,"fallbackPrice":0.4,"originalFallbackPrice":0.4,"source":"reconciled","netPnlUsd":-2.0,"exitedAtMs":1758888010000,"percentageOfTotalCost":12.5}],"totalPositions":1,"totalShares":"5","totalCostUsd":"2","totalPercentageOfClosedCost":"12.5","parked":[],"parkedTotalNotionalUsd":"0"}"#
+    );
+
+    // #175: a parked (unattributed) fill rides under its own key with the
+    // venue's unchanged claim — NOT as a position. `accountId` is omitted when
+    // the venue row carried no account (the `missing_account` case), and the
+    // entry decimals use the number-or-string `crate::decimal` style.
+    let parked = UnverifiedExposureReport {
+        entries: vec![],
+        total_positions: 0,
+        total_shares: Decimal::ZERO,
+        total_cost_usd: Decimal::ZERO,
+        total_percentage_of_closed_cost: Decimal::ZERO,
+        parked: vec![UnattributedExposureEntry {
+            venue: "polymarket".into(),
+            venue_order_id: "0xmanual".into(),
+            trade_id: "t-1".into(),
+            token_id: "tok".into(),
+            account_id: None,
+            side: Side::Sell,
+            shares: d("10"),
+            price: d("0.55"),
+            notional_usd: d("5.5"),
+            ts_ms: 1_758_888_010_000,
+            reason: "missing_account".into(),
+        }],
+        parked_total_notional_usd: d("5.5"),
+    };
+    assert_eq!(
+        wire(&parked),
+        r#"{"entries":[],"totalPositions":0,"totalShares":"0","totalCostUsd":"0","totalPercentageOfClosedCost":"0","parked":[{"venue":"polymarket","venueOrderId":"0xmanual","tradeId":"t-1","tokenId":"tok","side":"sell","shares":10.0,"price":0.55,"notionalUsd":5.5,"tsMs":1758888010000,"reason":"missing_account"}],"parkedTotalNotionalUsd":"5.5"}"#
     );
 }

@@ -834,6 +834,11 @@ fn parse_trades(
                 ts_ms,
                 tx_hash: None,
                 maker: Some(false),
+                // #175: this sweep is scoped to ONE account's credentials but
+                // the snapshot carries no account name on the wire; the kernel
+                // resolves the venue's cash owner and parks the trade on the
+                // unverified report when that owner is not unique.
+                account: None,
             });
         }
         for m in as_slice(t.get("maker_orders")) {
@@ -863,6 +868,9 @@ fn parse_trades(
                 ts_ms,
                 tx_hash: None,
                 maker: Some(true),
+                // #175: see the taker leg above — identity comes from the
+                // kernel's venue-cash-owner binding, never from a default.
+                account: None,
             });
         }
     }

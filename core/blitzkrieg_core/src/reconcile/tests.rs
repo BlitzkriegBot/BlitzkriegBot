@@ -64,6 +64,8 @@ fn repairs_missed_fill_from_rest_trade() {
             ts_ms: 2,
             tx_hash: None,
             maker: Some(true),
+            // #175: the venue row names the book this trade moved.
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: 3,
     };
@@ -118,6 +120,7 @@ fn repairs_only_the_missing_increment_of_a_partially_known_fill() {
                 ts_ms: 2,
                 tx_hash: None,
                 maker: Some(true),
+                account: Some(crate::model::default_account_id()),
             },
             VenueTrade {
                 venue_order_id: "v1".into(),
@@ -129,6 +132,7 @@ fn repairs_only_the_missing_increment_of_a_partially_known_fill() {
                 ts_ms: 3,
                 tx_hash: None,
                 maker: Some(false),
+                account: Some(crate::model::default_account_id()),
             },
         ],
         now_ms: 5,
@@ -244,6 +248,7 @@ fn manual_close_trade_surfaces_as_unknown_fill() {
                 ts_ms: 10,
                 tx_hash: None,
                 maker: Some(false),
+                account: Some(crate::model::default_account_id()),
             },
             // Manual: an id the OME has never heard of.
             VenueTrade {
@@ -256,6 +261,7 @@ fn manual_close_trade_surfaces_as_unknown_fill() {
                 ts_ms: 20,
                 tx_hash: None,
                 maker: Some(false),
+                account: Some(crate::model::default_account_id()),
             },
         ],
         now_ms: 30,
@@ -293,6 +299,7 @@ fn sweep_reports_a_fill_absorbed_by_a_terminal_order() {
             ts_ms: 3,
             tx_hash: None,
             maker: Some(true),
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: 4,
     };
@@ -332,6 +339,7 @@ fn ghost_with_fill_is_cancelled_through_core_cancel() {
             ts_ms: 2,
             tx_hash: None,
             maker: Some(true),
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: 20_000,
     };

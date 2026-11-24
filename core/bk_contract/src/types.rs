@@ -490,6 +490,20 @@ pub struct VenueTradeInfo {
     /// synthesised from it must charge the fee the venue actually did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maker: Option<bool>,
+    /// #175: the account whose cash this trade moved, as the venue side can
+    /// prove it. Deliberately NOT `serde(default = default_account_id)`: the
+    /// defect this field closes is exactly "no account, so guess one". A row
+    /// that cannot name its account arrives as `None` and is PARKED by the
+    /// core — unattributed, reported and alerted — never booked into
+    /// `default`.
+    ///
+    /// Additive on a Rust DTO at the market-plugin boundary. The frozen
+    /// `BK_ABI_VERSION = 2` covers the C strategy vtable in
+    /// `user_layer/strategy_api` (a different crate and contract), so no ABI
+    /// bump is involved; a plugin that cannot prove the account leaves it
+    /// `None` and the core refuses to fold (see `FoldVerdict`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::account::AccountId>,
 }
 
 /// Authoritative venue snapshot for the periodic reconciliation sweep.

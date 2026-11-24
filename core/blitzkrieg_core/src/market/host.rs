@@ -203,7 +203,50 @@ fn pending_to_api(o: &m::TrackedOrder) -> api::PendingOrder {
     }
 }
 
-fn fill_from_api(f: &api::MarketFill) -> m::Fill {
+/// #175: whose book a venue-routed fill moves, resolved from OME FACTS, not a
+/// default constant.
+///
+/// `api::MarketFill` carries no account (the market-plugin ABI predates E28's
+/// per-account grain), so the host must prove one before it can build a core
+/// `Fill` — whose `account_id` is required. Two proofs, in order:
+///
+/// 1. the external order id names a tracked order → that order's account;
+/// 2. otherwise exactly ONE live order on (token, side) → its account.
+///
+/// Zero or 2+ candidates = `None`, and the caller REFUSES the fill loudly. It
+/// used to be stamped `default_account_id()`, which is how a non-default
+/// account's execution landed in the default book (the #175 cross-account
+/// defect on the live channel; the reconcile channel had its own copy).
+fn account_for_market_fill(
+    core: &mut Core,
+    venue: &str,
+    f: &api::MarketFill,
+    now_ms: i64,
+) -> Option<m::AccountId> {
+    if let Some(acct) = core.account_for_market_fill(&f.order_id, &f.token_id, f.side) {
+        return Some(acct);
+    }
+    // No provable owner: record it as an unattributed fill (report + RiskAlert
+    // + audit row) instead of booking it somewhere.
+    core.park_unattributed_venue_fill(
+        crate::reconcile::UnattributedFill {
+            venue: venue.to_string(),
+            venue_order_id: f.order_id.clone(),
+            trade_id: f.trade_id.clone().unwrap_or_default(),
+            token_id: f.token_id.clone(),
+            account: None,
+            side: f.side,
+            size: f.size,
+            price: f.price,
+            ts_ms: f.ts_ms,
+            reason: crate::reconcile::UnattributedReason::MissingAccount,
+        },
+        now_ms,
+    );
+    None
+}
+
+fn fill_from_api(f: &api::MarketFill, account: m::AccountId) -> m::Fill {
     m::Fill {
         order_id: f.order_id.clone(),
         trade_id: f.trade_id.clone(),
@@ -216,16 +259,19 @@ fn fill_from_api(f: &api::MarketFill) -> m::Fill {
         tx_hash: f.tx_hash.clone(),
         // The venue's own maker/taker report rides straight through to the OME.
         maker: f.maker,
-        // E28: `api::MarketFill` carries no account yet — the market-plugin
-        // ABI addition is deferred (disclosed in the E28 PR), so a
-        // venue-routed fill lands in the `default` book. Core-internal fills
-        // (dry matcher, reconciliation) copy the account from their tracked
-        // order instead, so multi-account routing does not depend on this hop.
-        account_id: m::default_account_id(),
+        // #175: proven above (`account_for_market_fill`), never defaulted. The
+        // pre-fix `m::default_account_id()` here is the live-channel half of
+        // the cross-account defect: a venue fill belonging to a non-default
+        // account was booked into the default book, and the two books' cash
+        // never met again.
+        account_id: account,
     }
 }
 
-fn snapshot_from_api(s: &api::ReconcileSnapshot) -> crate::reconcile::VenueSnapshot {
+fn snapshot_from_api(
+    s: &api::ReconcileSnapshot,
+    cash_owner: Option<&m::AccountId>,
+) -> crate::reconcile::VenueSnapshot {
     crate::reconcile::VenueSnapshot {
         open_order_ids: s.open_order_ids.clone(),
         trades: s
@@ -242,6 +288,14 @@ fn snapshot_from_api(s: &api::ReconcileSnapshot) -> crate::reconcile::VenueSnaps
                 tx_hash: t.tx_hash.clone(),
                 // The venue's role report rides through to the gap-fill synthesis.
                 maker: t.maker,
+                // #175: the plugin's own claim wins. Only when it says nothing
+                // may the kernel contribute the one fact it owns: which account
+                // this venue's CASH belongs to (the binding venue-cash reports
+                // are folded into, #646). That is attribution by cash
+                // custody, not a default book — and `cash_owner` is `None`
+                // whenever the venue has no unique owner, in which case the
+                // trade stays unattributed and the fold parks it.
+                account: t.account.clone().or_else(|| cash_owner.cloned()),
             })
             .collect(),
         now_ms: s.now_ms,
@@ -729,7 +783,16 @@ impl MarketHost for CoreHost {
                 fill.order_id, fill.size, fill.price, fill.maker
             );
             let mut c = self.core.lock().await;
-            if let Err(e) = c.ingest_fill(fill_from_api(&fill), now_ms()) {
+            let now = now_ms();
+            // #175: the venue fill must name whose cash it moved. Proven from
+            // the OME's own order book; unprovable = refused and reported
+            // (never stamped `default`). The handle's own plugin names the
+            // venue for the record ("" on a shared data-plane handle).
+            let venue = self.own_plugin.clone();
+            let Some(account) = account_for_market_fill(&mut c, &venue, &fill, now) else {
+                return;
+            };
+            if let Err(e) = c.ingest_fill(fill_from_api(&fill, account), now) {
                 c.emit_error(e);
             }
         })
@@ -759,18 +822,31 @@ impl MarketHost for CoreHost {
         Box::pin(async move {
             // This handle is the executor's own bucket (`for_plugin`), so the
             // name it carries IS the venue that fetched this snapshot — the
-            // sweep is authoritative for that venue only.
-            let venue = self
-                .active_plugin
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
+            // sweep is authoritative for that venue only. The shared data-plane
+            // handle carries "" (legacy single-venue all-take), and falls back
+            // to the assembly's `active_plugin` exactly as before.
+            let own = self.own_plugin.clone();
+            let venue = if own.is_empty() {
+                self.active_plugin
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone()
+            } else {
+                own
+            };
             let mut c = self.core.lock().await;
+            // #175: attribution source of last resort — the account this
+            // venue's CASH belongs to (the same binding the venue balance
+            // reports fold into, #646). `None` = the venue has no unique owner,
+            // and then a trade the plugin did not attribute itself stays
+            // unattributed: the fold parks it instead of picking a book.
+            let cash_owner = c.account_owning_venue_cash(&venue);
             // Trades for KNOWN orders go through the OME reconcile; trades for
             // orders the core never issued (manual closes on the venue) ride
-            // through as well — the core folds them into the position book by
-            // token id instead of dropping them (the ghost-position bug).
-            let snap = snapshot_from_api(&snapshot);
+            // through as well — the core folds them into the position book, by
+            // (account, token), instead of dropping them (the ghost-position
+            // bug).
+            let snap = snapshot_from_api(&snapshot, cash_owner.as_ref());
             let tracked = snap
                 .trades
                 .iter()

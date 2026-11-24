@@ -81,6 +81,8 @@ fn venue_close(c: &mut Core, token: &str, at_ms: i64) {
             ts_ms: at_ms,
             tx_hash: None,
             maker: Some(false),
+            // #175: the manual venue close names the account that held it.
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: at_ms + 100,
     };

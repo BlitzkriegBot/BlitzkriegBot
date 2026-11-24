@@ -144,6 +144,10 @@ fn external_sell(size: Decimal, price: Decimal, ts_ms: i64) -> crate::reconcile:
             ts_ms,
             tx_hash: None,
             maker: Some(true),
+            // #175: the row states whose cash moved. Every caller of this
+            // fixture folds into the default book, so that is the account —
+            // now stated by the venue row instead of assumed by the core.
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: ts_ms + 1_000,
     }

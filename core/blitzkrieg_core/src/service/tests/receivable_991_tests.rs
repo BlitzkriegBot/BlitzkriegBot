@@ -353,6 +353,11 @@ fn reconcile_sell_fill_redeems_the_claim_at_the_fill_price() {
             ts_ms: bound + 2_000,
             tx_hash: None,
             maker: None,
+            // #175: the venue row names the account whose cash moved. The
+            // position is already fallback-closed, so the fold parks this as
+            // `unknown_position` — the RECEIVABLE path below (claim
+            // redemption) is what books cash here, and it is token-scoped.
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: bound + 2_000,
     };

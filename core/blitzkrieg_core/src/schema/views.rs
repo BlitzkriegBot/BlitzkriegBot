@@ -241,6 +241,14 @@ pub struct ReconcileTrade {
     /// Absent means "fall back to the order's fill policy".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maker: Option<bool>,
+    /// #175: the account whose cash this trade moved. A caller that knows the
+    /// order it belongs to knows this; one that does not must OMIT the field —
+    /// the core then PARKS the trade (reported on
+    /// `positions.unverified_exposure`, alerted) instead of folding it into a
+    /// guessed account. Deliberately no `serde(default =
+    /// default_account_id())`: that default is the defect this field closes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<AccountId>,
 }
 
 #[derive(Debug, Clone, Serialize)]

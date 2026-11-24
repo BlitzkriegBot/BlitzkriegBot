@@ -63,6 +63,7 @@ function boundText(b: RiskBound): string {
 /** 一行的定义：wire 字段名（camelCase）+ 展示元数据 + 整数/小数。 */
 interface RiskRowDef {
   field: string; label: string; unit: string; group: string; int: boolean
+  max?: number
   /** 可选的通俗解释：某一行的含义用户读不出时给一句。 */
   hint?: string
   bound: () => RiskBound | undefined
@@ -74,6 +75,18 @@ const ROW_DEFS: RiskRowDef[] = [
   { field: 'maxConsecutiveLosses', label: '连亏熔断', unit: '次', group: '账户', int: true, bound: () => riskDoc.value?.account.limits.maxConsecutiveLosses },
   { field: 'cooldownMinutes', label: '熔断冷静期', unit: '分钟', group: '账户', int: true, bound: () => riskDoc.value?.account.limits.cooldownMinutes },
   { field: 'maxOrderNotionalUsd', label: '单笔最大限额', unit: 'USD', group: '账户', int: false, hint: '无论策略算出要下多少钱，系统单笔最多按这个金额发单（超出部分静默截断）', bound: () => riskDoc.value?.account.limits.maxOrderNotionalUsd },
+  {
+    field: 'sizePct',
+    label: '单笔权益比例 (BK_SIZE_PCT)',
+    unit: '%',
+    group: '账户',
+    int: false,
+    max: 100,
+    hint: '按账户现金权益百分比计算单笔预算（0 = 关闭，走固定股数/金额；例：填 2 表示 2%）',
+    bound: () => riskDoc.value?.sizePct !== undefined
+      ? { value: String(riskDoc.value.sizePct), source: Number(riskDoc.value.sizePct) > 0 ? 'flag' : 'default' }
+      : undefined,
+  },
 ]
 
 // ── 编辑缓冲 + 保存（risk.setSystemic，只发改动项）──
@@ -103,6 +116,7 @@ function buildPatch(): Record<string, string> | string {
     if (raw === cur) continue
     const n = Number(raw)
     if (!Number.isFinite(n) || n < 0) return `${r.label}：必须是 ≥ 0 的数字（0 = 关闭）`
+    if (r.max !== undefined && n > r.max) return `${r.label}：不能超过 ${r.max}`
     if (r.int && !Number.isInteger(n)) return `${r.label}：必须是整数`
     patch[r.field] = raw
   }

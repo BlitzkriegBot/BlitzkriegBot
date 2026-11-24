@@ -79,13 +79,33 @@ impl Core {
         &mut self,
         db: &crate::risk::account_store::AccountRiskDb,
     ) -> Result<(), String> {
-        use crate::risk::account_store::{ROUND_DURATION_SETTING, STRATEGIES_SETTING};
+        use crate::risk::account_store::{
+            ROUND_DURATION_SETTING, SIZE_PCT_SETTING, STRATEGIES_SETTING,
+        };
         let settings = db
             .load_settings()
             .map_err(|e| format!("account_settings read failed: {e}"))?;
+        let default_id = crate::model::default_account_id();
         for (account_id, keys) in &settings {
             let account_id_owned = account_id.clone();
             let id = blitzkrieg_market_api::AccountId::from(account_id.as_str());
+            if account_id.as_str() == default_id.as_str() {
+                if let Some(raw) = keys.get(SIZE_PCT_SETTING) {
+                    match raw.trim().parse::<Decimal>() {
+                        Ok(v) if v >= Decimal::ZERO && v <= Decimal::ONE_HUNDRED => {
+                            self.config.size_pct = v;
+                            if let Some(engine) = self.engine.as_mut() {
+                                engine.set_size_pct(v);
+                            }
+                        }
+                        _ => tracing::warn!(
+                            account = %account_id,
+                            value = %raw,
+                            "account_settings BK_SIZE_PCT is out of [0, 100] or unparseable — boot value stands"
+                        ),
+                    }
+                }
+            }
             // Round anchor: only applied to accounts that exist in the book.
             if let Some(raw) = keys.get(ROUND_DURATION_SETTING) {
                 let sec: i64 = match raw.trim().parse() {

@@ -428,6 +428,13 @@ impl Engine {
         self.cfg.max_shares = max_shares;
     }
 
+    /// Move the equity-relative sizing percentage (`BK_SIZE_PCT`), in memory,
+    /// without restarting the engine (`0` = off, absolute `size_usd` path).
+    pub fn set_size_pct(&mut self, size_pct: Decimal) {
+        self.bump_inputs();
+        self.cfg.size_pct = size_pct;
+    }
+
     /// Tokens whose trend is currently confirmed (diagnostics/tests). The union
     /// over registered strategies.
     pub fn confirmed_tokens(&self) -> HashSet<String> {

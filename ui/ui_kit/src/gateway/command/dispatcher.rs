@@ -466,12 +466,13 @@ impl Dispatcher {
         }
         cfg.mode = if dry_run { "dry".into() } else { "live".into() };
         if let Some(s) = size_usd {
-            // Keep the safety notional cap >= the requested size.
+            // Keep the safety notional cap >= the requested size (worst-case
+            // binary share price is $1.00, not $0.60).
             let max_shares = cfg.max_shares as f64;
-            cfg.max_order_notional = format!(
+            cfg.max_order_notional = Some(format!(
                 "{:.2}",
-                s.parse::<f64>().unwrap_or(0.0).max(max_shares * 0.6)
-            );
+                s.parse::<f64>().unwrap_or(0.0).max(max_shares)
+            ));
         }
         self.sup.set_config(cfg.clone());
 

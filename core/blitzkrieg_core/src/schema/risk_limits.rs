@@ -23,6 +23,11 @@ pub struct RiskLimitsResult {
     pub account: RiskAccountLimitsView,
     /// The exit triple Gate 4 binds per entry.
     pub exit: RiskExitView,
+    /// Equity-relative per-entry sizing percentage (`BK_SIZE_PCT`, 0 = off).
+    /// Additive optional field — omitted when `None` to keep the frozen wire
+    /// golden byte-identical; old panels ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_pct: Option<Decimal>,
 }
 
 impl RiskLimitsResult {
@@ -43,6 +48,7 @@ impl RiskLimitsResult {
                 holder_stop_pct: exit.holder_stop_pct,
                 strategy_exit_maker_first: exit.strategy_exit_maker_first,
             },
+            size_pct: None,
         }
     }
 }
@@ -208,6 +214,10 @@ pub struct SetSystemicLimitsParams {
     /// `--max-order-notional` CLI 标语（issue #983：风控跟随账户资本）。
     #[serde(default, with = "crate::decimal::opt")]
     pub max_order_notional_usd: Option<Decimal>,
+    /// 单笔权益比例（`BK_SIZE_PCT`，百分比 `0..=100`，`0` = 关闭走固定股数/金额）。
+    /// 热写入立即生效，持久化至 SQLite `account_settings` 键 `BK_SIZE_PCT`。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub size_pct: Option<Decimal>,
     /// Free-text note from the caller, echoed into the audit line.
     #[serde(default)]
     pub reason: Option<String>,
@@ -223,6 +233,7 @@ impl SetSystemicLimitsParams {
             && self.max_consecutive_losses.is_none()
             && self.cooldown_minutes.is_none()
             && self.max_order_notional_usd.is_none()
+            && self.size_pct.is_none()
     }
 }
 

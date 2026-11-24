@@ -70,7 +70,7 @@ const FILES = [
   ['设置·版本与更新', 'src', 'pages', 'settings', 'SettingsVersion.vue'],
   ['设置·风控与策略', 'src', 'pages', 'settings', 'SettingsRisk.vue'],
   ['设置·风控读数', 'src', 'pages', 'settings', 'SettingsRiskLimits.vue'],
-  ['设置·执行策略', 'src', 'pages', 'settings', 'SettingsExecutionPolicy.vue'],
+  ['设置·规则编辑器', 'src', 'pages', 'settings', 'PolicyRulesEditor.vue'],
 ].map(([name, ...p]) => ({ name, src: read(...p) }))
 
 // Tailwind's palette, with and without a shade suffix: `text-red-500`,
@@ -171,7 +171,9 @@ for (const f of FILES) {
 // 都由编排壳 SettingsRisk 的唯一 AlertBanner 呈现。原先进回执横幅是唯一
 // 的 AlertBanner，2026-11-17 操作者指令删除「已保存」回执后本卡不再持有
 // 告警面 —— 豁免的是「壳不持告警」这一事实，不是放宽告警必须走原语的规则。
-for (const f of FILES.filter((f) => !['App.vue', 'LoginView', '设置壳', '设置·风控与策略', '设置·通用', '设置·执行策略'].includes(f.name) && !f.name.startsWith('行情·'))) {
+// 设置·规则编辑器与设置·风控与策略同理：规则编辑器把校验/内核错误经 invalid
+// 上抛，由页面壳顶部的 AlertBanner 统一呈现，自身不持告警状态。
+for (const f of FILES.filter((f) => !['App.vue', 'LoginView', '设置壳', '设置·风控与策略', '设置·通用', '设置·规则编辑器'].includes(f.name) && !f.name.startsWith('行情·'))) {
   check(`${f.name}: surfaces its alerts through the AlertBanner primitive`, () => {
     assert.ok(/<AlertBanner/.test(f.src), 'no AlertBanner usage')
   })

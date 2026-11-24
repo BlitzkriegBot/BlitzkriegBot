@@ -19,9 +19,6 @@
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-
-use crate::store::StoreApi;
 
 pub use blitzkrieg_market_api::account::{
     AccountId, DEFAULT_ACCOUNT_ID, DEFAULT_SEED_VENUE, default_account_id,
@@ -332,10 +329,6 @@ pub struct AccountLedgers {
     /// refuses unknown ids, and `repair_display_after_removal` re-derives
     /// when a removal takes the pointed-at account away.
     display: AccountId,
-    /// The shared StoreApi this book's ledgers write money facts through —
-    /// `None` until `install_store` runs at assembly (backtester and most
-    /// in-process tests stay memory-only, the honest refusal).
-    store: Option<Arc<dyn StoreApi>>,
 }
 
 impl AccountLedgers {
@@ -368,7 +361,6 @@ impl AccountLedgers {
             ledgers,
             active,
             display,
-            store: None,
         }
     }
 
@@ -425,30 +417,6 @@ impl AccountLedgers {
     pub fn reset_all_to_seed(&mut self, seed: rust_decimal::Decimal) {
         for ledger in self.ledgers.values_mut() {
             ledger.reset_to_seed(seed);
-        }
-    }
-
-    /// Issue #43: wire one durable store carrier into EVERY account's ledger,
-    /// so each money fact lands in SQLite (kernel_meta) beyond the JSONL
-    /// journal. The store is cloned per ledger — `Box<dyn StoreApi>` isn't
-    /// `Clone`, `SqliteStore` is. Called from `Core::with_account_book` at
-    /// boot; a store-less core (backtester, in-process tests) never calls this
-    /// and every ledger stays memory-only.
-    #[allow(dead_code)]
-    pub(crate) fn set_store_on_all_ledgers(&mut self, store: &crate::store::SqliteStore) {
-        for ledger in self.ledgers.values_mut() {
-            ledger.set_store(Some(Arc::new(store.clone())));
-        }
-    }
-
-    /// Wire the shared StoreApi into THIS book and every ledger it owns —
-    /// runtime-created accounts (`insert`) take the store through `self.store`
-    /// on the same path. Called once at core assembly; before it, every
-    /// ledger writes JSONL only and reports memory-only honestly.
-    pub(crate) fn install_store(&mut self, store: Option<Arc<dyn StoreApi>>) {
-        self.store = store.clone();
-        for ledger in self.ledgers.values_mut() {
-            ledger.set_store(store.clone());
         }
     }
 
@@ -967,8 +935,7 @@ impl AccountLedgers {
                 ),
             ));
         }
-        let mut ledger = Ledger::new();
-        ledger.set_store(self.store.clone());
+        let ledger = Ledger::new();
         self.ledgers.insert(account.id.clone(), ledger);
         // #778(a): account.create's binding path — `insert` bypasses
         // `set_venue`, so the shared-venue warning must fire here too.

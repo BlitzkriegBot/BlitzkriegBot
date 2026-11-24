@@ -565,13 +565,6 @@ impl blitzkrieg_core::store::StoreApi for CoreSeamCarrier {
         Err(seam_not_driven("save_credentials"))
     }
 
-    fn append_money_fact(
-        &self,
-        _fact: &blitzkrieg_core::store::MoneyFact<'_>,
-    ) -> Result<blitzkrieg_core::store::WriteOutcome, blitzkrieg_core::model::CoreError> {
-        Err(seam_not_driven("append_money_fact"))
-    }
-
     fn put_setting(
         &self,
         _scope: blitzkrieg_core::store::AccountScope<'_>,

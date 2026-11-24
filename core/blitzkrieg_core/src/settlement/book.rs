@@ -2,11 +2,9 @@
 //! receivables. Moved verbatim from `settlement.rs` (pure code motion).
 
 use crate::position::OpenPosition;
-use crate::store::StoreApi;
 use rust_decimal::Decimal;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::Arc;
 
 use super::JournalLine;
 use super::QueryState;
@@ -35,7 +33,6 @@ impl SettlementBook {
             journal: path.map(|p| SettlementJournal {
                 path: p.to_path_buf(),
             }),
-            store: None,
         };
         if let Some(j) = book.journal.as_ref() {
             for line in j.load() {
@@ -43,14 +40,6 @@ impl SettlementBook {
             }
         }
         book
-    }
-
-    /// Wire the shared StoreApi — every booking also lands as a
-    /// `MoneyFact::Settlement` fact beside the byte-identical JSONL journal
-    /// append (R7).
-    pub(crate) fn with_store(mut self, store: Option<Arc<dyn StoreApi>>) -> Self {
-        self.store = store;
-        self
     }
 
     fn replay(&mut self, line: JournalLine) {

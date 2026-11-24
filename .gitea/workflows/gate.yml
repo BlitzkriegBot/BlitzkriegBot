@@ -85,7 +85,7 @@ jobs:
           # Gitea/act runner does not export $GITHUB_OUTPUT, so step outputs are
           # passed through temp files instead (same runner container, persists).
           PR_NUM=${{ github.event.pull_request.number }}
-          FILES=$(curl -s -u "$GITEA_CRED" "http://host.docker.internal:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}/files")
+          FILES=$(curl -s -u "$GITEA_CRED" "http://192.168.0.153:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}/files")
           R6_HIT=$(echo "$FILES" | jq -r '.[] | select(.filename | test("ledger|RiskGate|risk.gate|\\.env|live|credential|secret")) | .filename' | head -1)
           if [ -n "$R6_HIT" ]; then
             echo "R6 boundary touched: $R6_HIT -> skip auto-merge"
@@ -108,7 +108,7 @@ jobs:
           git config --global user.email "ceer_quant@users.noreply.github.com"
           PR_NUM=${{ github.event.pull_request.number }}
           REPO_DIR=/tmp/bk-auto-merge-$$
-          git clone "http://$GITEA_CRED@host.docker.internal:3000/BlitzkriegBot/BlitzkriegBot.git" "$REPO_DIR"
+          git clone "http://$GITEA_CRED@192.168.0.153:3000/BlitzkriegBot/BlitzkriegBot.git" "$REPO_DIR"
           cd "$REPO_DIR"
           git checkout main
           git pull origin main
@@ -125,7 +125,7 @@ jobs:
             git push origin "auto-merge/${PR_NUM}-${{ github.sha }}"
             curl -s -X PATCH -u "$GITEA_CRED" -H "Content-Type: application/json" \
               -d "{\"head\":\"auto-merge/${PR_NUM}-${{ github.sha }}\"}" \
-              "http://host.docker.internal:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}"
+              "http://192.168.0.153:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}"
           fi
           rm -rf "$REPO_DIR"
 
@@ -146,4 +146,4 @@ jobs:
           PR_NUM=${{ github.event.pull_request.number }}
           curl -s -X POST -u "$GITEA_CRED" -H "Content-Type: application/json" \
             -d '{"merge_style":"squash","commit_message":"Auto-merge PR #${PR_NUM} via gate CI"}' \
-              "http://host.docker.internal:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}/merge"
+              "http://192.168.0.153:3000/api/v1/repos/BlitzkriegBot/BlitzkriegBot/pulls/${PR_NUM}/merge"

@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn the_shipped_extension_config_is_read_and_matches_its_extension() {
         let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/binance_spot/config.toml");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions/chainlink/config.toml");
         let cfg = ExtensionConfig::load(&path);
         assert!(cfg.path.is_some(), "the shipped config must exist");
         assert!(cfg.warnings.is_empty(), "{:?}", cfg.warnings);
@@ -483,11 +483,11 @@ mod tests {
             "no typo'd section or key: {:?}",
             cfg.unknown_keys
         );
-        assert_eq!(cfg.meta.name.as_deref(), Some("binance_spot"));
+        assert_eq!(cfg.meta.name.as_deref(), Some("chainlink"));
         assert_eq!(cfg.meta.extension_type.as_deref(), Some("market"));
         assert_eq!(cfg.meta.enabled, Some(false));
         assert!(
-            cfg.check_against("binance_spot", "0.1.0", "market")
+            cfg.check_against("chainlink", "0.1.0", "market")
                 .is_empty()
         );
         assert!(
@@ -515,15 +515,15 @@ mod tests {
         let cfg = extension_from(
             r#"
             [meta]
-            name = "binance_futures"
+            name = "chainlink_v2"
             version = "9.9.9"
             extension_type = "strategy"
             enabled = true
             "#,
         );
-        let problems = cfg.check_against("binance_spot", "0.1.0", "market");
+        let problems = cfg.check_against("chainlink", "0.1.0", "market");
         assert_eq!(problems.len(), 3, "{problems:?}");
-        assert!(problems.iter().any(|p| p.contains("binance_futures")));
+        assert!(problems.iter().any(|p| p.contains("chainlink_v2")));
         assert!(problems.iter().any(|p| p.contains("9.9.9")));
         assert!(problems.iter().any(|p| p.contains("strategy")));
         assert_eq!(cfg.meta.enabled, Some(true));

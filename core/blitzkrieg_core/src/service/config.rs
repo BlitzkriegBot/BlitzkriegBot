@@ -262,15 +262,15 @@ pub struct CoreConfig {
     pub spread_arb_entry_bounce_min_pct: Option<Decimal>,
     /// Turn-filter lookback window (sec); `None` = default 5.
     pub spread_arb_entry_bounce_window_sec: Option<i64>,
-    /// Start Rust-native WS feeds (P4): Polymarket orderbook + Binance spot.
+    /// Start Rust-native WS feeds (P4): Polymarket orderbook + Chainlink 60s TWAP.
     /// When enabled Node no longer has to push `books.*` / `spot.price`.
     pub feed_ws_enabled: bool,
     /// Select the operative market plugin by name (matches `MarketPlugin::name`,
     /// e.g. "polymarket"). None = first registered. Ignored when the name is not
     /// registered (falls back to the first) so a stray flag never bricks startup.
     pub market_plugin: Option<String>,
-    /// Binance stream symbols (e.g. ["BTC","ETH"]); empty disables spot.
-    pub binance_assets: Vec<String>,
+    /// Reference oracle stream symbols (e.g. ["BTC","ETH"]); empty disables reference feed.
+    pub spot_assets: Vec<String>,
     /// Where to append near-miss records (blocked signals + path). None = off.
     pub near_miss_path: Option<String>,
     /// #363: where the account-isolated execution policy loads from. The
@@ -635,7 +635,7 @@ impl Default for CoreConfig {
             spread_arb_entry_bounce_window_sec: None,
             feed_ws_enabled: false,
             market_plugin: None,
-            binance_assets: vec!["BTC".into(), "ETH".into(), "SOL".into(), "XRP".into()],
+            spot_assets: vec!["BTC".into(), "ETH".into(), "SOL".into(), "XRP".into()],
             near_miss_path: None,
             // #363: default to the shipped config spelling; the loader treats
             // a MISSING file as the zero-config deployment (code defaults).

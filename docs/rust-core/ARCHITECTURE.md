@@ -151,7 +151,7 @@ per-strategy 限额/分账。策略标签贯穿订单（`OrderRequest.strategy`�
 | 契约 | `Extension`（`on_load`/`on_unload`） | `MarketPlugin`（`DataFeed`/`MarketDiscovery`/`OrderExecutor`） |
 | 能力 | 只能 `emit`/`log`/读策略名——**无交易能力** | 经 `MarketHost` 推行情、取订单、报成交 |
 | IPC | `extension.list/enable/disable` | `market.list`（含 `active`） |
-| 现存 | 内建示例 `BinanceSpotExtension`（installed，默认未启用） | 官方 `polymarket`（默认编译并 active） |
+| 现存 | 内建示例 `ChainlinkExtension`（installed，默认未启用） | 官方 `polymarket`（默认编译并 active） |
 
 `Extension` 是**生命周期钩子**，**刻意不给交易能力**；`MarketPlugin` 才是"市场接入点"。
 新增一个市场 = 实现 `MarketPlugin` 并加一个 Cargo feature；新增一个生命周期钩子 = 实现 `Extension`。

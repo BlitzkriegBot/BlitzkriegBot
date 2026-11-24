@@ -15,7 +15,7 @@ members = [
     # concrete market extensions and produces the `blitzkrieg-core` binary.
     "core/blitzkrieg_launcher",
 "extensions/polymarket",
-"extensions/binance_spot",
+"extensions/chainlink",
 "extensions/kalshi",
     "extensions/predictfun",
     "extensions/polysimulator",

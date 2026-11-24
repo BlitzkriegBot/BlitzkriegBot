@@ -1,7 +1,7 @@
 //! `MarketDataApi` — the unified market-data READ seam (issue #36).
 //!
 //! The trait lives in `blitzkrieg-bk-contract` (leaf crate) and is implemented
-//! by market extensions (polymarket, binance_spot). The core holds an
+//! by market extensions (polymarket, chainlink). The core holds an
 //! `Option<Box<dyn MarketDataApi>>` and never knows which venue is behind it.
 //! Every method defaults to an honest `Err` ("no backend implements this yet"),
 //! mirroring `StoreApi` — a missing backend fails loud instead of silently
@@ -15,7 +15,7 @@ use std::fmt::Debug;
 
 /// Unified market-data READ API.
 ///
-/// Implemented by market extensions (polymarket, binance_spot, …). The core
+/// Implemented by market extensions (polymarket, chainlink, …). The core
 /// holds `Option<Box<dyn MarketDataApi>>` and calls through it without knowing
 /// the venue. Every method defaults to an `Err` so an absent backend fails
 /// loud instead of fabricating prices.

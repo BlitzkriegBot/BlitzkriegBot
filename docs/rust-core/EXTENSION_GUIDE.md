@@ -161,7 +161,7 @@ discovered → installed → enabled → (running) → disabled → uninstalled
 
 ```toml
 [meta]
-name = "binance_spot"
+name = "chainlink"
 version = "0.1.0"
 extension_type = "market"
 enabled = false
@@ -193,14 +193,14 @@ max_daily_loss = 500.0
 | `extension.disable` | 停用通用扩展（执行 `on_unload`）；返回 `{ name, enabled: false }` |
 | `market.list` | `{ version, active, plugins: [{ name, type, structure, capabilities, capabilitiesBits, hasDataFeed, hasDiscovery, hasExecutor, enabled, active }] }`（E27：`structure`/`capabilities`/`capabilitiesBits` 为 §2.6 声明汇总，见 §8.3） |
 
-内建示例扩展 `binance_spot`（`Extension`）默认 installed，可 `extension.enable`/`disable`。
+内建示例扩展 `chainlink`（`Extension`）默认 installed，可 `extension.enable`/`disable`。
 市场插件（`MarketPlugin`）走 `market.list` 只读查询；选择用 `--market-plugin`（暂无 enable/disable IPC）。
 
 ## 7. 最小示例
 
 - **市场插件**：`extensions/polymarket/`——`PolymarketPlugin` 组装 `feed`/`discovery`/`live` 三组件，
   经 `MarketHost` 驱动内核。这是新增市场应照抄的形状。
-- **通用扩展**：`extension/builtins.rs::BinanceSpotExtension`——只在 `on_load` 写一行日志，演示
+- **通用扩展**：`extension/builtins.rs::ChainlinkExtension`——只在 `on_load` 写一行日志，演示
   生命周期切换与 `Err` → `Failed` 的隔离（**无交易能力**）。
 
 ## 8. 验收清单

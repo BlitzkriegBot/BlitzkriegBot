@@ -6,8 +6,8 @@
 # means the CRATE GRAPH changed: re-baseline inside the PR that moved the edge
 # and disclose it in the PR body.
 [internal]
-blitzkrieg-binance-spot > blitzkrieg-bk-contract
 blitzkrieg-build-info > blitzkrieg-build-support
+blitzkrieg-chainlink > blitzkrieg-bk-contract
 blitzkrieg-core > blitzkrieg-build-info
 blitzkrieg-core > blitzkrieg-data-model
 blitzkrieg-core > blitzkrieg-lua-runtime
@@ -18,7 +18,7 @@ blitzkrieg-core > parity-logic
 blitzkrieg-core > strategy-logic
 blitzkrieg-data-model > blitzkrieg-market-api
 blitzkrieg-kalshi > blitzkrieg-bk-contract
-blitzkrieg-launcher > blitzkrieg-binance-spot
+blitzkrieg-launcher > blitzkrieg-chainlink
 blitzkrieg-launcher > blitzkrieg-core
 blitzkrieg-launcher > blitzkrieg-kalshi
 blitzkrieg-launcher > blitzkrieg-market-api
@@ -39,18 +39,18 @@ blitzkrieg-ui-panel > blitzkrieg-ui-kit
 polymarket-extension > blitzkrieg-bk-contract
 strategy-logic > blitzkrieg-market-api
 [external]
-blitzkrieg-binance-spot :: base64
-blitzkrieg-binance-spot :: futures-util
-blitzkrieg-binance-spot :: rust_decimal
-blitzkrieg-binance-spot :: serde_json
-blitzkrieg-binance-spot :: tokio
-blitzkrieg-binance-spot :: tokio-tungstenite
-blitzkrieg-binance-spot :: tracing
 blitzkrieg-bk-contract :: chrono
 blitzkrieg-bk-contract :: chrono-tz
 blitzkrieg-bk-contract :: rust_decimal
 blitzkrieg-bk-contract :: serde
 blitzkrieg-bk-contract :: serde_json
+blitzkrieg-chainlink :: base64
+blitzkrieg-chainlink :: futures-util
+blitzkrieg-chainlink :: rust_decimal
+blitzkrieg-chainlink :: serde_json
+blitzkrieg-chainlink :: tokio
+blitzkrieg-chainlink :: tokio-tungstenite
+blitzkrieg-chainlink :: tracing
 blitzkrieg-core :: aes-gcm
 blitzkrieg-core :: anyhow
 blitzkrieg-core :: arc-swap

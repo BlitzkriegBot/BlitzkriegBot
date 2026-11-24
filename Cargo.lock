@@ -1201,20 +1201,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blitzkrieg-binance-spot"
-version = "0.4.2"
-dependencies = [
- "base64 0.22.1",
- "blitzkrieg-bk-contract",
- "futures-util",
- "rust_decimal",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tracing",
-]
-
-[[package]]
 name = "blitzkrieg-bk-contract"
 version = "0.4.2"
 dependencies = [
@@ -1235,6 +1221,20 @@ dependencies = [
 [[package]]
 name = "blitzkrieg-build-support"
 version = "0.1.0"
+
+[[package]]
+name = "blitzkrieg-chainlink"
+version = "0.4.2"
+dependencies = [
+ "base64 0.22.1",
+ "blitzkrieg-bk-contract",
+ "futures-util",
+ "rust_decimal",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
 
 [[package]]
 name = "blitzkrieg-core"
@@ -1312,7 +1312,7 @@ name = "blitzkrieg-launcher"
 version = "0.4.2"
 dependencies = [
  "anyhow",
- "blitzkrieg-binance-spot",
+ "blitzkrieg-chainlink",
  "blitzkrieg-core",
  "blitzkrieg-kalshi",
  "blitzkrieg-market-api",

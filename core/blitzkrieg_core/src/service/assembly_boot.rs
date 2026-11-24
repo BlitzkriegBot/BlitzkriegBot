@@ -870,7 +870,7 @@ impl Core {
                 // Its config file is read and checked against the registered
                 // extension (KI-11): the file is no longer inert, and a config
                 // that has drifted from the code is reported at startup.
-                let ext = crate::extension::builtins::BinanceSpotExtension::new();
+                let ext = crate::extension::builtins::ChainlinkExtension::new();
                 let path =
                     crate::extension::config_path_for(crate::extension::EXTENSIONS_DIR, ext.name());
                 let cfg = crate::config::ExtensionConfig::load(&path);

@@ -1,11 +1,11 @@
 [package]
-name = "blitzkrieg-binance-spot"
+name = "blitzkrieg-chainlink"
 version.workspace = true
 edition = "2024"
-description = "Binance spot market extension for Blitzkrieg core — independent reference-price feed (decoupled from Polymarket)."
+description = "Chainlink 60s TWAP oracle reference-price extension for Blitzkrieg core — official binary-market settlement price source."
 
 [lib]
-name = "binance_spot_extension"
+name = "chainlink_extension"
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 

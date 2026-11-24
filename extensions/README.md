@@ -8,7 +8,7 @@ Two kinds of plugin live in the kernel, and they are **not** the same thing:
 | Contract | `DataFeed` / `MarketDiscovery` / `OrderExecutor` | `on_load` / `on_unload` |
 | Capability | Pushes data + takes orders via `MarketHost` | No trading ability (emit/log only) |
 | Crate | `extensions/<name>/` (own crate, rlib+cdylib) | compiled into the kernel |
-| Example | `extensions/polymarket/` | `extension/builtins.rs::BinanceSpotExtension` |
+| Example | `extensions/polymarket/` | `extension/builtins.rs::ChainlinkExtension` |
 
 A market is linked in by a Cargo feature and selected at runtime with
 `--market-plugin <name>`. It must depend on `blitzkrieg-bk-contract` only — **never

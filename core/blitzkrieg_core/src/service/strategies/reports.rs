@@ -39,6 +39,13 @@ impl Core {
         // accountId: empty on pre-E28 rows = the default account.
         let want = account.unwrap_or(crate::account::DEFAULT_ACCOUNT_ID);
         let empty = Vec::new();
+        // `limit == 0` = 「整份日志」（`trade_db::read_page` 的 no-cap 契约），
+        // 因此这一行是 per-account 路径的全史重折——**这条依赖是版本敏感的**：
+        // issue #186 / T9 会把 `limit: 0` 重定义成「默认一页」（约 50 行），
+        // 到那时这里会静默退化成只折最近 50 行，per-account summary 的
+        // totalTrades/net 会凭空缩水且没有任何报错。那个改动落地时必须把本行
+        // 改成显式的「要全量」拼写（PageRequest 的 None / 一个 no-cap 常量），
+        // 不能沿用 0。
         let all_rows = self.recent_trades(0);
         let rows: Vec<serde_json::Value> = match account {
             None => all_rows,
@@ -89,10 +96,13 @@ impl Core {
         for r in rows.iter() {
             let num = |k: &str| r.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
             let net_i = num("netPnlUsd");
-            match net_i.total_cmp(&0.0) {
-                std::cmp::Ordering::Greater => wins += 1,
-                std::cmp::Ordering::Equal => flats += 1,
-                std::cmp::Ordering::Less => losses += 1,
+            // 胜负平归类走唯一判定（`metrics::Outcome`）——成交行是 wire
+            // JSON，`netPnlUsd` 在这里已经是 f64，用同口径的 f64 域入口，
+            // 不让本出口自己写一遍符号比较。
+            match crate::metrics::Outcome::of_net_f64(net_i) {
+                crate::metrics::Outcome::Win => wins += 1,
+                crate::metrics::Outcome::Flat => flats += 1,
+                crate::metrics::Outcome::Loss => losses += 1,
             }
             gross += num("grossPnlUsd");
             fees += num("feesUsd");
@@ -107,11 +117,11 @@ impl Core {
         s["wins"] = serde_json::json!(wins);
         s["losses"] = serde_json::json!(losses);
         s["flat"] = serde_json::json!(flats);
-        s["winRate"] = serde_json::json!(if n > 0.0 {
-            wins as f64 * 100.0 / n
-        } else {
-            0.0
-        });
+        // 胜率：小数 0–1，唯一公式（issue #181）。没有任何分出胜负的笔时
+        // 报 0.0 —— 这个 JSON 形状的 `winRate` 是非可选字段（老面板按数字
+        // 读），「未知」由 `totalTrades`/`flat` 与本键的组合表达，不靠 null。
+        s["winRate"] =
+            serde_json::json!(crate::metrics::Tally::win_rate_of(wins, losses).unwrap_or(0.0));
         s["attributedGrossPnl"] = serde_json::json!(gross);
         s["totalFees"] = serde_json::json!(fees);
         s["attributedNetPnl"] = serde_json::json!(net);

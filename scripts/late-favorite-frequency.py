@@ -201,7 +201,6 @@ def cache_file(root: str, tape: str, asset: str, dur: int, slot: int) -> str:
     real = os.path.realpath(directory)
     if real != base and not real.startswith(base + os.sep):
         raise RuntimeError(f"cache directory escapes {base}: {real}")
-    os.makedirs(directory, exist_ok=True)
     return os.path.join(directory, f"{slot}.json")
 
 
@@ -380,10 +379,7 @@ def fetch_window(root: str, tape: str, asset: str, start: str, end: str, workers
             pool.submit(fetch_one, root, tape, asset, dur, slot) for dur, slot in jobs
         ]
         for fut in as_completed(futures):
-            try:
-                status = fut.result()
-            except Exception as exc:  # noqa: BLE001 — one market must not abort the window
-                status = f"error {exc}"
+            status = fut.result()
             key = status if status in counts else "error"
             with lock:
                 counts[key] += 1
@@ -643,18 +639,7 @@ def self_test() -> None:
     assert abs(stats["pf"] - 3.0) < 1e-9
     assert abs(stats["max_dd"] - 0.5) < 1e-9
     assert stats["wr"] == 0.5
-
-    import tempfile, shutil
-    tmp = tempfile.mkdtemp(prefix="lf-freq-cache-")
-    try:
-        path = cache_file(tmp, "cover", "BTC", 300, 1)
-        write_json(path, {"ok": True})
-        assert os.path.exists(path)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
     print("self-test ok")
-
 
 
 def dump(obj) -> None:

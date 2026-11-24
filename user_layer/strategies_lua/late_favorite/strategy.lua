@@ -1,4 +1,4 @@
--- late_favorite — buy the 0.80-0.90 favorite in the last 45-120 seconds
+-- late_favorite — buy the 0.94-0.97 favorite in the last 45-60 seconds
 -- and hold it to settlement. One attempt per condition per round. A
 -- cancelled or filled attempt is not re-entered.
 --
@@ -11,10 +11,10 @@
 -- directory name, which equals manifest.name: late_favorite.
 --
 -- THESIS DEATH DECLARATION (#961)
---   entry thesis : the side priced inside the ask/bid band with 45-120s
+--   entry thesis : the side priced inside the ask/bid band with 45-60s
 --                  left is the favorite and is held for the $1 redemption
 --   death cond 1 : not applied — an intra-round bid drop is the variance
---                  the 0.80 entry already prices, not a dead thesis
+--                  the 0.94 entry already prices, not a dead thesis
 --   death cond 2 : not applied — settlement does not need a live quote
 --   death cond 3 : not applied — there is no time-tightened reversal band
 --   enforcement  : bk_thesis_death returns false; the runtime injects no exit
@@ -245,10 +245,10 @@ function bk_evaluate()
     end
     local params = bk.params()
     local maker = int_param(params, "maker_entry", 0) == 1
-    local lo = num_param(params, "min_px", 0.80)
-    local hi = num_param(params, "max_px", 0.90)
+    local lo = num_param(params, "min_px", 0.94)
+    local hi = num_param(params, "max_px", 0.97)
     local t_min = int_param(params, "min_time_left", 45)
-    local t_max = int_param(params, "max_time_left", 120)
+    local t_max = int_param(params, "max_time_left", 60)
     local tl = round.time_left_sec
     local held = held_index()
 

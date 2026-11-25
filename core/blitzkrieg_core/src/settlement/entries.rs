@@ -1,7 +1,6 @@
 //! Committing one settlement: the idempotent booking entry and its claim fold.
 //! Moved verbatim from `settlement.rs` (pure code motion).
 
-use crate::store::{MoneyFact, WriteOutcome};
 use blitzkrieg_market_api::MarketResolution;
 use rust_decimal::Decimal;
 
@@ -89,19 +88,6 @@ impl SettlementBook {
         };
         self.applied.insert(record.key.clone(), record.clone());
         self.booked += 1;
-        if let Some(ref s) = self.store {
-            match s.append_money_fact(&MoneyFact::Settlement(&record)) {
-                Ok(WriteOutcome::Persisted) => {}
-                Ok(outcome) => tracing::warn!(
-                    position_id = %record.position_id,
-                    "settlement money_fact not persisted ({outcome:?}) — journal line kept, trading continues"
-                ),
-                Err(e) => tracing::warn!(
-                    position_id = %record.position_id,
-                    "settlement money_fact append refused — journal line kept, store write failed: {e:?}"
-                ),
-            }
-        }
         if let Some(j) = self.journal.as_ref() {
             j.append(&JournalLine::Settlement {
                 at_ms: now_ms,

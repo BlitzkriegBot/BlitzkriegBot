@@ -36,12 +36,10 @@
 //! book the same position twice, and must not lose the claim whose cash is
 //! still on-chain. `SettlementBook::recover` closes that window explicitly.
 
-use crate::store::StoreApi;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 mod book;
 mod booking;
@@ -89,9 +87,6 @@ pub struct SettlementBook {
     /// Fallback-claim ids already redeemed, so an id never redeems twice.
     fallback_redeemed: BTreeSet<String>,
     journal: Option<SettlementJournal>,
-    /// The shared StoreApi — every booking also lands as a `MoneyFact::Settlement`
-    /// fact beside the byte-identical JSONL journal append (R7).
-    store: Option<Arc<dyn StoreApi>>,
 }
 
 /// How one market's resolution query is going.

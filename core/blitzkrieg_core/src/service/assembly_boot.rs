@@ -40,21 +40,6 @@ impl Core {
         Self::with_account_book(config, accounts)
     }
 
-    /// #1278 seam: forward one money fact to the wired store; with no store
-    /// wired (tests, backtester) report `MemoryOnly { NoStoreConfigured }`
-    /// honestly instead of silently succeeding.
-    pub fn append_money_fact(
-        &self,
-        fact: &crate::store::MoneyFact<'_>,
-    ) -> Result<crate::store::WriteOutcome, crate::model::CoreError> {
-        match &self.store {
-            Some(store) => store.append_money_fact(fact),
-            None => Ok(crate::store::WriteOutcome::MemoryOnly {
-                reason: crate::store::MemoryOnlyReason::NoStoreConfigured,
-            }),
-        }
-    }
-
     /// The constructor with the account book SUPPLIED (E28): a multi-account
     /// book for tests without touching the operator's `.env` account rows the
     /// process cwd decides. Production always enters through [`Core::new`],
@@ -502,11 +487,11 @@ impl Core {
         let trade_db = config
             .trade_log_path
             .as_ref()
-            .map(|p| crate::trade_db::TradeDb::new(p).with_store(store.clone()));
+            .map(crate::trade_db::TradeDb::new);
         let order_db = config
             .order_log_path
             .as_ref()
-            .map(|p| crate::order_db::OrderDb::new(p).with_store(store.clone()));
+            .map(crate::order_db::OrderDb::new);
         let position_db = config
             .position_log_path
             .as_ref()
@@ -539,8 +524,7 @@ impl Core {
         // let a FAILED unwind one of its closes across a restart.
         let close_credential_log =
             side_log_path(&None, "close-credentials.jsonl").map(std::path::PathBuf::from);
-        let settlement = SettlementBook::new(settlement_log.as_deref().map(std::path::Path::new))
-            .with_store(store.clone());
+        let settlement = SettlementBook::new(settlement_log.as_deref().map(std::path::Path::new));
         let shadow_cfg = {
             let mut c = ShadowEvolutionConfig {
                 enabled: config.shadow_evolution_enabled,
@@ -830,9 +814,6 @@ impl Core {
                 }
             }
         });
-        // 会计四面 + 账本里的每个 Ledger 共享同一个存储后端（运行时
-        // account.create 补出来的账本，由 AccountLedgers::insert 同份 store）。
-        accounts.install_store(store.clone());
         let mut core = Self {
             risk: RiskGate::new(config.risk.clone()),
             account_risk_db: None,

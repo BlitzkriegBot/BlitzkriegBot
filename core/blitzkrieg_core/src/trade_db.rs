@@ -6,12 +6,10 @@
 //! contract that outlives it.
 
 use crate::position::ClosedPosition;
-use crate::store::{MoneyFact, StoreApi, WriteOutcome};
 use blitzkrieg_market_api::{AccountId, default_account_id};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Default ledger path per run mode. The trade log is the ONE file dry and
 /// live share by name today, which is exactly how a live panel ends up
@@ -182,7 +180,6 @@ pub struct TradeDb {
     jsonl_path: PathBuf,
     summary_path: PathBuf,
     summary: TradeSummary,
-    store: Option<Arc<dyn StoreApi>>,
     /// Per-account slices of the same fold (rows carry `account_id`, E28 §9.2).
     /// The global summary mixes every book's realized PnL; the accounting audit
     /// needs ONE book's realized to compare against THAT book's balance — a
@@ -250,15 +247,7 @@ impl TradeDb {
             summary,
             by_account,
             max_hft_tail,
-            store: None,
         }
-    }
-
-    /// Wire the shared StoreApi — every recorded trade also lands as a
-    /// `MoneyFact::Fill` fact beside the byte-identical JSONL append (R7).
-    pub(crate) fn with_store(mut self, store: Option<Arc<dyn StoreApi>>) -> Self {
-        self.store = store;
-        self
     }
 
     /// issue #942: the highest `hft-N` tail found in this ledger's closed-trade
@@ -281,19 +270,6 @@ impl TradeDb {
                 path = %self.jsonl_path.display(),
                 "trade jsonl append failed — trade kept in memory, not durable; trading continues"
             );
-        }
-        if let Some(ref s) = self.store {
-            match s.append_money_fact(&MoneyFact::Fill(rec)) {
-                Ok(WriteOutcome::Persisted) => {}
-                Ok(outcome) => tracing::warn!(
-                    trade_id = %rec.id,
-                    "trade money_fact not persisted ({outcome:?}) — JSONL row kept, trading continues"
-                ),
-                Err(e) => tracing::warn!(
-                    trade_id = %rec.id,
-                    "trade money_fact append refused — JSONL row kept, store write failed: {e:?}"
-                ),
-            }
         }
         let bucket = self.by_account.entry(rec.account_id.clone()).or_default();
         Self::fold_into(bucket, rec);
@@ -688,43 +664,6 @@ mod tests {
         // read_recent returns them in order.
         let recent = read_recent(&path, 1);
         assert_eq!(recent.len(), 1);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn record_routes_fill_through_store_and_keeps_jsonl_summary() {
-        let dir = std::env::temp_dir().join(format!("bktrade-money-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("trades.jsonl");
-        let (store, writes) = crate::store::test_support::RecordingStore::new();
-        let mut db = TradeDb::new(&path).with_store(Some(store.clone()));
-
-        let rec = TradeRecord::from_closed(&closed());
-        db.record(&rec, 100);
-
-        let log = writes.lock().unwrap().clone();
-        assert!(
-            log.iter().any(|s| s == "money:fill"),
-            "record must route the fill: {log:?}"
-        );
-        // R7: JSONL row + summary untouched by the seam.
-        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
-        assert_eq!(db.summary().total_trades, 1);
-        assert_eq!(db.summary_for(rec.account_id.as_str()).total_trades, 1);
-
-        // Store is consulted per record; the store handle is shared so the
-        // test can observe both writes through one handle.
-        let rec2 = TradeRecord {
-            id: "hft-2".into(),
-            ..rec.clone()
-        };
-        db.record(&rec2, 200);
-        let log = writes.lock().unwrap().clone();
-        assert_eq!(
-            log.iter().filter(|s| s.as_str() == "money:fill").count(),
-            2,
-            "each record routes one money fact"
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

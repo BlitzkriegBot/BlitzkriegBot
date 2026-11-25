@@ -299,44 +299,13 @@ pub trait StoreApi: Debug + Send + Sync {
     /// `kernel_meta.runtime_config_json`. `None` = never persisted.
     fn load_market_plugin(&self) -> Result<Option<String>, CoreError>;
 
-    // ── Money facts (issue #1278 — CONTRACT STAGE, NO CALLERS) ───────────
+    // ── Account-scoped settings ─────────────────────────────────────────
     //
-    // 下面两个方法是 #1278 的**接口定义**，不是实现：本提交里没有任何
-    // 调用方，也没有任何 backend 覆盖它们。把 `account_store.rs` 的裸 SQL
-    // 与四个 JSONL 资金写面接到这两个方法上，必须等运营者审批本契约之后
-    // 再做（Issue #1278：「审批前不得改 `risk/account_store.rs` 实现」）。
-    //
-    // 为什么默认实现返回 `Err` 而不是 `Ok(MemoryOnly { .. })`：本仓当前
-    // 最贵的一类缺陷正是「写盘失败静默成功」——`jsonl::append` 返回
-    // `bool`，四个资金写面（订单 / 成交 / 账本 / 结算）全部丢弃它；
-    // `Core::store` 是 `Option<Box<dyn StoreApi>>`，「没有 store」是一个
-    // 合法且无声的运行态。默认实现若返回 `Ok`，一个忘记实现的 backend
-    // 就会继续静默降级；返回 `Err` 把它变成一次响亮的失败。审批后应
-    // **删掉默认实现**，强制每个 backend 表态（见
-    // `docs/rust-core/RFC-1278-storeapi-v2-contract.md` §4 待决 D-1）。
-
-    /// Append one money fact durably. `WriteOutcome` forces every caller to
-    /// distinguish "landed" from "memory only" — the whole point of #1278:
-    /// today's four money write faces (order snapshot, closed-trade record,
-    /// ledger journal row, settlement journal line) cannot tell the
-    /// difference, because they all drop `jsonl::append`'s `bool`.
-    ///
-    /// `Err` = the backend was ASKED and refused/failed. `Ok(MemoryOnly)` =
-    /// the fact is authoritative in memory for this run and is NOT durable —
-    /// honest degradation, never silent success. [`SqliteStore`](crate::store::SqliteStore)
-    /// lands every fact in the append-only `money_facts` table and reports
-    /// [`WriteOutcome::Persisted`]; a core assembled without a store (`None`)
-    /// is reported as [`MemoryOnlyReason::NoStoreConfigured`] by the caller
-    /// seam, never as silent success.
-    fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
-        Err(CoreError::new(
-            CoreErrorCode::Internal,
-            format!(
-                "append_money_fact({}): no backend implements this yet",
-                fact.kind()
-            ),
-        ))
-    }
+    // 为什么默认实现返回 `Err` 而不是 `Ok(...)`：本仓最贵的一类缺陷正是
+    // 「写盘失败静默成功」。`Core::store` 是 `Option<Box<dyn StoreApi>>`，
+    // 「没有 store」是一个合法且无声的运行态；默认实现若返回 `Ok`，一个
+    // 忘记实现的 backend 就会继续静默降级；返回 `Err` 把它变成一次响亮
+    // 的失败。见 `docs/rust-core/RFC-1278-storeapi-v2-contract.md` §4 待决 D-1。
 
     /// Upsert (`Some(value)`) or delete (`None`) one account-scoped setting.
     /// [`SqliteStore`](crate::store::SqliteStore) lands it in `account_settings`
@@ -419,37 +388,6 @@ impl<'a> AccountScope<'a> {
     }
 }
 
-/// The four money facts the kernel currently persists as JSONL, each naming
-/// the type it ALREADY writes — this is a UNION OF EXISTING TYPES, not a
-/// second ledger model (R7: 记账口径不可擅动). No variant carries new
-/// arithmetic, a new field, or a new spelling; wiring the JSONL call sites
-/// onto this enum must not change one byte of what lands on disk.
-///
-/// - `Order` — `order_db::OrderDb::append` (`src/order_db.rs`)
-/// - `Fill` — `trade_db::TradeDb::record` (`src/trade_db.rs`)
-/// - `Ledger` — `Ledger::apply_tagged`'s journal append (`src/ledger.rs`)
-/// - `Settlement` — `SettlementJournal::append` (`src/settlement.rs`)
-#[derive(Debug, Clone, Copy)]
-pub enum MoneyFact<'a> {
-    Order(&'a crate::model::TrackedOrder),
-    Fill(&'a crate::trade_db::TradeRecord),
-    Ledger(&'a crate::ledger::JournalEntry),
-    Settlement(&'a crate::settlement::SettlementRecord),
-}
-
-impl MoneyFact<'_> {
-    /// The variant's name, for error text only. Never parsed, never logged
-    /// as data — it exists so a refusal names WHAT was refused.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            MoneyFact::Order(_) => "order",
-            MoneyFact::Fill(_) => "fill",
-            MoneyFact::Ledger(_) => "ledger",
-            MoneyFact::Settlement(_) => "settlement",
-        }
-    }
-}
-
 /// Test-only seam for the carrier decision (the same gating pattern as
 /// `strategies::test_support`: compiled for in-process tests or with the
 /// `test-support` feature, never in the production binary). Production
@@ -460,7 +398,7 @@ impl MoneyFact<'_> {
 /// this face exists for that alone.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
-    use super::{AccountScope, MoneyFact, StoreApi, WriteOutcome};
+    use super::{AccountScope, StoreApi, WriteOutcome};
     use crate::model::CoreError;
     use std::sync::Arc;
 
@@ -472,10 +410,9 @@ pub mod test_support {
         core.store = Some(store);
     }
 
-    /// Test-only recording carrier: `append_money_fact`/`put_setting` record
-    /// the call and report `Persisted`; every other domain keeps the trait's
-    /// honest `Err` default. The four money-write faces' wiring tests use it
-    /// to assert the route without touching a file.
+    /// Test-only recording carrier: `put_setting` and the market-plugin cell
+    /// record the call and report success; every other domain keeps the
+    /// trait's honest `Err` default.
     #[derive(Debug)]
     pub struct RecordingStore {
         writes: Arc<std::sync::Mutex<Vec<String>>>,
@@ -499,11 +436,6 @@ pub mod test_support {
     }
 
     impl StoreApi for RecordingStore {
-        fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
-            self.log(&format!("money:{}", fact.kind()));
-            Ok(WriteOutcome::Persisted)
-        }
-
         fn put_setting(
             &self,
             scope: AccountScope<'_>,
@@ -540,8 +472,6 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{FillPolicy, OrderRole, OrderStatus, Side, TrackedOrder};
-    use rust_decimal_macros::dec;
 
     /// The in-memory test backend: tests that want to observe writes
     /// without touching a file implement the trait over a recording map.
@@ -753,11 +683,6 @@ mod tests {
             Ok(())
         }
 
-        fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
-            self.log(format!("money:{}", fact.kind()));
-            Ok(WriteOutcome::Persisted)
-        }
-
         fn put_setting(
             &self,
             scope: AccountScope<'_>,
@@ -825,8 +750,6 @@ mod tests {
             &[],
         )
         .unwrap();
-        s.append_money_fact(&MoneyFact::Order(&order_for_money_test()))
-            .unwrap();
         s.put_setting(
             AccountScope::new(&AccountId::from("paper")),
             "POLICY_TEST",
@@ -834,7 +757,7 @@ mod tests {
         )
         .unwrap();
         let w = s.writes();
-        assert_eq!(w.len(), 18, "one line per domain write: {w:?}");
+        assert_eq!(w.len(), 17, "one line per domain write: {w:?}");
         assert_eq!(w[0], "venue:paper=kalshi");
         assert_eq!(w[1], "trading:paper=false");
         assert_eq!(w[2], "status:paper=frozen");
@@ -851,49 +774,12 @@ mod tests {
         assert_eq!(w[13], "round-duration:paper=3600");
         assert_eq!(w[14], "round-duration:paper=reset");
         assert_eq!(w[15], "credentials:[\"KALSHI_API_KEY\"]/[]");
-        assert_eq!(w[16], "money:order");
-        assert_eq!(w[17], "setting:paper=POLICY_TEST=Some(\"1\")");
+        assert_eq!(w[16], "setting:paper=POLICY_TEST=Some(\"1\")");
     }
 
     #[test]
     fn mem_store_can_report_persistence_disabled() {
         let s = MemStore::recording(false);
         assert!(!s.account_writes_enabled());
-    }
-
-    /// A complete TrackedOrder for money-fact tests (order_db.rs keeps an
-    /// identical private helper — the two modules must not share fixtures).
-    fn order_for_money_test() -> TrackedOrder {
-        TrackedOrder {
-            order_id: "o1".into(),
-            internal_key: "k1".into(),
-            strategy: "spread_arb".into(),
-            asset: "BTC".into(),
-            direction: "up".into(),
-            token_id: "tok".into(),
-            condition_id: "cond".into(),
-            side: Side::Buy,
-            mode: FillPolicy::MakerThenTaker,
-            role: OrderRole::Maker,
-            price: dec!(0.43),
-            size: dec!(10),
-            filled_size: Decimal::ZERO,
-            avg_fill_price: None,
-            status: OrderStatus::Pending,
-            round_slot: 1,
-            submitted_at_ms: 1,
-            updated_at_ms: 1,
-            decision_at_ms: 1,
-            execute_at_ms: 1,
-            report_at_ms: 1,
-            venue_order_id: Some("0xabc".into()),
-            place_uncertain: false,
-            escalate_at_ms: None,
-            maker_timeout_ms: 0,
-            account_id: AccountId::from("paper"),
-            venue: String::new(),
-            round_duration_sec: 0,
-            rejected_reason: None,
-        }
     }
 }

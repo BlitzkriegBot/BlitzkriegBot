@@ -4,10 +4,8 @@
 //! theme files reach through `use super::*`.
 
 use super::*;
-use crate::ledger::{JournalEntry, JournalKind};
 use crate::risk::RiskConfig;
 use crate::risk::limits::{Bound, LimitSource};
-use crate::store::{MemoryOnlyReason, MoneyFact, WriteOutcome};
 use rust_decimal_macros::dec;
 
 pub(crate) fn dry_core(balance: Decimal) -> Core {
@@ -78,28 +76,4 @@ pub(crate) fn live_core(balance: Decimal) -> Core {
     });
     c.set_balance(balance);
     c
-}
-
-/// #1278: a core assembled without a store (`Core::store == None`, the
-/// backtester and most in-process tests) must honestly report
-/// `MemoryOnly { NoStoreConfigured }` instead of silently succeeding.
-#[test]
-fn append_money_fact_with_no_store_is_memory_only() {
-    let core = dry_core(dec!(100));
-    let entry = JournalEntry {
-        at_ms: 1,
-        kind: JournalKind::Cashflow,
-        amount: dec!(5),
-        balance_after: dec!(105),
-        ref_: "rebate".into(),
-        fee_source: "".into(),
-    };
-    let outcome = core.append_money_fact(&MoneyFact::Ledger(&entry)).unwrap();
-    assert_eq!(
-        outcome,
-        WriteOutcome::MemoryOnly {
-            reason: MemoryOnlyReason::NoStoreConfigured
-        },
-        "a core without a store degrades to memory-only, never silent success"
-    );
 }

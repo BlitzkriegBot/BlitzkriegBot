@@ -1284,10 +1284,8 @@ impl Core {
         self.clear_account_gate(id.as_str());
         self.accounts.repair_active_after_removal(id);
         // 显示账户配置化: the removal must not orphan the display pointer —
-        // the file was rewritten WITHOUT the row above, and the same render
-        // re-derived its top-level `display_account` key when it pointed here
-        // (persist_account_remove's own edit); the memory cell re-derives the
-        // same way so the snapshot never names a removed account.
+        // the memory cell re-derives it so the snapshot never names a removed
+        // account.
         self.accounts.repair_display_after_removal(id);
         tracing::info!(
             target: "risk",

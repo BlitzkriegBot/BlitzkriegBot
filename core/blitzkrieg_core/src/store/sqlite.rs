@@ -55,7 +55,7 @@ use crate::model::{CoreError, CoreErrorCode};
 use crate::position::OpenPosition;
 use crate::risk::account_store::AccountRiskDb;
 use crate::risk::limits::{AccountRiskLimits, Bound, LimitSource};
-use crate::store::{AccountScope, FieldChanges, MoneyFact, WriteOutcome};
+use crate::store::{AccountScope, FieldChanges, WriteOutcome};
 
 /// The `account_settings` key carrying the per-account round-length grid
 /// (the account-level form of the env's `ACCOUNT_<ID>_ROUND_DURATION_SEC`;
@@ -134,27 +134,6 @@ impl SqliteStore {
             risk: AccountRiskDb::open(path)?,
             credentials,
         };
-        // #1278: 资金事实的追加-only 日志，一行一事实，永不更新、永不删除，
-        // 以便重启后审计四个资金写面到底落了哪些行。与 accounts/account_risk
-        // 同库同连接，同一套单写入口；IF NOT EXISTS 对已有库是幂等的，
-        // 不走 migrations 表（纯加表，不改既有版本）。
-        store
-            .risk
-            .db()
-            .with_connection(|conn| -> anyhow::Result<()> {
-                conn.execute_batch(
-                    "CREATE TABLE IF NOT EXISTS money_facts (
-                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                        kind        TEXT NOT NULL,
-                        account_id  TEXT,
-                        at_ms       INTEGER NOT NULL,
-                        payload     TEXT NOT NULL,
-                        created_at_ms INTEGER NOT NULL
-                    )",
-                )?;
-                Ok(())
-            })
-            .map_err(|e| anyhow::anyhow!("money_facts table init failed: {e}"))?;
         Ok(store)
     }
 
@@ -1007,91 +986,6 @@ impl super::StoreApi for SqliteStore {
                 })?;
         }
         Ok(())
-    }
-
-    /// #1278: 把一条资金事实落入 `money_facts`（追加-only，幂等于 INSERT
-    /// —— 同一事实重复写就是两行，由调用方保证幂等键，本层只管耐久。
-    /// `Ok(WriteOutcome::Persisted)` 只在 INSERT 真落盘后返回；序列化或
-    /// SQLite 失败返回 `Err`，由四个资金写面如实记日志、交易继续。
-    fn append_money_fact(&self, fact: &MoneyFact<'_>) -> Result<WriteOutcome, CoreError> {
-        let (kind, account_id, at_ms, payload) = match fact {
-            MoneyFact::Order(o) => (
-                "order",
-                o.account_id.as_str(),
-                o.updated_at_ms,
-                serde_json::to_string(o).map_err(|e| {
-                    CoreError::new(
-                        CoreErrorCode::Internal,
-                        format!("money fact (order) serialize failed: {e}"),
-                    )
-                })?,
-            ),
-            MoneyFact::Fill(f) => (
-                "fill",
-                f.account_id.as_str(),
-                f.exit_time,
-                serde_json::to_string(f).map_err(|e| {
-                    CoreError::new(
-                        CoreErrorCode::Internal,
-                        format!("money fact (fill) serialize failed: {e}"),
-                    )
-                })?,
-            ),
-            MoneyFact::Ledger(e) => (
-                "ledger",
-                "",
-                e.at_ms,
-                serde_json::to_string(e).map_err(|e| {
-                    CoreError::new(
-                        CoreErrorCode::Internal,
-                        format!("money fact (ledger) serialize failed: {e}"),
-                    )
-                })?,
-            ),
-            MoneyFact::Settlement(s) => (
-                "settlement",
-                if s.account_id.is_empty() {
-                    ""
-                } else {
-                    s.account_id.as_str()
-                },
-                s.applied_at_ms,
-                serde_json::to_string(s).map_err(|e| {
-                    CoreError::new(
-                        CoreErrorCode::Internal,
-                        format!("money fact (settlement) serialize failed: {e}"),
-                    )
-                })?,
-            ),
-        };
-        self.risk
-            .db()
-            .with_connection(|conn| -> anyhow::Result<()> {
-                conn.execute(
-                    "INSERT INTO money_facts
-                            (kind, account_id, at_ms, payload, created_at_ms)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                    rusqlite::params![
-                        kind,
-                        if account_id.is_empty() {
-                            None
-                        } else {
-                            Some(account_id)
-                        },
-                        at_ms,
-                        payload,
-                        crate::db::now_ms(),
-                    ],
-                )?;
-                Ok(())
-            })
-            .map_err(|e| {
-                CoreError::new(
-                    CoreErrorCode::Internal,
-                    format!("money fact append failed: {e}"),
-                )
-            })?;
-        Ok(WriteOutcome::Persisted)
     }
 
     /// issue #47: config.json 直写替换为 SQLite persist 路径。market_plugin

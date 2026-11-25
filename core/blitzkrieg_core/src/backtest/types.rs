@@ -271,6 +271,12 @@ pub struct TradeStats {
     pub net_pnl_usd: Decimal,
     #[serde(with = "crate::decimal")]
     pub avg_pnl_usd: Decimal,
+    /// Win rate as a percent (0–100): `wins / (wins + losses) × 100`, flat
+    /// trades excluded from the denominator. The formula lives ONLY in
+    /// [`crate::metrics::Tally`] (issue #181) — before that, this divided by
+    /// `closed` (flat included), so the same trade set reported a lower win
+    /// rate here than `trades.summary` did. `0` when nothing was decided, the
+    /// field's historical "no data" spelling.
     #[serde(with = "crate::decimal")]
     pub win_rate_pct: Decimal,
     /// gross profit / |gross loss|; `null` when there were no losing trades.
@@ -285,6 +291,85 @@ pub struct TradeStats {
     /// Fees summed from the per-strategy accounting.
     #[serde(with = "crate::decimal")]
     pub fees_usd: Decimal,
+}
+
+impl TradeStats {
+    /// Fold a replay's trade lines into the report's aggregate stats.
+    ///
+    /// Split out of `EventBacktester::trade_stats` (issue #181) so the win-rate
+    /// SSOT test drives the SAME math the replay does. Every win/loss/flat
+    /// classification goes through [`crate::metrics::Outcome`] and the
+    /// `winRatePct` through [`crate::metrics::Tally::win_rate_pct_of`] —
+    /// this function owns no formula of its own.
+    pub fn of_trades(trades: &[TradeLine], fees_usd: Decimal) -> Self {
+        let mut wins = 0u64;
+        let mut losses = 0u64;
+        let mut flat = 0u64;
+        let mut gross_profit = Decimal::ZERO;
+        let mut gross_loss = Decimal::ZERO;
+        let mut net = Decimal::ZERO;
+        for t in trades {
+            net += t.net_pnl_usd;
+            match crate::metrics::Outcome::of_net(t.net_pnl_usd) {
+                crate::metrics::Outcome::Win => {
+                    wins += 1;
+                    gross_profit += t.net_pnl_usd;
+                }
+                crate::metrics::Outcome::Loss => {
+                    losses += 1;
+                    gross_loss += t.net_pnl_usd.abs();
+                }
+                crate::metrics::Outcome::Flat => flat += 1,
+            }
+        }
+        let closed = trades.len() as u64;
+        // Realized equity curve: start from zero PnL, walk the trades in close
+        // order, track peak-to-trough. Percentage is of the peak that preceded
+        // the trough (a drawdown cannot exceed the equity that made it).
+        let mut equity = Decimal::ZERO;
+        let mut peak = Decimal::ZERO;
+        let mut max_dd = Decimal::ZERO;
+        let mut max_dd_pct = Decimal::ZERO;
+        for t in trades {
+            equity += t.net_pnl_usd;
+            if equity > peak {
+                peak = equity;
+            }
+            let dd = peak - equity;
+            if dd > max_dd {
+                max_dd = dd;
+                // Peak is > 0 whenever a drawdown exists (a fall from a positive
+                // peak), so the division is safe; guard anyway.
+                if peak > Decimal::ZERO {
+                    max_dd_pct = (dd / peak) * Decimal::ONE_HUNDRED;
+                }
+            }
+        }
+        Self {
+            closed,
+            wins,
+            losses,
+            flat,
+            gross_profit_usd: gross_profit,
+            gross_loss_usd: gross_loss,
+            net_pnl_usd: net,
+            avg_pnl_usd: if closed == 0 {
+                Decimal::ZERO
+            } else {
+                net / Decimal::from(closed)
+            },
+            win_rate_pct: crate::metrics::Tally::win_rate_pct_of(wins, losses)
+                .unwrap_or(Decimal::ZERO),
+            profit_factor: if gross_loss > Decimal::ZERO {
+                Some(gross_profit / gross_loss)
+            } else {
+                None
+            },
+            max_drawdown_usd: max_dd,
+            max_drawdown_pct: max_dd_pct,
+            fees_usd,
+        }
+    }
 }
 
 /// The taker-fee schedule a replay charged, as reported (#203).

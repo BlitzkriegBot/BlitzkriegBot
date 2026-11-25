@@ -163,6 +163,11 @@ pub struct TradeSummary {
     pub losses: u64,
     /// 净利恒等于 0 的平仓笔数：既非盈也非亏，不进胜率分母（issue #1277 胜率 single-口径）。
     pub flat: u64,
+    /// 胜率，**小数 0–1**（不是百分数）——issue #181 之后 wire 上只有这一种单位。
+    /// 公式唯一载体是 [`crate::metrics::Tally::win_rate_of`]：`wins / (wins + losses)`，
+    /// 平手不进分母。没有任何分出胜负的笔时这里是 `0.0`：`TradeSummary` 的字段是
+    /// 非可选的历史形状，0 是它的「无数据」拼写——要区分「未知」的调用方看
+    /// `wins + losses == 0`，不要从 0.0 反推。
     pub win_rate: f64,
     pub attributed_gross_pnl: f64,
     pub total_fees: f64,
@@ -296,18 +301,19 @@ impl TradeDb {
     fn fold_into(summary: &mut TradeSummary, rec: &TradeRecord) {
         let net = f64_of(rec.net_pnl_usd);
         summary.total_trades += 1;
-        match net.total_cmp(&0.0) {
-            std::cmp::Ordering::Greater => summary.wins += 1,
-            std::cmp::Ordering::Equal => summary.flat += 1,
-            std::cmp::Ordering::Less => summary.losses += 1,
+        // 胜负平的判定本身也走 [`crate::metrics::Outcome`]：如果这里自己
+        // `match net`，那么「什么算平手」就有第二份实现，胜率公式单一只剩
+        // 名义上的统一。
+        match crate::metrics::Outcome::of_net(rec.net_pnl_usd) {
+            crate::metrics::Outcome::Win => summary.wins += 1,
+            crate::metrics::Outcome::Loss => summary.losses += 1,
+            crate::metrics::Outcome::Flat => summary.flat += 1,
         }
         // 胜率只对「分得胜负」的笔数求比：平手不进分母，不算输也不算赢。
-        let decided = summary.wins + summary.losses;
-        summary.win_rate = if decided > 0 {
-            (summary.wins as f64 / decided as f64) * 100.0
-        } else {
-            0.0
-        };
+        // 单位是小数 0–1（issue #181：wire 上不许再有第二套单位）；汇总计数器
+        // 是 u64，走 u64 版公式而不是先截成 u32。
+        summary.win_rate =
+            crate::metrics::Tally::win_rate_of(summary.wins, summary.losses).unwrap_or(0.0);
         summary.attributed_gross_pnl += f64_of(rec.gross_pnl_usd);
         summary.total_fees += f64_of(rec.fees_usd);
         summary.attributed_net_pnl += net;
@@ -807,7 +813,7 @@ mod tests {
 
     /// #1277 胜率 single-口径：净利 > 0 为胜，== 0 为平手（不进胜率分母，也不算负），< 0 为负。
     /// 100 笔折叠后 wins + flat + losses = 100；win_rate = wins / (wins + losses)，
-    /// 平手笔稀释不进比。
+    /// 平手笔稀释不进比。单位是小数 0–1（issue #181 统一了 wire 单位）。
     #[test]
     fn win_flat_loss_partitions_hundred_trades() {
         let dir = std::env::temp_dir().join(format!("bktrade-wfl-{}", std::process::id()));
@@ -844,8 +850,9 @@ mod tests {
         assert_eq!(s.losses, 30, "净利小于 0 的笔才是负");
         assert_eq!(s.wins + s.flat + s.losses, 100);
         assert!(
-            (s.win_rate - (40.0 / 70.0 * 100.0)).abs() < 1e-9,
-            "胜率只在分出胜负的笔上求比，平手不进分母"
+            (s.win_rate - (40.0 / 70.0)).abs() < 1e-12,
+            "胜率只在分出胜负的笔上求比，平手不进分母；单位是小数 0–1，\
+             与 metrics::Tally::win_rate_of 是同一个表达式（issue #181）"
         );
 
         // summary.json 透传 flat；老报文缺该键时 serde 回落默认 0（向后兼容）。

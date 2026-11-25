@@ -396,78 +396,11 @@ impl EventBacktester {
         s
     }
 
+    /// The report's trade stats. The math lives on [`TradeStats::of_trades`] so
+    /// the win-rate SSOT test (`tests/metrics_ssot.rs`) drives the exact same
+    /// code the replay does, instead of a re-implementation of it.
     fn trade_stats(&self, fees_usd: Decimal) -> TradeStats {
-        let mut wins = 0u64;
-        let mut losses = 0u64;
-        let mut flat = 0u64;
-        let mut gross_profit = Decimal::ZERO;
-        let mut gross_loss = Decimal::ZERO;
-        let mut net = Decimal::ZERO;
-        for t in &self.trades {
-            net += t.net_pnl_usd;
-            if t.net_pnl_usd > Decimal::ZERO {
-                wins += 1;
-                gross_profit += t.net_pnl_usd;
-            } else if t.net_pnl_usd < Decimal::ZERO {
-                losses += 1;
-                gross_loss += t.net_pnl_usd.abs();
-            } else {
-                flat += 1;
-            }
-        }
-        let closed = self.trades.len() as u64;
-        // Realized equity curve: start from zero PnL, walk the trades in close
-        // order, track peak-to-trough. Percentage is of the peak that preceded
-        // the trough (a drawdown cannot exceed the equity that made it).
-        let mut equity = Decimal::ZERO;
-        let mut peak = Decimal::ZERO;
-        let mut max_dd = Decimal::ZERO;
-        let mut max_dd_pct = Decimal::ZERO;
-        for t in &self.trades {
-            equity += t.net_pnl_usd;
-            if equity > peak {
-                peak = equity;
-            }
-            let dd = peak - equity;
-            if dd > max_dd {
-                max_dd = dd;
-                // Peak is > 0 whenever a drawdown exists (a fall from a positive
-                // peak), so the division is safe; guard anyway.
-                if peak > Decimal::ZERO {
-                    max_dd_pct = (dd / peak) * Decimal::ONE_HUNDRED;
-                }
-            }
-        }
-        let pct = |n: u64, d: u64| {
-            if d == 0 {
-                Decimal::ZERO
-            } else {
-                Decimal::from(n) * Decimal::ONE_HUNDRED / Decimal::from(d)
-            }
-        };
-        TradeStats {
-            closed,
-            wins,
-            losses,
-            flat,
-            gross_profit_usd: gross_profit,
-            gross_loss_usd: gross_loss,
-            net_pnl_usd: net,
-            avg_pnl_usd: if closed == 0 {
-                Decimal::ZERO
-            } else {
-                net / Decimal::from(closed)
-            },
-            win_rate_pct: pct(wins, closed),
-            profit_factor: if gross_loss > Decimal::ZERO {
-                Some(gross_profit / gross_loss)
-            } else {
-                None
-            },
-            max_drawdown_usd: max_dd,
-            max_drawdown_pct: max_dd_pct,
-            fees_usd,
-        }
+        TradeStats::of_trades(&self.trades, fees_usd)
     }
 }
 

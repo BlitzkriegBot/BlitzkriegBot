@@ -85,6 +85,11 @@ pub mod ledger_api;
 pub mod logging;
 pub mod market;
 pub mod marketdata;
+/// issue #181: the ONE carrier of the win-rate formula (`Tally`). Every
+/// win-rate exit (`trade_db`, `trade_summary`, `backtest`) folds through it so
+/// the wire cannot carry two definitions again — see the module comment for
+/// the flat-trade and unit rulings.
+pub mod metrics;
 pub mod model;
 pub mod ome;
 pub mod round_id;

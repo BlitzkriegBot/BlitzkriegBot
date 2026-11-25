@@ -668,9 +668,16 @@ pub struct AccountView {
     #[serde(with = "crate::decimal")]
     pub day_realized_usd: Decimal,
     /// 现金真值锚点（操作员裁决 2026-11-08：账本流水=唯一真相）：本账户
-    /// 历史累计 Seed 入金。面板的净利 = `balance − seeded_total`（构造上
-    /// 恒等），成交行的模型费净利降级为「成交口径」展示。增量字段：老面板
-    /// 忽略；`default` 让老的 account.list 报文（无该键）仍能解析。
+    /// 历史累计 Seed 入金 —— 只是**入金流水**，不是净利公式的一部分。
+    ///
+    /// 净利有且只有一个口径：`cumulative_net_pnl = balance − opening_equity`
+    /// （见下方字段）。此前本行文档写「面板的净利 = `balance − seeded_total`」，
+    /// 与隔 7 行的 `cumulative_net_pnl` 直接矛盾（issue #181）——那套算法在
+    /// 账户铸造（`fund()` 也进 seed 锚）与既有亏损并存的账上会给出与账本
+    /// 口径不同的数。`seeded_total` 保留给审计（「这家账户一共入过多少本金」），
+    /// 面板若拿它做净利减数就是在做第二套口径。
+    ///
+    /// 增量字段：老面板忽略；`default` 让老的 account.list 报文（无该键）仍能解析。
     #[serde(default, with = "crate::decimal")]
     pub seeded_total: Decimal,
     /// 累计净 PnL = balance − opening_equity（账本口径，issue #1046/#1063）。

@@ -107,11 +107,15 @@ pub struct Ledger {
     /// and the journal.jsonl contract are untouched.
     journal_total: u64,
     /// 现金真值锚点（操作员裁决 2026-11-08：账本流水=唯一真相）：本账本
-    /// 历史累计 Seed 入金（boot 播种 + `account.create` 铸造）。净利的账本
-    /// 口径 = `balance − seeded_total`——构造上恒等，面板不再拿成交行的
-    /// 模型费净利去拼一个可能两头都不是的余额。`apply_tagged` 在 Seed 类
-    /// 行上累加，`replay_journal` 从全量文件行重建（窗口淘汰不影响：文件
-    /// 是 append-only 全史）。不序列化——journal 行形状与合同不动。
+    /// 历史累计 Seed 入金（boot 播种 + `account.create` 铸造）。**只是入金
+    /// 流水**，不是净利公式的减数——净利的唯一口径见
+    /// [`crate::schema::AccountView::cumulative_net_pnl`]：
+    /// `balance − opening_equity`。issue #181 前本行文档把
+    /// `balance − seeded_total` 写成「净利账本口径」，在多次 `fund()` 或
+    /// 期初权益与累计入金不等（LIVE 按 venue 权益开盘）的账上会给出与
+    /// SSOT 不同的数。`apply_tagged` 在 Seed 类行上累加，`replay_journal`
+    /// 从全量文件行重建（窗口淘汰不影响：文件是 append-only 全史）。
+    /// 不序列化——journal 行形状与合同不动。
     seeded_total: Decimal,
     /// Where journal rows append — per-mode since issue 941
     /// (`data/ledger/<account>.journal.live.jsonl` trading,
@@ -261,7 +265,8 @@ impl Ledger {
         self.balance
     }
 
-    /// 历史累计 Seed 入金——账本口径净利的减数（`balance − seeded_total`）。
+    /// 历史累计 Seed 入金（入金流水，审计用）。**不是**净利公式的减数：
+    /// 净利 SSOT 是 `balance − opening_equity`（issue #181）。
     pub fn seeded_total(&self) -> Decimal {
         self.seeded_total
     }
@@ -1454,8 +1459,8 @@ mod tests {
 
     /// 现金真值锚点（操作员裁决 2026-11-08）：`seeded_total` 累计 Seed 入金
     /// ——boot 播种、账户铸造、以及 replay 重建（窗口淘汰不影响，重建读
-    /// 全量文件行）。账本口径净利 = `balance − seeded_total`，面板的
-    /// 「本金 ＋ 净利 = 余额」恒等式由它保证。
+    /// 全量文件行）。它记账的是「一共入过多少本金」（审计用），**不是**
+    /// 净利减数：净利 SSOT = `balance − opening_equity`（issue #181）。
     #[test]
     fn seeded_total_accumulates_seeds_and_rebuilds_on_replay() {
         use rust_decimal_macros::dec;

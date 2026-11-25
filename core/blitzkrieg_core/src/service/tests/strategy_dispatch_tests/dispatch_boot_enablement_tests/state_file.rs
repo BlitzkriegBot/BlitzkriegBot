@@ -157,7 +157,7 @@ fn a_handshake_refused_strategy_stays_in_the_state_file() {
             enabled.push(name.clone());
         }
     }
-    crate::strategy_state::save(std::path::Path::new(&state), &enabled);
+    crate::strategy_state::save(std::path::Path::new(&state), &enabled).expect("fixture writes");
     let persisted = crate::strategy_state::load(&state);
     assert!(
         persisted.contains(&"spread_arb".to_string())

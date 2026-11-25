@@ -18,6 +18,21 @@
 //!   `set_strategy_enabled` the RPC uses, which fails silently for unknown
 //!   names and is warned about.
 //!
+//! AUTHORITY (#188, the single writer)
+//!   The ONE authoritative carrier of the enabled strategy set is SQLite
+//!   `account_settings.strategies` (JSON array, `STRATEGIES_SETTING`). This
+//!   file is a LEGACY MIRROR: it survives because a deployment whose default
+//!   account carries no `strategies` row — and one that carries an EMPTY
+//!   `[]` row, which `apply_account_strategy_assignments_at_boot` skips — has
+//!   nothing else to replay, so the boot would otherwise lose the operator's
+//!   intent. It is a fallback, never a second truth; when the two disagree
+//!   the SQLite row is what the account runs.
+//!   No new write sites. The four that exist (`service/config/engine.rs`,
+//!   `service/strategies/enable.rs` ×2, `service/accounts/persist.rs`) are
+//!   the whole set, and every write of the account-scoped set goes through
+//!   the same `strategy.enable` / `account.strategies.set` path that writes
+//!   the SQLite row first.
+//!
 //! SHAPE
 //!   `{"version":1,"enabled":["a","b"]}` — sorted and deduplicated on save, so
 //!   the file diffs stably. Missing or malformed file means "nothing
@@ -67,9 +82,17 @@ pub fn load(path: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Write the enabled-set atomically. Failures are warned, never fatal — a
-/// read-only cwd must not take the trading core down over a bookkeeping file.
-pub fn save(path: &Path, enabled: &[String]) {
+/// Write the enabled-set atomically.
+///
+/// #188 (R7.1 L4 — no silent degradation): this used to `warn!` and return,
+/// so "the mirror is now stale" was an unobservable fact that the kernel
+/// happily traded through. It now returns `Err` and the CALLER decides the
+/// posture. Callers must not swallow it: the mirror is the legacy fallback
+/// carrier for a default account with no `strategies` row, so a stale one is
+/// a real divergence between what the operator asked for and what the next
+/// boot will replay. SQLite (`account_settings.strategies`) stays the
+/// authority either way — a failed mirror does NOT undo the committed row.
+pub fn save(path: &Path, enabled: &[String]) -> Result<(), String> {
     let mut names: Vec<String> = enabled.to_vec();
     names.sort();
     names.dedup();
@@ -77,17 +100,25 @@ pub fn save(path: &Path, enabled: &[String]) {
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
     {
-        tracing::warn!(path = %path.display(), error = %e, "cannot create strategy state dir");
-        return;
+        return Err(format!(
+            "cannot create strategy state dir {}: {e}",
+            parent.display()
+        ));
     }
     let tmp = path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp, doc.to_string()) {
-        tracing::warn!(path = %path.display(), error = %e, "cannot write strategy state");
-        return;
+        return Err(format!(
+            "cannot write strategy state {}: {e}",
+            tmp.display()
+        ));
     }
     if let Err(e) = std::fs::rename(&tmp, path) {
-        tracing::warn!(path = %path.display(), error = %e, "cannot finalize strategy state");
+        return Err(format!(
+            "cannot finalize strategy state {}: {e}",
+            path.display()
+        ));
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -119,7 +150,8 @@ mod tests {
                 "alpha_strategy".into(),
                 "aaa".into(),
             ],
-        );
+        )
+        .expect("save lands");
         assert_eq!(load(&path), vec!["aaa", "alpha_strategy", "spread_arb"]);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"version\":1"), "{text}");
@@ -144,8 +176,27 @@ mod tests {
     fn save_creates_missing_parent_dirs() {
         let dir = tmpdir("parents");
         let path = dir.join("deep/nested/strategy-state.json");
-        save(&path, &["alpha_strategy".into()]);
+        save(&path, &["alpha_strategy".into()]).expect("save lands");
         assert_eq!(load(&path), vec!["alpha_strategy"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// #188 (R7.1 L4): a mirror write that CANNOT land must be reported, not
+    /// swallowed. The parent path here is a regular FILE, so
+    /// `create_dir_all` fails — the pre-#188 code logged a warn and returned
+    /// `()` as if the write had happened.
+    #[test]
+    fn save_failure_returns_the_reason_instead_of_a_silent_warn() {
+        let dir = tmpdir("fail");
+        let blocker = dir.join("not-a-dir");
+        std::fs::write(&blocker, b"x").unwrap();
+        let path = blocker.join("strategy-state.json");
+        let err = save(&path, &["alpha_strategy".into()])
+            .expect_err("a write that cannot land must surface an error");
+        assert!(
+            err.contains("cannot create strategy state dir"),
+            "the reason names the failed step: {err}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -1,5 +1,5 @@
 use super::*;
-use crate::settlement::fallback_binary_price;
+use crate::settlement::{PRICE_SOURCE_UNOBSERVED, fallback_binary_price};
 
 impl Core {
     // ── Market data (P0 bridge from Node; P3 ingests inside the core) ───────
@@ -637,10 +637,17 @@ impl Core {
                     top_ask.unwrap_or(Decimal::ZERO)
                 };
                 if value <= Decimal::ZERO {
+                    // Issue #176: a position with no observation contributes
+                    // NOTHING to the dry verdict. Reading its entry price here
+                    // (the pre-#176 shape, via a seeded `current_price`) let a
+                    // dead feed decide which leg won. `unwrap_or(ZERO)` keeps
+                    // the token in the price set with the honest "nobody quoted
+                    // it", so the `best <= 0.5` withhold branch below fires
+                    // instead of a winner being invented.
                     value = positions
                         .iter()
                         .find(|p| &p.token_id == t)
-                        .map(|p| p.current_price)
+                        .and_then(|p| p.mark())
                         .unwrap_or(Decimal::ZERO);
                 }
                 (t.as_str(), value)
@@ -845,11 +852,15 @@ impl Core {
                     .to_string(),
             ));
         };
-        // The same fallback price the sweep uses: the 0.5 binary threshold on
-        // the last known mid; a dead feed books 0 at `unobserved` and is never
-        // repriced at entry price (cost recovery). Bookkeeping value, never an
-        // invented payout. The basis is named on the record (issue #1002).
-        let (price, price_source) = fallback_binary_price(pos.current_price);
+        // The same fallback price the sweep uses, from the same typed
+        // observation state (issue #176): the 0.5 binary threshold on the last
+        // OBSERVED quote; a position with no observation books 0 at
+        // `unobserved` and is never repriced at entry price (cost recovery).
+        // Bookkeeping value, never an invented payout.
+        let (price, price_source) = match fallback_binary_price(&pos.price_state) {
+            Some((price, basis)) => (price, basis.as_price_source()),
+            None => (Decimal::ZERO, PRICE_SOURCE_UNOBSERVED),
+        };
         let closed = self
             .positions
             .close_priced(

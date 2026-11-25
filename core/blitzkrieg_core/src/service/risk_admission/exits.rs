@@ -68,12 +68,17 @@ pub(crate) fn reason_is_profit_side(reason: ExitReason) -> bool {
 /// unit (the same `((price − entry)/entry)*100` shape `exit_policy::pnl_pct`
 /// judges every rule on).
 ///
-/// `current_price` is the position's latest valuation mark (best bid when a
-/// book lives, else the remembered mark) — exactly the reference a resting
-/// maker close has to beat. Entry price <= 0 keeps the mark at zero (a
-/// degenerate open can never be held "underwater" by arithmetic).
+/// The mark is the position's latest OBSERVED price (best bid when a book
+/// lives, else the remembered observation). Entry price <= 0 keeps the mark at
+/// zero (a degenerate open can never be held "underwater" by arithmetic).
+///
+/// Issue #176: an UNOBSERVED position has no mark, and reports `0` — the same
+/// value the pre-existing `entry_price <= 0` guard produces. It must not read
+/// as "exactly at entry" (that was the defect), but this value only feeds the
+/// maker-first advisory gate (`pnl >= 0`), where an unknown mark errs toward
+/// the taker sweep — the conservative side.
 pub(crate) fn position_pnl_pct(pos: &crate::position::OpenPosition) -> Decimal {
-    crate::exit_policy::pnl_pct(pos.current_price, pos.entry_price)
+    crate::exit_policy::pnl_pct(pos.mark_or_zero(), pos.entry_price)
 }
 
 impl Core {
@@ -370,7 +375,10 @@ impl Core {
                     p.strategy.clone(),
                     p.asset.clone(),
                     p.direction.as_str().to_string(),
-                    p.current_price,
+                    // #176: no observation reads 0, the same spelling the
+                    // pre-#176 scalar used for "no mark". This slot is unused
+                    // by the close below (named `_current`).
+                    p.mark_or_zero(),
                     // E28 (§9.2): the manual close spends from the position's
                     // own account.
                     p.account_id.clone(),
@@ -1375,8 +1383,13 @@ impl Core {
                 if !closed_here {
                     continue;
                 }
-                let price = if pos.current_price > Decimal::ZERO {
-                    pos.current_price
+                // #176: the residual-exit reference price needs a number. An
+                // unobserved position keeps the legacy 0.01 floor so the
+                // resting sell is priced somewhere sane; when a real quote
+                // exists, the observed mark wins. (This is an ORDER price, not
+                // a booked settlement number — no ledger value is derived.)
+                let price = if pos.mark_or_zero() > Decimal::ZERO {
+                    pos.mark_or_zero()
                 } else {
                     Decimal::new(1, 2)
                 };

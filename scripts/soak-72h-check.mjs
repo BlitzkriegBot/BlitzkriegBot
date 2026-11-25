@@ -159,13 +159,19 @@ function preflight() {
   const daily = num(env.BK_RISK_MAX_DAILY_DRAWDOWN_USD);
   // Issue #991: the fallback settlement policy is read at boot only, so the
   // 72h profile must SPELL it — the soak gate then records exactly which
-  // policy the run exercised. `cash` is the default; either value passes the
-  // gate, but the key may not be missing. The aging budget must be a number
-  // when present (default 172800000 = 48h; <= 0 disables the aging warn).
+  // policy the run exercised. The key may not be missing.
+  //
+  // Issue #176: `cash` was REMOVED (it credited an estimate derived from a
+  // mark that could be the entry price to spendable cash — R7.1 L1), and the
+  // core now REFUSES TO BOOT on that spelling. A preflight that still called
+  // `cash` GO would hand back a "GO" for a profile the kernel rejects, which
+  // is the same silent-degradation shape the removal exists to end — so this
+  // gate now requires the one surviving value. The aging budget must be a
+  // number when present (default 172800000 = 48h; <= 0 disables the warn).
   if (env.BK_UNVERIFIED_EXPIRY_POLICY === undefined) {
-    problems.push('BK_UNVERIFIED_EXPIRY_POLICY is unset (issue 991: spell cash|receivable — the soak must record which policy ran)');
-  } else if (env.BK_UNVERIFIED_EXPIRY_POLICY !== 'cash' && env.BK_UNVERIFIED_EXPIRY_POLICY !== 'receivable') {
-    problems.push(`BK_UNVERIFIED_EXPIRY_POLICY=${env.BK_UNVERIFIED_EXPIRY_POLICY} (want cash|receivable)`);
+    problems.push('BK_UNVERIFIED_EXPIRY_POLICY is unset (issue 991: spell receivable — the soak must record which policy ran)');
+  } else if (env.BK_UNVERIFIED_EXPIRY_POLICY !== 'receivable') {
+    problems.push(`BK_UNVERIFIED_EXPIRY_POLICY=${env.BK_UNVERIFIED_EXPIRY_POLICY} (want receivable — issue 176 removed cash, which now refuses the boot)`);
   }
   if (env.BK_RECEIVABLE_MAX_AGE_MS !== undefined && !(num(env.BK_RECEIVABLE_MAX_AGE_MS) >= 0)) {
     problems.push(`BK_RECEIVABLE_MAX_AGE_MS=${env.BK_RECEIVABLE_MAX_AGE_MS} (want a non-negative number of ms, empty = 48h default)`);

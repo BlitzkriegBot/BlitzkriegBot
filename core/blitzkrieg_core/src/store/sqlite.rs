@@ -1365,8 +1365,9 @@ mod tests {
             token_id: "tok".into(),
             condition_id: "cond".into(),
             entry_price: dec!(100),
-            current_price: dec!(101),
-            prev_price: dec!(100),
+            // #176: the typed observation state replaces the old
+            // `current_price` / `prev_price` scalar pair.
+            price_state: crate::price_state::PriceState::observed_bid(dec!(101), now),
             shares: dec!(10),
             cost_usd: dec!(1000),
             was_maker_entry: true,
@@ -1415,7 +1416,7 @@ mod tests {
         // Idempotent re-save of a1 with a changed price: still one row per id,
         // the payload carries the new value.
         let mut a2 = a.clone();
-        a2.current_price = dec!(150);
+        a2.price_state = crate::price_state::PriceState::observed_bid(dec!(150), now);
         assert!(store.save_positions(&[a2.clone()]).unwrap());
         let count: i64 = store
             .risk
@@ -1458,7 +1459,7 @@ mod tests {
             })
             .unwrap();
         let back: OpenPosition = serde_json::from_str(&payload).unwrap();
-        assert_eq!(back.current_price, dec!(150));
+        assert_eq!(back.mark(), Some(dec!(150)));
         assert_eq!(back.account_id, AccountId::from("alice"));
 
         // An empty book: history stays, every previously open row is closed.
@@ -1538,8 +1539,8 @@ mod tests {
             token_id: "tok".into(),
             condition_id: "cond".into(),
             entry_price: dec!(100),
-            current_price: dec!(101),
-            prev_price: dec!(100),
+            // #176: typed price-observation state (see the sibling fixture).
+            price_state: crate::price_state::PriceState::observed_bid(dec!(101), now),
             shares: dec!(10),
             cost_usd: dec!(1000),
             was_maker_entry: true,
@@ -1596,7 +1597,7 @@ mod tests {
         let back: OpenPosition = serde_json::from_str(&payload).unwrap();
         assert_eq!(back.id, "a1");
         assert_eq!(back.account_id, AccountId::from("alice"));
-        assert_eq!(back.current_price, dec!(101));
+        assert_eq!(back.mark(), Some(dec!(101)));
 
         drop(store);
         let _ = std::fs::remove_dir_all(dir);

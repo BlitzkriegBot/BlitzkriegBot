@@ -25,6 +25,13 @@ use rust_decimal_macros::dec;
 /// [900s, 1800s)，持仓到期即此 —— 所有判定时刻都锚在这个真实网格值上。
 const EXPIRES_MS: i64 = 1_800_000;
 
+/// Issue #176: plant a REAL book observation on a position — the only input
+/// the fallback estimator accepts. There is no way to spell "entry price as a
+/// mark" any more: `PriceState` has no such constructor.
+fn observe(p: &mut crate::position::OpenPosition, price: Decimal) {
+    p.price_state = crate::price_state::PriceState::observed_bid(price, EXPIRES_MS - 1_000);
+}
+
 fn scratch(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "bk-expiry-fallback-{name}-{}-{:?}",
@@ -113,18 +120,23 @@ fn stage_unanswered_query(c: &mut Core, condition_id: &str, token_id: &str, firs
 }
 
 /// 用例 1：过期超过 10s 强制结算窗（无论查询是否零应答）→ 兜底平仓，
-/// trade record 带 `unverifiable_expiry`，无 redemption claim，审计锚全程为真。
+/// trade record 带 `unverifiable_expiry`，**不贷可花现金**，审计锚全程为真。
+///
+/// Issue #176: the old form of this test forced `UnverifiedExpiryPolicy::Cash`
+/// to pin the #684 spendable-cash credit. That arm is deleted (it minted cash
+/// from a price nobody observed — R7.1 L1), so the test now pins the
+/// RECEIVABLE model in the same scenario: the position still closes with the
+/// unverifiable label, the claim carries the notional, and the ledger does not
+/// move — the assertion REPLACES the deleted behavior rather than relaxing it.
 #[test]
 fn an_expired_never_answered_position_falls_back_closed() {
     let dir = scratch("fallback-closes");
     let mut c = fallback_core(&dir, false);
-    // 本用例钉的是 #684 的现金行为：显式退回 Cash 政策（默认已随 #1273 改为 Receivable）。
-    c.config.unverified_expiry_policy = UnverifiedExpiryPolicy::Cash;
     // 0.97 > 0.5 → 二值化结算价 1（旧语义会错按原 mid 0.40 记账，少回笼 3%）。
     let mut p = open_expiring_position(&mut c);
-    p.current_price = dec!(0.97);
-    p.prev_price = dec!(0.97);
+    observe(&mut p, dec!(0.97));
     c.positions_mut().restore_open(vec![p], None);
+    let cash_before = c.accounts().active_ledger().balance();
 
     // 过期瞬间 watch 接管（真路径），查询在过期后 100ms 首次发出、零应答。
     let sent = EXPIRES_MS + 100;
@@ -154,12 +166,22 @@ fn an_expired_never_answered_position_falls_back_closed() {
         serde_json::json!("binary_threshold"),
         "trade record names the threshold source"
     );
-    // 无 redemption claim：结算簿应收为 0、无待赎回。
+    // Issue #176: the notional becomes a RECEIVABLE claim — never spendable cash.
     let stats = c.engine_stats_at(bound + 2_000)["settlement"].clone();
     assert_eq!(
-        stats["receivableUsd"],
-        serde_json::json!(0.0),
-        "no claim may exist behind an unverified close"
+        stats["fallbackReceivableUsd"],
+        serde_json::json!(5.0),
+        "the estimate rides the receivable pool as a claim"
+    );
+    assert_eq!(
+        stats["pendingFallbackClaims"],
+        serde_json::json!(1),
+        "one open claim behind the unverified close"
+    );
+    assert_eq!(
+        c.accounts().active_ledger().balance(),
+        cash_before,
+        "the fallback close credits NO spendable cash (issue #176: estimated money is not tradable)"
     );
     assert_eq!(stats["pendingRedemptions"], serde_json::json!(0));
     assert!(c.take_pending_redemptions(i64::MAX / 2).is_empty());
@@ -252,8 +274,7 @@ fn an_answered_market_past_the_estimate_bound_falls_back_closed() {
     let mut c = fallback_core(&dir, false);
     // 0.97 > 0.5 → 二值化结算价 1，验证兜底 sweep 在超估计窗后仍会平仓。
     let mut p = open_expiring_position(&mut c);
-    p.current_price = dec!(0.97);
-    p.prev_price = dec!(0.97);
+    observe(&mut p, dec!(0.97));
     c.positions_mut().restore_open(vec![p], None);
     let sent = EXPIRES_MS + 100;
     c.tick(sent).unwrap();
@@ -470,25 +491,22 @@ fn force_close_is_idempotent_on_an_already_closed_position() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// #1238: `current_price == 0` (dead feed / never observed) is NOT priced at
-/// the entry price. The fallback books `0` at `price_source=unobserved`; the
-/// notional rides the receivable pool (cash policy credits `0 × shares`, i.e.
-/// nothing), and venue truth redeems it later — no invented cost recovery.
+/// #1238 / #176: a position with NO book observation (`PriceState::Unobserved`)
+/// is NOT priced at the entry price. The fallback books `0` at
+/// `price_source=unobserved`; the notional rides the receivable pool, and venue
+/// truth redeems it later — no invented cost recovery.
 #[test]
 fn zero_feed_fallback_is_unobserved_no_entry_price_substitute() {
     let dir = scratch("zero-feed-unobserved");
     let mut c = fallback_core(&dir, false);
     let p = open_expiring_position(&mut c);
-    // 一份喂死时落盘的快照：current_price = 0，flows 已记录开仓现金流。
-    let mut dead = p.clone();
-    dead.current_price = dec!(0);
-    dead.prev_price = dec!(0);
+    // Issue #176: a freshly opened position carries NO observation at all —
+    // the pre-#176 fixture had to zero `current_price` to model this; now the
+    // unobserved state cannot be confused with a quote in the first place.
+    let dead = p.clone();
+    assert!(dead.price_state.is_unobserved(), "fixture: never observed");
     c.positions.restore_open(vec![dead], None);
-    assert_eq!(
-        c.positions().open_positions()[0].current_price,
-        dec!(0),
-        "precondition: the snapshot carries a dead mark"
-    );
+    assert!(c.positions().open_positions()[0].mark().is_none());
     // 真路径：过期后 watch 接管、查询打点。
     let sent = EXPIRES_MS + 100;
     c.tick(sent).unwrap();
@@ -530,9 +548,9 @@ fn zero_feed_fallback_is_unobserved_no_entry_price_substitute() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// #1238 binary threshold: `0 < current_price <= 0.5` settles `0` (raw mid
-/// `0.01` → `0`, no floor); exactly `0.5` → `0` (tie falls to zero);
-/// `current_price == 0` → `0` at `unobserved`.
+/// #1238 binary threshold: an observation `<= 0.5` settles `0` (raw mid
+/// `0.01` → `0`, no floor); exactly `0.5` → `0` (tie falls to zero); no
+/// observation at all → `0` at `unobserved`.
 #[test]
 fn binary_threshold_books_zero_at_and_below_half() {
     // Sub-case 1: 0.01 — above zero but at/below the 0.5 threshold → 0.
@@ -541,8 +559,7 @@ fn binary_threshold_books_zero_at_and_below_half() {
         let mut c = fallback_core(&dir, false);
         let p = open_expiring_position(&mut c);
         let mut low = p.clone();
-        low.current_price = dec!(0.01);
-        low.prev_price = dec!(0.01);
+        observe(&mut low, dec!(0.01));
         c.positions.restore_open(vec![low], None);
 
         let sent = EXPIRES_MS + 100;
@@ -567,8 +584,7 @@ fn binary_threshold_books_zero_at_and_below_half() {
         let mut c = fallback_core(&dir, false);
         let p = open_expiring_position(&mut c);
         let mut tie = p.clone();
-        tie.current_price = dec!(0.5);
-        tie.prev_price = dec!(0.5);
+        observe(&mut tie, dec!(0.5));
         c.positions.restore_open(vec![tie], None);
 
         let sent = EXPIRES_MS + 100;
@@ -586,14 +602,13 @@ fn binary_threshold_books_zero_at_and_below_half() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // Sub-case 3: 0 → unobserved (covered by name-sake test too, kept here
-    // as the threshold family's zero corner).
+    // Sub-case 3: no observation at all → unobserved (covered by name-sake
+    // test too, kept here as the threshold family's zero corner).
     let dir = scratch("binary-zero");
     let mut c = fallback_core(&dir, false);
     let p = open_expiring_position(&mut c);
-    let mut dead = p.clone();
-    dead.current_price = dec!(0);
-    dead.prev_price = dec!(0);
+    let dead = p.clone();
+    assert!(dead.price_state.is_unobserved(), "fixture: never observed");
     c.positions.restore_open(vec![dead], None);
 
     let sent = EXPIRES_MS + 100;
@@ -693,8 +708,7 @@ fn reconcile_backfill_flips_fallback_to_venue() {
     let mut c = fallback_core(&dir, false);
     // 0.97 > 0.5 → 二值化结算价 1，作为 fallback_price；venue 后以 0.55 到账，两者可区分。
     let mut p = open_expiring_position(&mut c);
-    p.current_price = dec!(0.97);
-    p.prev_price = dec!(0.97);
+    observe(&mut p, dec!(0.97));
     c.positions_mut().restore_open(vec![p], None);
 
     // First close via the fallback sweep (zero venue answers past the silence bound).
@@ -933,17 +947,17 @@ fn unverified_exposure_report_lists_only_fallback_closes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Kept for regression: zero feed still nets ≤ 0 (never profit), now at
-/// `price_source=unobserved` instead of entry-price cost recovery.
+/// Kept for regression: an unobserved close still nets ≤ 0 (never profit), at
+/// `price_source=unobserved` — no entry-price cost recovery exists any more
+/// (issue #176 deleted that basis).
 #[test]
 fn zero_feed_fallback_never_books_profit() {
     let dir = scratch("zero-feed-no-profit");
     let mut c = fallback_core(&dir, false);
     let p = open_expiring_position(&mut c);
-    // A dead feed: current_price = 0.
-    let mut dead = p.clone();
-    dead.current_price = dec!(0);
-    dead.prev_price = dec!(0);
+    // A dead feed: nothing was ever observed (#176's first-class state).
+    let dead = p.clone();
+    assert!(dead.price_state.is_unobserved(), "fixture: never observed");
     c.positions.restore_open(vec![dead], None);
 
     let sent = EXPIRES_MS + 100;
@@ -969,22 +983,26 @@ fn zero_feed_fallback_never_books_profit() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// #1238 binary threshold: `current_price > 0.5` settles `1` — 0.97 → 1,
-/// 0.6 → 1 — and the cash policy credits `1 × dust_shares` (5 unsold shares
-/// @ 1 = 5 USDC) as an ExpiryFallback journal row.
+/// #1238 binary threshold: an observation `> 0.5` settles `1` — 0.97 → 1,
+/// 0.6 → 1 — and the notional (`1 × dust_shares` = 5 unsold shares @ 1 = 5
+/// USDC) rides the RECEIVABLE pool.
+///
+/// Issue #176: this test used to force `UnverifiedExpiryPolicy::Cash` and pin
+/// the `ExpiryFallback` journal credit. That arm is deleted (it minted
+/// spendable cash from an estimate), so the assertion now pins the receivable
+/// booking AND the absence of any cash credit — a strictly stronger statement
+/// than the deleted one, on the same price facts.
 #[test]
-fn binary_above_half_settles_one_and_credits_full_shares() {
+fn binary_above_half_settles_one_and_books_the_receivable() {
     for price in [dec!(0.97), dec!(0.6)] {
         let dir_name = format!("binary-{}", price);
         let dir = scratch(&dir_name);
         let mut c = fallback_core(&dir, false);
-        // 本用例钉的是 #684 的现金行为：显式退回 Cash 政策（默认已随 #1273 改为 Receivable）。
-        c.config.unverified_expiry_policy = UnverifiedExpiryPolicy::Cash;
         let p = open_expiring_position(&mut c);
         let mut hi = p.clone();
-        hi.current_price = price;
-        hi.prev_price = price;
+        observe(&mut hi, price);
         c.positions.restore_open(vec![hi], None);
+        let cash_before = c.accounts().active_ledger().balance();
 
         let sent = EXPIRES_MS + 100;
         c.tick(sent).unwrap();
@@ -998,7 +1016,17 @@ fn binary_above_half_settles_one_and_credits_full_shares() {
             c.recent_trades(10)[0]["priceSource"],
             serde_json::json!("binary_threshold"),
         );
-        // `1 × dust_shares` credited as an ExpiryFallback journal row.
+        // `1 × dust_shares` becomes a claim; NO spendable-cash row exists at all.
+        assert_eq!(
+            c.engine_stats_at(bound + 2_000)["settlement"]["fallbackReceivableUsd"],
+            serde_json::json!(5.0),
+            "1 USDC × 5 unsold shares becomes a receivable: price={price}",
+        );
+        assert_eq!(
+            c.accounts().active_ledger().balance(),
+            cash_before,
+            "no spendable cash is credited: price={price}"
+        );
         let credited: Decimal = c
             .ledger()
             .journal_snapshot()
@@ -1008,15 +1036,15 @@ fn binary_above_half_settles_one_and_credits_full_shares() {
             .sum();
         assert_eq!(
             credited,
-            dec!(5),
-            "1 USD × 5 unsold shares credited: price={price}",
+            Decimal::ZERO,
+            "the cash-credit journal kind has no producer any more: price={price}",
         );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
-/// #1238: `0 < current_price <= 0.5` — 0.4 → 0 (0.6's near-twin with the
+/// #1238: an observation at-or-below 0.5 — 0.4 → 0 (0.6's near-twin with the
 /// opposite settlement: 0.2 notional swing flips 1 vs 0). No cash credit
 /// (0 × dust_shares = 0); balance moves only by realized PnL.
 #[test]
@@ -1025,8 +1053,7 @@ fn binary_at_or_below_half_settles_zero_no_credit() {
     let mut c = fallback_core(&dir, false);
     let p = open_expiring_position(&mut c);
     let mut lo = p.clone();
-    lo.current_price = dec!(0.4);
-    lo.prev_price = dec!(0.4);
+    observe(&mut lo, dec!(0.4));
     c.positions.restore_open(vec![lo], None);
 
     let sent = EXPIRES_MS + 100;
@@ -1070,8 +1097,7 @@ fn force_close_and_sweep_price_converge() {
     let dir_a = scratch("conv-force");
     let mut c_a = fallback_core(&dir_a, true);
     let mut p_a = open_expiring_position(&mut c_a);
-    p_a.current_price = mark;
-    p_a.prev_price = mark;
+    observe(&mut p_a, mark);
     c_a.positions_mut().restore_open(vec![p_a.clone()], None);
     let closed_a = c_a
         .force_close_expired_position(&p_a.id, "uid:op", EXPIRES_MS + 1_000)
@@ -1081,8 +1107,7 @@ fn force_close_and_sweep_price_converge() {
     let dir_b = scratch("conv-sweep");
     let mut c_b = fallback_core(&dir_b, false);
     let mut p_b = open_expiring_position(&mut c_b);
-    p_b.current_price = mark;
-    p_b.prev_price = mark;
+    observe(&mut p_b, mark);
     c_b.positions_mut().restore_open(vec![p_b], None);
     let sent = EXPIRES_MS + 100;
     c_b.tick(sent).unwrap();
@@ -1121,8 +1146,7 @@ fn receivable_policy_credits_no_cash_on_fallback_close() {
     c.config.unverified_expiry_policy = UnverifiedExpiryPolicy::Receivable;
 
     let mut p = open_expiring_position(&mut c);
-    p.current_price = dec!(0.55);
-    p.prev_price = dec!(0.55);
+    observe(&mut p, dec!(0.55));
     c.positions_mut().restore_open(vec![p], None);
 
     let before = c.accounts().active_ledger().balance();
@@ -1159,46 +1183,59 @@ fn receivable_policy_credits_no_cash_on_fallback_close() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Issue #1273: `current_price == 0`（UNOBSERVED，死 feed / 未曾观测）永不
-/// 贷可花现金：Cash 政策下 `amount = 0` 早返回；Receivable 政策下只结 0 的
-/// claim，现金同样不动。
+/// Issue #1273 / #176: an UNOBSERVED expiry (dead feed / never quoted) never
+/// credits spendable cash. Issue #176 deleted the `Cash` policy, so this pins
+/// the surviving (and only) model: the close books `0` at
+/// `price_source=unobserved`, a zero-amount claim rides the pool, and the
+/// ledger does not move at all.
 #[test]
 fn unobserved_expiry_credits_no_cash() {
-    for policy in [
-        UnverifiedExpiryPolicy::Cash,
-        UnverifiedExpiryPolicy::Receivable,
-    ] {
-        let dir = scratch("unobserved-no-cash");
-        let mut c = fallback_core(&dir, false);
-        c.config.unverified_expiry_policy = policy;
+    let dir = scratch("unobserved-no-cash");
+    let mut c = fallback_core(&dir, false);
+    // Only one policy exists now; named explicitly so the test does not depend
+    // on the default.
+    c.config.unverified_expiry_policy = UnverifiedExpiryPolicy::Receivable;
 
-        let mut p = open_expiring_position(&mut c);
-        p.current_price = dec!(0);
-        p.prev_price = dec!(0);
-        c.positions_mut().restore_open(vec![p], None);
+    let p = open_expiring_position(&mut c);
+    // No observation was ever made — #176's first-class "unknown" state.
+    let dead = p.clone();
+    assert!(dead.price_state.is_unobserved(), "fixture: never observed");
+    c.positions_mut().restore_open(vec![dead], None);
 
-        let before = c.accounts().active_ledger().balance();
+    let before = c.accounts().active_ledger().balance();
 
-        let sent = EXPIRES_MS + 100;
-        c.tick(sent).unwrap();
-        stage_unanswered_query(&mut c, "cond", "tok", sent);
-        let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
-        c.tick(bound + 1_000).unwrap();
+    let sent = EXPIRES_MS + 100;
+    c.tick(sent).unwrap();
+    stage_unanswered_query(&mut c, "cond", "tok", sent);
+    let bound = sent + super::EXPIRY_ESTIMATE_SETTLE_AFTER_MS;
+    c.tick(bound + 1_000).unwrap();
 
-        assert!(c.positions().open_positions().is_empty());
-        let closed = &c.positions().closed_positions()[0];
-        assert_eq!(closed.exit_price, dec!(0), "dead feed books 0");
-        assert_eq!(
-            c.recent_trades(10)[0]["priceSource"],
-            serde_json::json!("unobserved"),
-            "price source names the unobserved feed"
-        );
-        assert_eq!(
-            c.accounts().active_ledger().balance(),
-            before,
-            "unobserved fallback credits no cash under {policy:?}",
-        );
+    assert!(c.positions().open_positions().is_empty());
+    let closed = &c.positions().closed_positions()[0];
+    assert_eq!(closed.exit_price, dec!(0), "an unobserved close books 0");
+    assert_eq!(
+        c.recent_trades(10)[0]["priceSource"],
+        serde_json::json!("unobserved"),
+        "price source names the unobserved feed"
+    );
+    assert_eq!(
+        c.accounts().active_ledger().balance(),
+        before,
+        "an unobserved fallback credits no cash"
+    );
+    // The claim exists (that IS the receivable model) but carries zero — the
+    // notional is never invented.
+    let (booked, shares) = {
+        let claims: Vec<_> = c.settlement.fallback_claims().collect();
+        assert_eq!(claims.len(), 1, "one claim records the unknown close");
+        (claims[0].booked_usd(), claims[0].shares)
+    };
+    assert_eq!(
+        booked,
+        Decimal::ZERO,
+        "the claim books no invented notional"
+    );
+    assert_eq!(shares, dec!(5), "the share count is the real remainder");
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

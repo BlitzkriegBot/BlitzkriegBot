@@ -37,9 +37,10 @@ impl PositionManager {
     }
 
     /// [`Self::close`] with the issue-#1002 `price_source` label — HOW a
-    /// fallback close's price was derived (`"current"` = last known mid,
-    /// `"entry_fallback"` = dead feed, entry price). Every existing caller
-    /// keeps the plain `close` spelling (empty label = not a fallback
+    /// fallback close's price was derived (`"binary_threshold"` = a real book
+    /// observation thresholded into `{0, 1}`, `"unobserved"` = no quote ever
+    /// arrived, issue #176 deleted the entry-price basis). Every existing
+    /// caller keeps the plain `close` spelling (empty label = not a fallback
     /// derivation question); only the fallback paths name their price basis.
     #[allow(clippy::too_many_arguments)] // the close's full fact sheet, as `close` + the #1002 label
     pub fn close_priced(

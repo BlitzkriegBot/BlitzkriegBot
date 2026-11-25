@@ -25,22 +25,26 @@ pub(crate) fn resolve_unverified_expiry_policy(
     // Read at boot only — NOT hot-reloadable: a mid-session switch would
     // re-price claims already journaled under the other policy, so honoring a
     // change requires a restart (documented in .env.example).
+    //
+    // Issue #176: `cash` was REMOVED. A deployment still configured with
+    // `BK_UNVERIFIED_EXPIRY_POLICY=cash` refuses to boot rather than silently
+    // landing on `receivable`: the two models put the estimated notional in
+    // different places (spendable cash vs a redeemable claim), so quietly
+    // accepting the change would be R7.1 L4 (静默降级) — the operator asked for
+    // one accounting model and got another without being told.
     let policy_raw = env.text("BK_UNVERIFIED_EXPIRY_POLICY");
     let unverified_expiry_policy = match policy_raw.as_deref().map(str::trim) {
         None => blitzkrieg_core::service::UnverifiedExpiryPolicy::Receivable,
         Some(raw) => match blitzkrieg_core::service::UnverifiedExpiryPolicy::parse(raw) {
-            Some(policy) => {
+            Ok(policy) => {
                 report.push(format!(
                     "engine.unverified_expiry_policy={} (env)",
                     policy.as_str()
                 ));
                 policy
             }
-            None => {
-                eprintln!(
-                    "blitzkrieg-core: BK_UNVERIFIED_EXPIRY_POLICY={raw:?} is not a \
-                         known policy — expected \"cash\" or \"receivable\""
-                );
+            Err(e) => {
+                eprintln!("blitzkrieg-core: BK_UNVERIFIED_EXPIRY_POLICY={raw:?} refused — {e}");
                 std::process::exit(2);
             }
         },
@@ -73,24 +77,15 @@ pub(crate) fn resolve_unverified_expiry_policy(
     let receivable_echo = vec![
         format!(
             "expiry settlement policy: {} ({}) — unverified-expiry closes {}",
-            match unverified_expiry_policy {
-                blitzkrieg_core::service::UnverifiedExpiryPolicy::Cash => "cash",
-                blitzkrieg_core::service::UnverifiedExpiryPolicy::Receivable => "receivable",
-            },
+            unverified_expiry_policy.as_str(),
             if policy_raw.is_some() {
                 "env"
             } else {
                 "default"
             },
-            match unverified_expiry_policy {
-                blitzkrieg_core::service::UnverifiedExpiryPolicy::Cash => {
-                    "credit spendable cash immediately at the fallback price (flag-off behavior)"
-                }
-                blitzkrieg_core::service::UnverifiedExpiryPolicy::Receivable => {
-                    "book a receivable claim redeemed at venue truth on resolution/reconcile; \
-                     the estimated amount is excluded from day-budget and loss-breaker headroom"
-                }
-            },
+            "book a receivable claim redeemed at venue truth on resolution/reconcile; \
+             the estimated amount is excluded from day-budget and loss-breaker headroom \
+             (#176 removed the spendable-cash model)",
         ),
         format!(
             "receivable aging budget: {} ms ({}) — overdue receivables warn amber once per episode{}",

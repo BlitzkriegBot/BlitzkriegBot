@@ -16,8 +16,8 @@ fn position(id: &str, token: &str, shares: Decimal, entered_ms: i64) -> OpenPosi
         token_id: token.into(),
         condition_id: "cond-1".into(),
         entry_price: dec!(0.40),
-        current_price: dec!(0.40),
-        prev_price: dec!(0.40),
+        // #176: typed observation state (was `current_price`/`prev_price`).
+        price_state: crate::price_state::PriceState::observed_bid(dec!(0.40), entered_ms),
         shares,
         cost_usd: dec!(4),
         was_maker_entry: true,

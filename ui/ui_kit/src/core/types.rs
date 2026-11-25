@@ -455,7 +455,10 @@ pub struct SettlementView {
     /// `BK_RECEIVABLE_MAX_AGE_MS`.
     #[serde(default, deserialize_with = "de_num_opt")]
     pub oldest_fallback_claim_age_ms: Option<f64>,
-    /// The boot policy in force: "cash" | "receivable" (not hot-reloadable).
+    /// The boot policy in force: `"receivable"` only (not hot-reloadable).
+    /// Issue #176 removed `"cash"` — a new core never emits it, but this is a
+    /// `String` read off the wire, so an old core's snapshot may still carry
+    /// it and the panel renders the value verbatim rather than guessing.
     #[serde(default)]
     pub unverified_expiry_policy: String,
 }

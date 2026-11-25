@@ -19,8 +19,12 @@ impl PositionManager {
             token_id: p.token_id,
             condition_id: p.condition_id,
             entry_price: p.entry_price,
-            current_price: p.entry_price,
-            prev_price: p.entry_price,
+            // Issue #176: a position opens UNOBSERVED, never at its entry
+            // price. Seeding the mark from the cost basis is what let a dead
+            // feed threshold the entry price into a `1.00` binary "settlement"
+            // (R7.1 L1). The first real book observation fills this in;
+            // until then every consumer must handle "no mark" explicitly.
+            price_state: PriceState::Unobserved,
             shares: Decimal::ZERO,
             cost_usd: Decimal::ZERO,
             was_maker_entry: p.was_maker,

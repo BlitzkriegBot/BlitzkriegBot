@@ -13,6 +13,11 @@
  * 读于 boot，非热更新）。argv 逐字节相同、语料相同、窗口相同、资金相同
  * —— 差异只能来自记账策略。没有也不许有"阈值快速确认"旋钮（边界 #3）。
  *
+ * Issue #176 之后：cash 策略已从内核删除（它把可能来自入场价的估值记成
+ * 可支用现金，R7.1 L1），内核对该拼写直接拒绝启动（exit 2）。因此本脚本
+ * 不再能跑双臂对照：默认跑批集合只剩 receivable 臂，--only cash 在开跑前
+ * 就以 exit 2 拒绝；cash 臂定义仅为 `--report-only` 重渲染历史产物而保留。
+ *
  * 预声明对比维度（数字存在之前先钉死）：
  *   1. day-budget 消耗/每窗：dailyLoss.openingEquityUsd / realizedPnlUsd /
  *      limitUsd / tripped（估算钱不许进预算基数 → receivable 臂的
@@ -38,9 +43,9 @@
  * 等于该臂声明的策略 —— 防止 env 没被内核读到、两臂实际同策略的假对照。
  *
  * 用法：
- *   node scripts/ab-receivable-991.mjs                     # 全实验（两臂 × 全窗口 × 双跑）
+ *   node scripts/ab-receivable-991.mjs                     # 正式跑批（默认只剩 receivable 臂；issue #176）
  *   node scripts/ab-receivable-991.mjs --dry-run           # 只出计划，不执行
- *   node scripts/ab-receivable-991.mjs --only receivable   # 只跑一臂（cash|receivable）
+ *   node scripts/ab-receivable-991.mjs --only receivable   # 显式指名（cash 臂已随 #176 删除，指名它 = exit 2）
  *   node scripts/ab-receivable-991.mjs --limit-windows 1 --single-run   # 冒烟
  *   node scripts/ab-receivable-991.mjs --report-only <dir> # 从既有产物重算汇总
  *   node scripts/ab-receivable-991.mjs --self-test         # 框架自测（离线，不碰内核/语料）
@@ -70,7 +75,13 @@ const ARMS = {
     key: 'cash',
     policy: 'cash',
     // #684/#686 现状：回退名义额即时进现金。无任何旋钮（边界 #3）。
+    //
+    // Issue #176: 这个臂已随策略删除而死 — 内核现在对
+    // BK_UNVERIFIED_EXPIRY_POLICY=cash 直接拒绝启动（exit 2，R7.1 L1/L4）。
+    // 臂定义保留是为了让旧报告仍可 `--report-only` 重渲染，但正式跑批必须在
+    // 开跑前就拒绝，而不是起一堆一秒即死的进程再产出半张空表。
     env: { BK_UNVERIFIED_EXPIRY_POLICY: 'cash' },
+    removed: 'issue #176 removed the cash policy: the core now refuses to boot on BK_UNVERIFIED_EXPIRY_POLICY=cash (R7.1 L1 — the credited amount was an estimate derived from a mark that could be the entry price). Use --only receivable.',
   },
   receivable: {
     key: 'receivable',
@@ -80,6 +91,7 @@ const ARMS = {
   },
 };
 const ARM_KEYS = Object.keys(ARMS);
+const ARM_KEYS_LIVE = ARM_KEYS.filter((k) => !ARMS[k].removed);
 
 // ── args ────────────────────────────────────────────────────────────────────
 
@@ -95,7 +107,10 @@ const DRY_RUN = has('--dry-run');
 const REPORT_ONLY = flag('--report-only');
 const SINGLE_RUN = has('--single-run');
 const onlyArg = flag('--only') ? String(flag('--only')).toLowerCase().split(',').map((s) => s.trim()).filter(Boolean) : null;
-const runArms = onlyArg ?? ARM_KEYS;
+// Issue #176: default to the arms that can still run. An explicitly requested
+// removed arm is a hard usage error below — never a silently dropped arm and
+// never a live process that dies at boot.
+const runArms = onlyArg ?? ARM_KEYS_LIVE;
 const seedBalance = flag('--seed-balance') ?? '1000';
 const maxOrderNotional = flag('--max-order-notional') ?? '12';
 const minShares = flag('--min-shares') ?? '1';
@@ -122,7 +137,7 @@ const num = (v) => {
 
 function usage(msg) {
   if (msg) console.error(`error: ${msg}`);
-  console.error(`usage: node scripts/ab-receivable-991.mjs [--only cash,receivable] [--corpus <15m-act.jsonl>]
+  console.error(`usage: node scripts/ab-receivable-991.mjs [--only receivable] [--corpus <15m-act.jsonl>]
        [--rounds-per-window 200] [--windows N] [--limit-windows K] [--seed-balance 1000]
        [--max-order-notional 12] [--max-age-ms <ms>] [--single-run] [--out dir] [--dry-run]
        [--report-only dir] [--core-bin path] [--self-test]`);
@@ -869,6 +884,11 @@ export function selfTest() {
     const a2 = armEnv(ARMS.cash, 480000), b2 = armEnv(ARMS.receivable, 480000);
     eq(a2.BK_RECEIVABLE_MAX_AGE_MS, '480000');
     eq(b2.BK_RECEIVABLE_MAX_AGE_MS, '480000');
+    // Issue #176：cash 臂的内核策略已删除，默认跑批集合里不能再有它；
+    // 臂定义本身保留（旧报告 --report-only 要用），但必须带 removed 标记。
+    eq(ARM_KEYS_LIVE, ['receivable']);
+    eq(typeof ARMS.cash.removed, 'string');
+    eq(ARMS.receivable.removed, undefined);
   });
 
   // 6) 命令装配：两臂 argv 逐字节相同（策略只走 env）
@@ -916,6 +936,13 @@ export function selfTest() {
 if (SELF_TEST) selfTest();
 
 if (runArms.some((k) => !ARMS[k])) usage(`--only 只接受 ${ARM_KEYS.join('/')} 的组合，收到: ${runArms.join(',')}`);
+// Issue #176: an arm whose kernel-side policy was deleted can only produce
+// cores that exit 2. Refuse before staging a corpus or spawning anything.
+const removedArms = runArms.filter((k) => ARMS[k].removed);
+if (removedArms.length) {
+  for (const k of removedArms) console.error(`error: 臂 "${k}" 已失效 — ${ARMS[k].removed}`);
+  process.exit(2);
+}
 if (maxAgeMs != null && !(Number(maxAgeMs) >= 0)) usage('--max-age-ms 必须是非负毫秒数');
 if (limitWindows != null && (!Number.isInteger(limitWindows) || limitWindows < 1)) usage('--limit-windows 必须是正整数');
 

@@ -7,12 +7,12 @@
 
 use crate::exit_policy::{
     BookView, ExitConfig, ExitState, ExitTickInput, ExitVerdict, book_age_ms, book_is_fresh,
-    decide_exit_verdict, effective_stop_pct, executable_bid, pnl_pct, reference_price,
-    update_exit_state,
+    decide_exit_verdict, effective_stop_pct, executable_bid, pnl_pct, update_exit_state,
 };
 use crate::model::{
     AccountId, ExitReason, OrderRole, OrderbookSnapshot, SignalDirection, default_account_id,
 };
+use crate::price_state::{PriceSource, PriceState};
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -670,8 +670,23 @@ pub struct OpenPosition {
     pub token_id: String,
     pub condition_id: String,
     pub entry_price: Decimal,
-    pub current_price: Decimal,
-    pub prev_price: Decimal,
+    /// The position's ONE price state (issue #176): [`PriceState::Unobserved`]
+    /// until a real book quotes this token, then the observation with its own
+    /// provenance and clock. The pre-#176 `current_price: Decimal` was seeded
+    /// from `entry_price` at open, which let a dead feed threshold the COST
+    /// BASIS into a binary settlement verdict (R7.1 L1). There is no zero
+    /// sentinel and no entry-price fallback here — "never quoted" is its own
+    /// state, so the estimator cannot invent a number.
+    ///
+    /// A pre-#176 `positions.jsonl` line (which spells `currentPrice` /
+    /// `prevPrice` and has no `priceState`) loads as `Unobserved` by design:
+    /// that stored mark may BE the entry-price artifact this issue removes, so
+    /// re-admitting it as a quote would re-open the defect. A live book
+    /// re-learns the mark on the next quote; a position that expires before
+    /// any quote books the honest `unobserved` shape and lets venue truth
+    /// redeem it.
+    #[serde(default)]
+    pub price_state: PriceState,
     /// Shares still held.
     pub shares: Decimal,
     /// Cost basis still held (entry notionals of the shares above).
@@ -755,6 +770,27 @@ fn position_zero_i64(v: &i64) -> bool {
 impl OpenPosition {
     pub fn high_pnl_pct(&self) -> Decimal {
         self.state.high_pnl_pct
+    }
+
+    /// The position's reference mark for DISPLAY valuation, or `None` when the
+    /// token has never been quoted (issue #176).
+    ///
+    /// `None` is not a cosmetic detail: an unquoted position has no unrealized
+    /// PnL to show, no mark to draw, and — crucially — nothing the settlement
+    /// estimator may threshold. Callers that render or aggregate money must
+    /// decide what "no mark" means (skip the row / contribute zero); they may
+    /// NOT pass `entry_price` in its place, which is the defect this whole
+    /// type exists to prevent.
+    pub fn mark(&self) -> Option<Decimal> {
+        self.price_state.price()
+    }
+
+    /// The mark as a number for legacy display contracts, where `0` reads as
+    /// "no mark" — the same convention `unrealized_pnl_usd` and the panels
+    /// already use (`current_price > 0` gates). Money paths must use
+    /// [`Self::mark`]; this is the wire/panel spelling only.
+    pub fn mark_or_zero(&self) -> Decimal {
+        self.price_state.price().unwrap_or(Decimal::ZERO)
     }
 
     /// The position's cash flows, repaired for a snapshot persisted before E17
@@ -862,13 +898,15 @@ pub struct ClosedPosition {
     pub venue: String,
     /// #987, issue 991: provenance of the close's price — `venue` when the
     /// exit price came from a venue verdict (settlement/reconcile), `fallback`
-    /// when it is an unverifiable-expiry bookkeeping value (last known mid,
-    /// else entry price) that no venue verdict ever confirmed, and
-    /// `reconciled` when a later reconcile matched venue cash but the row's
-    /// exit price REMAINS the fallback estimate (issue 991: a price that was
-    /// estimated is never re-labeled `venue`). `fallback` and `reconciled`
-    /// rows are never settled claims and are reported separately as "unverified
-    /// exposure". Empty on snapshots written before the field existed.
+    /// when it is an unverifiable-expiry bookkeeping value (the last observed
+    /// book quote thresholded into `{0, 1}`; issue #176 removed the
+    /// entry-price basis, so no estimated close derives from the cost basis)
+    /// that no venue verdict ever confirmed, and `reconciled` when a later
+    /// reconcile matched venue cash but the row's exit price REMAINS the
+    /// fallback estimate (issue 991: a price that was estimated is never
+    /// re-labeled `venue`). `fallback` and `reconciled` rows are never settled
+    /// claims and are reported separately as "unverified exposure". Empty on
+    /// snapshots written before the field existed.
     #[serde(default)]
     pub source: String,
     /// #987: the ORIGINAL fallback exit price of a `source == "fallback"`
@@ -880,14 +918,19 @@ pub struct ClosedPosition {
     /// row (no invented price, no cash-ledger divergence).
     #[serde(default, with = "crate::decimal::opt")]
     pub original_fallback_price: Option<Decimal>,
-    /// Issue #1002 (additive): HOW a fallback close's price was derived —
-    /// `"current"` when the close priced at the position's last known mid (a
-    /// real feed observation, though not a venue verdict), `"entry_fallback"`
-    /// when the feed was dead and the close priced at the ENTRY price (the
-    /// PnL then reads as if the market moved 0% — a self-favoring ambiguity
-    /// only this label resolves). Empty on venue closes and on rows written
-    /// before the field existed. serde(default) keeps pre-#1002 snapshots
-    /// loadable; existing golden families stay byte-identical (additive-only
+    /// Issue #1002 / #176 (additive): HOW a fallback close's price was derived —
+    /// `"binary_threshold"` when the close thresholded a REAL book observation
+    /// (a live bid or two-sided mid, though not a venue verdict) into the
+    /// binary settlement domain `{0, 1}`, and `"unobserved"` when no quote ever
+    /// arrived — the booked price is then `0` and the notional rides the
+    /// receivable pool until venue truth redeems it.
+    ///
+    /// Issue #176 deleted the `"entry_fallback"` spelling along with the
+    /// entry-price basis itself: a close can no longer price off the cost
+    /// basis, so the label that used to disclose that ambiguity has nothing
+    /// left to name. Empty on venue closes and on rows written before the
+    /// field existed. serde(default) keeps pre-#1002 snapshots loadable;
+    /// existing golden families stay byte-identical (additive-only
     /// discipline — the field is absent from venue rows and empty-string
     /// serializes as present, so only new fallback rows carry it on the wire).
     #[serde(default, skip_serializing_if = "String::is_empty")]

@@ -146,11 +146,6 @@ async fn risk_set_systemic_and_exit_write_the_db_not_the_env() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The env-carrier state of the T-03 reconciliation (the no-DB core with an
-/// env file): the changed `BK_RISK_*` keys land in `.env`, the receipt
-/// reports `persisted: true` / `persistence: store` (the carrier-neutral
-/// spelling since the R2 P1-6 pass), and the working copies re-derive from
-/// the file (the file-first ruling).
 /// 操作者裁决 2026-11-14（#1199 第六轮）：`.env` 对内核只读 —— 即使
 /// `env_file_path` 已接线（旧部署的兼容形态），risk.setSystemic /
 /// risk.setExit 的持久化半边也绝不再写它：没有 store = 内存写是全部，

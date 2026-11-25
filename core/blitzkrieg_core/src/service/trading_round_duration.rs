@@ -8,11 +8,12 @@ use super::Core;
 
 impl Core {
     /// 轮次时间周期的运行时写路径（`round_duration.set`，UI 设置卡）：per-account
-    /// 白名单校验后把 `ACCOUNT_<ID>_ROUND_DURATION_SEC` 原子 upsert 进 `.env`
-    /// 并更新内存，秒切秒换（先撤单/强平，再切网格）。红线：撤单/强平
-    /// fail-closed，未全成网格不切；`reset` 清覆盖回落默认网格；
-    /// `durationSec` 与 `reset` 恰二选一；缺少 `env_file_path`（回测器/
-    /// 进程内测试）如实拒绝。
+    /// 白名单校验后把 `ACCOUNT_<ID>_ROUND_DURATION_SEC` 落进 SQLite
+    /// `account_settings`（key=`round.duration_sec`，操作者裁决 2026-11-14：
+    /// `.env` 对内核只读）并更新内存，秒切秒换（先撤单/强平，再切网格）。
+    /// 红线：撤单/强平 fail-closed，未全成网格不切；`reset` 清覆盖回落默认网格；
+    /// `durationSec` 与 `reset` 恰二选一；无 SQLite 库的内核（回测器/
+    /// 进程内测试）只在本会话生效并如实告知「未持久化」。
     ///
     /// 2026-11-13 操作者指令：切换即「秒切秒换」——不再有 immediate 开关。
     /// 写入一律先撤该账户在途轮市场的全部挂单，再按市价真实强平其仓位

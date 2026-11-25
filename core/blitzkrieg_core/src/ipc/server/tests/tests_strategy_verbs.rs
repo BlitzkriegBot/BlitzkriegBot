@@ -9,20 +9,23 @@ use blitzkrieg_market_api::net::now_ms;
 
 // ── issue 925: the default-account strategy toggle PERSISTS at the wire ──────
 
-/// A core whose accounts book names a LEGACY path that does NOT exist (the
-/// exact #920 production shape: `accounts_config_path` configured, the toml
-/// retired, .env the single source) and a `.env` beside it in a scratch dir.
-/// `strategy.enable` for the default account must land the durable half —
-/// the old gate (`accounts_config_path.exists()`) held it permanently false,
-/// so the engine flag moved but the env half never did and every toggle died
-/// at the next boot.
+/// A core whose accounts book carries a LEGACY `accounts_config_path` that
+/// does NOT exist and a `.env` beside it in a scratch dir, plus a private
+/// SQLite `db_path` — the enablement's durable half lands in the store's
+/// `account_settings` row (`.env` is read-only since 操作者裁决 2026-11-14).
+/// `strategy.enable` for the default account must land that durable half —
+/// the old on-disk-toml gate (`accounts_config_path.exists()`) held it
+/// permanently false, so the engine flag moved but nothing persisted and
+/// every toggle died at the next boot. The gate now is the store handle's
+/// presence (`account_writes_enabled()`).
 #[tokio::test]
 async fn default_enable_persists_the_env_half_without_the_legacy_toml() {
     let dir = std::env::temp_dir().join(format!("bk-strategy-verbs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     // The legacy path is only ever READ (its absence is the point); the .env
-    // is ABSENT at start and must exist after the enable.
+    // stays ABSENT the whole time — since 操作者裁决 2026-11-14 the kernel
+    // never writes it, so its absence after the enable is the assertion below.
     let accounts_path = dir.join("accounts.toml");
     let env_path = dir.join(".env");
     let book = crate::account::AccountLedgers::new(
@@ -104,8 +107,8 @@ async fn default_enable_persists_the_env_half_without_the_legacy_toml() {
         "the durable half is the account_settings row"
     );
 
-    // The toggle-off half: empty set = the key LEAVES the file (the same
-    // contract the non-default branch runs).
+    // The toggle-off half: empty set = an explicit empty row in
+    // `account_settings` (the same contract the non-default branch runs).
     let reply = rpc(
         &core,
         &registry,

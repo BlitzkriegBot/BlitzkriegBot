@@ -18,28 +18,31 @@ pub mod method {
     /// 跟随账户，无全局限额）。三项热生效（每笔入场现场判读、只约束新
     /// 敞口、不携带计数器）；回撤预算与连亏熔断对按「下次会话」语义落盘
     /// 态生效 —— 不是热旋钮（HOT_RELOAD_REFUSED 记名拒绝的理由仍然成立），
-    /// 回执里逐项注明生效时机。持久化：写路径把改动的 `BK_RISK_*` 键
-    /// upsert 进 `.env`（issue #966/#965），重启后以 source=env 重新武装。
+    /// 回执里逐项注明生效时机。持久化：写路径把改动的金额字段合并进
+    /// SQLite `account_risk` 行（`StoreApi::save_risk_bounds`），重启后
+    /// 从库里重新武装 —— 操作者裁决 2026-11-14：`.env` 对内核只读，不再写回。
     pub const RISK_SET_SYSTEMIC: &str = "risk.setSystemic";
     /// 退出纪律可编辑（用户裁决：Gate 4 绑定的止损/止盈/强平必须可以改）：
     /// 退出纪律的运行时写路径。**live** —— 对下一笔入场立即生效（Gate 4
     /// 每次入场现场从活配置绑定）；已开仓位的退出扫描按 `PositionManager`
     /// 的活配置判读，同样立即跟随新值 —— 回执逐项写明，不静默。
-    /// 持久化：写路径把改动的 `BK_EXIT_*` 键 upsert 进 `.env`
-    /// （issue #966/#965），重启后按启动链（CLI > env > default）重新解析
-    /// 出同样的值。
+    /// 持久化：写路径把退出纪律落成 SQLite `account_exit_policy` 行
+    /// （`StoreApi::save_exit`），重启后从库里重新解析出同样的值 ——
+    /// 操作者裁决 2026-11-14：`.env` 对内核只读，不再写回。
     pub const RISK_SET_EXIT: &str = "risk.setExit";
-    /// 轮次时间周期的运行时读数（UI 设置卡）：当前生效秒数、来源（cli/env/
-    /// runtime/toml/default）、可切换的白名单档位与「下次会话生效」的回执
+    /// 轮次时间周期的运行时读数（UI 设置卡）：当前生效秒数、来源
+    /// （`cli_or_env` / `default`，由启动解析裁定）、可切换的白名单档位与
+    /// 「下次会话生效」的回执
     /// 语义。只读。
     pub const ROUND_DURATION_GET: &str = "round_duration.get";
     /// 轮次时间周期的运行时写路径（用户需求：UI 可以把 15m 切到 5m 等）。
-    /// **next_session** —— 轮次周期是网格坐标系（`round_slot` = now/dur 的
-    /// UTC 网格索引），仓位恢复、#457 过期扫描都用当前 config 重算存量订单
-    /// 的过期时间，热切会把旧 slot 全部错解；所以这里只写持久格
-    /// `data/runtime/config.json`（重启后启动层读回），本会话的网格不动。
-    /// 显式 `--round-sec`（普查/回放命令行） outranks 持久格 —— 逐位复现的
-    /// 回放基线永远不被 UI 设置劫持。
+    /// **live** —— 秒切秒换，本会话立即生效：先撤该账户在途轮市场的全部挂单、
+    /// 按市价真实强平其仓位（PnL 按真实成交价，台账 `operator_grid_switch`），
+    /// 再切网格；任一步 fail-closed。持久化落 SQLite `account_settings`
+    /// （key=`round.duration_sec`，操作者裁决 2026-11-14），重启后 overlay 回
+    /// 账户网格；无 SQLite 库的内核只在本会话生效并如实告知。
+    /// 显式 `--round-sec`（普查/回放命令行）锁定网格，破坏性切换被如实拒绝 ——
+    /// 逐位复现的回放基线永远不被 UI 设置劫持。
     pub const ROUND_DURATION_SET: &str = "round_duration.set";
     /// 行情插件的运行时读数（插件页）：本会话 active 插件、编译进内核的注册表、
     /// 「下次会话将选什么」（持久格 outrank 首个注册者，显式 `--market-plugin`
@@ -249,15 +252,15 @@ pub mod method {
     /// guard reads the in-memory field), and — forward-looking — it becomes
     /// the next batch's plugin-ENABLEMENT derivation input (boot reads the
     /// account book and enables every venue at least one account is bound
-    /// to), which is why the write persists to the operator's `.env` (the
-    /// ACCOUNT_* grammar, issue 751) and must never
+    /// to), which is why the write persists to the SQLite store (the
+    /// `accounts.venue` column, issue 751's seam) and must never
     /// lose a sibling account's row on the way.
     pub const ACCOUNT_VENUE_SET: &str = "account.venue.set";
     /// The account's round-length FAMILY write (`account.rounds.set`,
     /// 轮次多族 B2): the set spells exactly which (venue, duration) families
     /// the account trades. An ACCOUNT-CONFIGURATION MANAGEMENT verb, the same
     /// family as `account.venue.set`/`account.list` — it writes the CONFIG
-    /// PLANE's fact (the operator's `.env` ACCOUNT_* rows + the in-memory
+    /// PLANE's fact (the SQLite `accounts.rounds_json` column + the in-memory
     /// book), its consumers are
     /// the panel's account card and the ops CLI, and it is NOT the strategy
     /// runtime's business-verb family #568 vetoed (策略运行时对周期集的感知
@@ -265,14 +268,13 @@ pub mod method {
     /// FIRST, then memory): a removed family with open positions refuses the
     /// WHOLE write, a removal with no exposure soft-unloads the family's
     /// poll output, an added family mounts its discovery instance at runtime
-    /// (增族即挂). Empty set = the ACCOUNT_*_ROUNDS key is REMOVED from the
-    /// operator's `.env` (the
-    /// unrestricted spelling, identical to a missing key at the next boot).
+    /// (增族即挂). Empty set = the row's rounds column is emptied (the
+    /// unrestricted spelling, identical to an absent set at the next boot).
     pub const ACCOUNT_ROUNDS_SET: &str = "account.rounds.set";
     /// The per-account trading switch (`account.trading.set`): `false` =
     /// this account's NEW ENTRIES are refused while its EXITS keep flowing
     /// (positions stay strategy-managed until flat). Persisted to the
-    /// operator's `.env` (ACCOUNT_*_TRADING_ENABLED), re-read at next boot.
+    /// SQLite `accounts.trading_enabled` column, re-read at next boot.
     pub const ACCOUNT_TRADING_SET: &str = "account.trading.set";
     /// The per-account FREEZE (account-scoped kill switch,
     /// `account.freeze`): `{accountId, frozen, reason}` — a frozen account
@@ -283,7 +285,9 @@ pub mod method {
     pub const ACCOUNT_FREEZE: &str = "account.freeze";
     /// #1045: unfreeze one account's entry gate, returning
     /// `{unfrozen, previousReason, entriesAllowed}` and writing an audit log
-    /// (actor/reason/time). `account.freeze {frozen: false}` is an alias.
+    /// (actor/reason/time). This is the ONLY unfreeze write path —
+    /// `account.freeze {frozen: false}` is retired (#1059) and the handler
+    /// refuses it.
     pub const ACCOUNT_UNFREEZE: &str = "account.unfreeze";
     /// The per-account strategy ENABLEMENT write (`account.strategies.set`
     /// / the persistence half of the panel's per-account 启用按钮): the
@@ -296,8 +300,8 @@ pub mod method {
     /// presentation pointer — it does NOT touch the active/accounting/
     /// strategy-enablement axes and no trading semantics attach to it.
     /// The kernel validates the account exists AND is `active` (plan-first),
-    /// updates the in-memory pointer AND persists the `ACCOUNT_DISPLAY` key
-    /// into the operator's `.env` in one transaction; the next boot
+    /// updates the in-memory pointer AND persists the SQLite `kernel_meta`
+    /// `display_account` cell in one transaction; the next boot
     /// re-reads it (fail-closed on a dangling id).
     pub const DISPLAY_ACCOUNT_SET: &str = "display.account.set";
     /// One account's cash-journal tail (#509's read surface): the append-only
@@ -308,8 +312,8 @@ pub mod method {
     /// uses); `limit` defaults to 100, capped at 500.
     pub const ACCOUNT_JOURNAL: &str = "account.journal";
     /// Create ONE account at runtime (`accountId` + optional `name`/`venue`):
-    /// the identity lands in the in-memory book AND the operator's `.env`
-    /// (ACCOUNT_* rows) — the same
+    /// the identity lands in the in-memory book AND the SQLite store (the
+    /// `accounts` row) — the same
     /// plan-and-persist transaction `account.venue.set` runs. Status is
     /// ALWAYS `active` (a runtime call that minted a restricted account would
     /// be a loosening in disguise — tightening is `account.status`'s job);
@@ -320,7 +324,8 @@ pub mod method {
     /// panel after the identity exists. `default` is refused (reserved).
     pub const ACCOUNT_CREATE: &str = "account.create";
     /// Remove ONE account at runtime: the row leaves the in-memory book AND
-    /// the operator's `.env` ACCOUNT_* grammar. `default` is refused (reserved); an account with any
+    /// the SQLite store (the `accounts` row, FK cascades + removal tombstone).
+    /// `default` is refused (reserved); an account with any
     /// OPEN position is refused (its money must not become unaddressable);
     /// removing the process-active account re-activates `default` (the
     /// session switchers resolve against the book, this only fixes the
@@ -412,9 +417,9 @@ pub mod method {
     /// strategy pairs across them. Fail-closed validation names the offending
     /// field (version, venue/account presence, venue distinctness, account
     /// existence, account venue-binding coverage, pairs non-empty); a refused
-    /// write moves NOTHING (env rows and memory stay untouched). The kernel
-    /// persists the section as `ACCOUNT_ARB_*` env keys in the operator's
-    /// `.env` in
+    /// write moves NOTHING (SQLite rows and memory stay untouched). The kernel
+    /// persists the section to the SQLite `arb_pairs` table
+    /// (`StoreApi::save_arb_config`) in
     /// the same transaction the memory mirror + engine push update — the next
     /// boot re-reads them (fail-closed on a bad hand edit).
     pub const ARB_CONFIG_SET: &str = "arb.config.set";

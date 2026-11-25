@@ -10,7 +10,8 @@ use super::*;
 #[tokio::test]
 async fn account_create_mounts_a_never_booted_venues_data_plane_at_runtime() {
     // Same private-persist posture as the venue.set mount test: create
-    // persists into the fixture's private .env.
+    // persists into the fixture's private SQLite store (`db_path` below);
+    // the `.env` here is a read-only boot fixture, never written.
     let dir = std::env::temp_dir().join(format!("bk-create-mount-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
@@ -340,11 +341,14 @@ async fn account_venue_get_reports_empty_as_unbound_and_narrows_by_id() {
 /// `AccountView.venue` 同步（面板账户卡的数据源）、同 venue 多账户合法
 /// （一个交易所多套 API = 多账户，这正是用户的账户模型）、空串解绑、
 /// 未注册 venue 名拒绝（plan-first）、未知账户拒绝 —— 以及持久化：
-/// 绑定落进测试私有的 .env，重新 load_account_ledgers_single_source 读回。
+/// 绑定落进测试私有的 SQLite store（`accounts.venue` 列），下次 boot
+/// 用同一批行重建账户簿。
 #[tokio::test]
 async fn account_venue_set_round_trips_get_and_the_persisted_file() {
-    // A private .env — the persist half needs a file, and it must never
-    // be the checkout's own user_layer/configs/.env.
+    // A private `.env` (the boot READ face only — 操作者裁决 2026-11-14
+    // 后内核不写它) plus `db_path` below — the persist half is the store,
+    // and the fixture must never touch the checkout's own
+    // user_layer/configs/.env.
     let dir = std::env::temp_dir().join(format!("bk-venue-wire-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");

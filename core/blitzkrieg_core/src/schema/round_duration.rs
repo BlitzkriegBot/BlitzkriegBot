@@ -18,8 +18,11 @@ pub struct RoundDurationResult {
     /// 由 per-account 记录直接导出而不是一次全局写入 —— 重启后它从库里读回
     /// 同一个值（#1151 的「无 split-brain」契约）。
     pub engine_active_sec: i64,
-    /// One of `cli` / `env` / `runtime` / `toml` / `default` — the boot
-    /// resolution's own report for the default grid.
+    /// Which tier owns the default grid at boot — `cli_or_env` (an explicit
+    /// `--round-sec` / `BK_ROUND_SEC` suppresses the UI card's writes) or
+    /// `default` (the card may apply). Matches the launcher's
+    /// `round_duration_source_from` spelling; the four older strings
+    /// (`cli` / `env` / `runtime` / `toml`) are retired.
     pub source: &'static str,
     /// Per-account round durations: `account_id → seconds`. Accounts absent
     /// from this map fall back to `effective_sec`.

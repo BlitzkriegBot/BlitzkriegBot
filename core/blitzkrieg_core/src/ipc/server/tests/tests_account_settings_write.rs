@@ -1,22 +1,23 @@
 #![cfg(test)]
 
 //! #1189 PR-C: the account-level settings write path at the wire — every
-//! write face lands its `ACCOUNT_<SFX>_*` / `POLICY_*_<SFX>` keys in the
-//! `.env` first and then re-derives the in-memory book through the same
-//! parse the boot runs (`Core::reload_accounts`), so `account.list` and
+//! write face persists through the store seam (SQLite `accounts` /
+//! `account_settings` rows; the `.env` is read-only) and then re-derives the
+//! in-memory book through the same SQL-first load the boot runs
+//! (`Core::reload_accounts`), so `account.list` and
 //! `execution_policy.get` answer from the book the process will trade
 //! under, not from a second in-memory spelling.
 //!
 //! The four contract teeth:
-//!   1. `account.create` with a duplicate id is refused (and the file
+//!   1. `account.create` with a duplicate id is refused (and the store
 //!      stays byte-identical);
 //!   2. `account.venue.set` is visible to `account.list` IN THE SAME
-//!      PROCESS (the reload half), and the `.env` agrees with a fresh
+//!      PROCESS (the reload half), and the store agrees with a fresh
 //!      boot-shaped load;
 //!   3. `strategy.enable` is per-account isolated — enabling on A never
-//!      touches B's set (env keys included);
+//!      touches B's set (store rows included);
 //!   4. `execution_policy.set` with an `accountId` writes the
-//!      `POLICY_*_<SFX>` keys (never the global names) and the reloaded
+//!      `POLICY_*_<SFX>` rows (never the global names) and the reloaded
 //!      section view reflects them.
 
 use super::*;
@@ -31,8 +32,8 @@ use tokio::sync::Mutex as AsyncMutex;
 
 /// A private `.env` + legacy-toml path (never written) + a two-account book
 /// that mirrors the file — the production shape the write faces require
-/// (the persist half refuses without the accounts config path, and the
-/// same-process reload re-derives the book from exactly this file).
+/// (the persist half refuses without a wired store, and the
+/// same-process reload re-derives the book through the SQL-first load).
 fn scratch_env(tag: &str, env_body: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -173,10 +174,11 @@ async fn account_create_refuses_a_duplicate_id_and_leaves_the_file_untouched() {
 
 // ── 2. account.venue.set 后 account.list 反映新 venue（同进程 reload） ──
 
-/// The write-shape tooth: `account.venue.set` lands `ACCOUNT_PAPER_VENUE`
-/// in the `.env`, re-derives the whole book through the boot's own parse
+/// The write-shape tooth: `account.venue.set` lands the `accounts.venue`
+/// column in the SQLite store, re-derives the whole book through the boot's
+/// own load
 /// (`Core::reload_accounts`), and `account.list` answers the RELOADED
-/// binding — same process, no restart. The file also agrees with a fresh
+/// binding — same process, no restart. The store also agrees with a fresh
 /// boot-shaped load, so what the write applied IS what the next boot
 /// loads.
 #[tokio::test]
@@ -263,9 +265,9 @@ async fn venue_set_is_visible_to_account_list_through_the_same_process_reload() 
 // ── 3. strategy.enable 按账户隔离（A 启用不影响 B） ─────────────────────
 
 /// A core whose engine registers `spread_arb` (the test adapter) and whose
-/// book carries `default` + `paper` over a private `.env` with
-/// `ACCOUNT_LIST` spelled (the production shape: the write faces' persist
-/// half and their same-process reload both read this file).
+/// book carries `default` + `paper` over a private `.env` (the boot READ
+/// face) and a wired SQLite store — the production shape: the write faces'
+/// persist half lands in the store, and `.env` is never written.
 async fn strategy_isolation_fixture() -> (
     Arc<AsyncMutex<Core>>,
     crate::market::registry::MarketPluginRegistry,
@@ -323,9 +325,9 @@ fn strategy_sets(db_path: &std::path::Path) -> std::collections::BTreeMap<String
 
 /// `strategy.enable {name, accountId}` is per-account state: enabling
 /// `spread_arb` on `paper` must move ONLY paper's enablement set — the
-/// `default` row stays silent, and the `.env` gains exactly one
-/// `ACCOUNT_PAPER_STRATEGIES` key. Then enabling it on `default` moves
-/// only that key. Neither write leaks onto the other account (the
+/// `default` row stays silent, and exactly one `account_settings.strategies`
+/// row (paper's) gains the strategy. Then enabling it on `default` moves
+/// only that row. Neither write leaks onto the other account (the
 /// pre-#1189 file-first read could resurrect cross-account state).
 #[tokio::test]
 async fn strategy_enable_is_per_account_isolated_between_default_and_paper() {

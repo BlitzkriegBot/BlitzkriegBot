@@ -247,9 +247,13 @@ impl ShadowEvolution {
     /// an invented parameter.
     ///
     /// The switches (`enabled` / `auto_evolve`) come from the resolved boot
-    /// config — `.env`'s `SHADOW_ENABLED` / `SHADOW_AUTO_EVOLVE` (or `BK_SE_*`)
-    /// outrank the legacy `shadow_evolution.toml` section — and the runtime
-    /// verbs write their flips into the `.env` single source (issue 751). A
+    /// config — the SQLite `kernel_meta` cells (`shadow_enabled` /
+    /// `shadow_auto_evolve`) are the home, and the `.env`'s
+    /// `SHADOW_ENABLED` / `SHADOW_AUTO_EVOLVE` (or `BK_SE_*`) spelling is only
+    /// the legacy fallback for rows that do not exist yet (they also outrank
+    /// the legacy `shadow_evolution.toml` section) — and the runtime verbs
+    /// write their flips through [`Self::persist_switch`] into the same
+    /// `kernel_meta` cells. A
     /// legacy `state.json` may still carry `enabled` / `autoEvolve` keys
     /// written by an older kernel; they are IGNORED — logged once, never
     /// honored — so a production config that says OFF stays off, and the
@@ -259,11 +263,13 @@ impl ShadowEvolution {
         Self::new_with_env_path(cfg, strategies, None)
     }
 
-    /// [`Self::new`] with the write-back path for the switch verbs. Production
-    /// passes the `.env` file the launcher owns (issue 751: the switches live
-    /// in `SHADOW_ENABLED` / `SHADOW_AUTO_EVOLVE`, and the legacy
-    /// `shadow_evolution.toml` write-back is retired); the backtester and most
-    /// in-process tests pass `None` and get runtime-only switches.
+    /// [`Self::new`] with the legacy env-path argument kept for call-site
+    /// compatibility only: the switch verbs persist through
+    /// [`Self::attach_settings_db`]'s SQLite `kernel_meta` cells (issue 751's
+    /// store seam; since 操作者裁决 2026-11-14 the `.env` is read-only for the
+    /// kernel and the legacy `shadow_evolution.toml` write-back is retired),
+    /// so the path is never written. The backtester and most in-process tests
+    /// pass `None` and never attach a store, getting runtime-only switches.
     pub fn new_with_env_path(
         cfg: ShadowEvolutionConfig,
         strategies: &[&dyn EngineStrategy],
@@ -544,10 +550,12 @@ impl ShadowEvolution {
     }
 
     /// Enable evolution: scaffold every unit around the parameters in force.
-    /// The flip is persisted into the `.env` single source as `SHADOW_ENABLED`
-    /// (issue 751: the legacy `shadow_evolution.toml` write-back is retired),
-    /// so a deploy that edits `.env` and an operator's flip can no longer
-    /// disagree. `state.json` keeps only the bookkeeping.
+    /// The flip is persisted into the SQLite `kernel_meta` `shadow_enabled`
+    /// cell through [`Self::persist_switch`] (issue 751's store seam; the
+    /// legacy `shadow_evolution.toml` write-back is retired, and since
+    /// 操作者裁决 2026-11-14 the `.env` is read-only for the kernel), so a
+    /// deploy that edits the env spelling and an operator's flip can no longer
+    /// disagree once the cell exists. `state.json` keeps only the bookkeeping.
     pub fn enable(&mut self, now_ms: i64) {
         self.enabled = true;
         self.cfg.enabled = true;
@@ -1241,13 +1249,15 @@ impl ShadowEvolution {
     }
 
     /// Persist the pure bookkeeping (the deep-round clock). The switch keys
-    /// are NO LONGER written: `.env` is their single source of truth (issue
-    /// 751), and a state.json that carries them at all is legacy read-past.
+    /// are NO LONGER written here either: their home is the SQLite
+    /// `kernel_meta` cells (see [`Self::persist_switch`]; issue 751's store
+    /// seam, `.env` read-only since 操作者裁决 2026-11-14), and a state.json
+    /// that carries them at all is legacy read-past.
     fn persist_state(&self) {
         self.proposal_store.save_state(proposal::PersistedState {
-            // The legacy switch keys stay `None`: `.env` is their single
-            // source of truth, and writing them would resurrect this file as
-            // a second one.
+            // The legacy switch keys stay `None`: the SQLite `kernel_meta`
+            // cells are their home (see `persist_switch`), and writing them
+            // here would resurrect this file as a second source.
             enabled: None,
             auto_evolve: None,
             last_cycle_ms: self.last_cycle_ms,

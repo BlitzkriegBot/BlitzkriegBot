@@ -118,11 +118,11 @@ pub(crate) async fn handle_execution_policy(
     }
 }
 
-/// #965's toml gate, kept in the SQL world（#1199 第六轮，操作者裁决
-/// 2026-11-14）：loader 不读 toml，但 policy 路径上的文件要么是内核自产的
-/// bootstrap 模板（第一次真实写时清扫），要么是操作员手编文件（写按名
-/// 拒绝——死数据不许在 store 旁边静默堆积）。原探针住在 EnvStore；EnvStore
-/// 退役后这门跟着写面走（set 与 reset 同一姿态）。
+/// #965's toml residue probe, kept in the SQL world（#1199 第六轮，操作者裁决
+/// 2026-11-14）：loader 不读 toml，policy 路径上的文件（0.4.1 时代的手编残留
+/// 或旧内核自举的模板）只是死数据 —— 此项只 WARN，写继续落库；死数据不阻塞
+/// 写面，内核也不删操作员的文件。原探针住在 EnvStore；EnvStore 退役后这门跟着
+/// 写面走（set 与 reset 同一姿态）。
 async fn policy_toml_gate(
     core: &Arc<AsyncMutex<Core>>,
 ) -> Result<(), (i32, String, Option<ErrorData>)> {
@@ -363,7 +363,7 @@ fn section_from_set_params(
     Ok(s)
 }
 
-/// #363: write ONE account section to the `.env` single source (issue 751).
+/// #363: write ONE account section to the store (the issue-751 single source).
 /// The section is REPLACED wholesale — every POLICY_<ID>_* key for the
 /// account is swept first, then the `Some` fields land (an absent field =
 /// no key = inherit from the globals, exactly the TOML section-replacement
@@ -377,28 +377,12 @@ fn section_from_set_params(
 /// not from that stale snapshot. A rejected write returns `Err` before
 /// touching the file or the snapshot.
 ///
-/// Fail-closed precondition: while the legacy `execution_policy.toml` still
-/// exists the write REFUSES — the loader reads env over that file, so a
-/// write here would be dead data the operator believes is live; the
-/// migration script owns the one-way move.
-/// #363: write ONE account section to the `.env` single source (issue 751).
-/// The section is REPLACED wholesale — every POLICY_<ID>_* key for the
-/// account is swept first, then the `Some` fields land (an absent field =
-/// no key = inherit from the globals, exactly the TOML section-replacement
-/// semantics). `reset` (section = None) sweeps all keys so the account
-/// falls back to the globals.
-///
-/// Returns the section's whole env footprint (`Some` = written value,
-/// `None` = swept). The caller records it in the core's in-memory snapshot
-/// BEFORE the reload (#757): the process already carries the startup export
-/// of the OLD value, and a reload must resolve these keys from this write,
-/// not from that stale snapshot. A rejected write returns `Err` before
-/// touching the file or the snapshot.
-///
-/// #1199 PR-1: the durable half runs through the core's store (the carrier
-/// behind the seam); the legacy-toml refusal, the bootstrap-template sweep
-/// and the reset-on-file probe live in the store seam, exactly where the
-/// old write face had them. The section's key FOOTPRINT stays here — it is
+/// The residual `execution_policy.toml` on disk is DEAD DATA, not a write
+/// gate: the loader reads the store's POLICY_* rows only (#967 + #1199), so
+/// `policy_toml_gate` WARNS when the file exists and lets the write land —
+/// operators delete the file at their leisure (#1199 PR-1: the durable half
+/// runs through the core's store behind the seam). The section's key
+/// FOOTPRINT stays here — it is
 /// the loader's spelling (`execution_policy::section_env_state`), a policy
 /// fact, not a storage fact.
 fn policy_section_write(

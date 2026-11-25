@@ -172,8 +172,10 @@ pub fn read_cross_venue_arb_from_env(
 }
 
 /// The ACCOUNT_* lookup: process environment FIRST, then the `.env` file at
-/// `env_path` (the same file `CoreConfig::env_file_path` names and
-/// `market.credentials.set` writes). The launcher loads `.env` into the
+/// `env_path` (the same file `CoreConfig::env_file_path` names; this is a
+/// READ-only fallback — since 操作者裁决 2026-11-14 the kernel never writes
+/// it, and `market.credentials.set` persists to the SQLite store instead).
+/// The launcher loads `.env` into the
 /// process environment at start, so in production the two faces carry the
 /// same values; a process-env override beats the file line (12-factor — an
 /// operator exporting a key at launch intends it). Tests feed a closure

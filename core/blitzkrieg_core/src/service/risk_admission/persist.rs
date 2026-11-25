@@ -15,13 +15,13 @@
 //!   never self-lifts, across restarts too).
 //!
 //! NOT here any more: the systemic bounds `risk.setSystemic` wrote. Their
-//! durable carrier is the `.env` file since issue #966 — the write face
-//! upserts every changed bound as its `BK_RISK_*` key, and the boot re-arms
-//! them through `SystemicRiskLimits::from_env` with the honest `env`
-//! provenance (issue #965 reconciliation: one carrier, CLI > env(.env) >
-//! default). The file cells this file used to carry stamped every restored
-//! bound `flag` — a lie about where the value now comes from — and a stale
-//! cell would silently shadow a later hand edit of `.env`. A legacy file's
+//! durable carrier is the SQLite `account_risk` row (`StoreApi::save_risk_bounds`
+//! — the only backend since #1199; 操作者裁决 2026-11-14 made the `.env`
+//! read-only for the kernel and the env-only backend was deleted). The boot
+//! re-arms them from the store, and `SystemicRiskLimits::from_env` is only the
+//! first-import read side. The file cells this file used to carry stamped every
+//! restored bound `flag` — a lie about where the value now comes from — and a
+//! stale cell would silently shadow a later runtime write. A legacy file's
 //! `systemic` map is ignored with a loud warning (see [`load_risk_state_file`]).
 //!
 //! Tiering (deliberate, documented in the PR): the file records only what the
@@ -96,10 +96,11 @@ pub(crate) fn load_risk_state_file(path: &Path) -> RiskStateLoad {
         return RiskStateLoad::Missing;
     };
     // Issue #965 reconciliation: files written before the systemic bounds
-    // moved to `.env` carry a `systemic` map this envelope no longer holds.
-    // serde would drop it silently — the bounds' honest carrier is `.env` and
-    // a silent drop reads as "nothing was ever set", so name the retirement
-    // in the log instead.
+    // moved to the store carry a `systemic` map this envelope no longer
+    // holds. serde would drop it silently — the bounds' honest carrier is
+    // the SQLite `account_risk` row (`StoreApi::save_risk_bounds`, the only
+    // backend since #1199) and a silent drop reads as "nothing was ever
+    // set", so name the retirement in the log instead.
     if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text)
         && raw.get("systemic").is_some()
     {

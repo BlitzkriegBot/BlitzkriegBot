@@ -238,6 +238,21 @@ fn specs_from_tunables(tunables: &BTreeMapDefs) -> Vec<KnobSpec> {
 /// `LuaStrategy::build` needs. Reload overwrites; a package never loaded
 /// through this loader has no entry, and its adapter stays not-evolvable
 /// (fail-closed).
+///
+/// #189 — 单包注册表语义，禁止 per-account 同名包：the vault is keyed by
+/// package name ONLY, and that is the DOMAIN's shape, not an oversight.
+/// Package identity is `manifest.name == directory name` + a sha256 pin on
+/// the entry (§6.4): one directory, one content hash, one entry in this
+/// registry. Per-account scopes are NOT per-account packages — every scope
+/// hosts the SAME package content through `LuaEngineAdapter::scoped_new`
+/// (its own Lua state and account id, same source text and knob specs), so
+/// the adapter can never need a second source for a second account. Adding
+/// `AccountId` to this key would fabricate a dimension the domain does not
+/// have (two accounts "loading different versions of one name" is not a
+/// legal state — the directory would have to hold both hashes). The
+/// assertion in `source_vault_remember` pins it: one name, one source, and
+/// re-registering an existing name with a DIFFERENT source text without
+/// going through the reload path is a bug, not a feature.
 #[derive(Debug, Clone)]
 struct PackageSource {
     code: Arc<str>,
@@ -254,6 +269,13 @@ static PACKAGE_SOURCES: OnceLock<Mutex<HashMap<String, PackageSource>>> = OnceLo
 fn source_vault_remember(name: &str, source: PackageSource) {
     let map = PACKAGE_SOURCES.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut m) = map.lock() {
+        // One name → one cell. A same-name re-record REPLACES the cell (the
+        // reload path legitimately re-reads an edited package: unload, re-load,
+        // new hash — the vault follows), and per-account scopes never record at
+        // all: `scoped_new` only READS this cell. There is deliberately no
+        // account key here — see the `PackageSource` doc's #189 note
+        // (单包注册表语义，禁止 per-account 同名包); the teeth live in
+        // `tests::one_package_name_serves_every_account_scope_from_one_cell`.
         m.insert(name.to_string(), source);
     }
 }

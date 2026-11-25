@@ -840,10 +840,10 @@ fn accepting_a_proposal_hot_swaps_and_logs_a_durable_promotion() {
     );
 }
 
-/// Without an `.env` write-back path the auto switch is runtime-only by
-/// design (durable writers are disabled), so a restart falls back to the
-/// resolved boot config — with one, the flip lives in `.env` and the restart
-/// keeps it (that is `a_switch_flip_writes_back_into_the_dotenv`).
+/// Without a SQLite store attached the auto switch is runtime-only by
+/// design (no durable writer), so a restart falls back to the
+/// resolved boot config — with one, the flip lands in `kernel_meta` and the
+/// next boot keeps it (that is `a_switch_flip_writes_back_into_the_store`).
 #[test]
 fn the_auto_evolve_switch_without_an_env_path_falls_back_to_the_boot_config() {
     let (a, _b) = strategies();
@@ -1324,10 +1324,10 @@ fn a_restart_restores_the_adopted_parameters() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Without an `.env` write-back path the engine switch is runtime-only: the
+/// Without a SQLite store attached the engine switch is runtime-only: the
 /// in-session flip is in force, and the next boot falls back to the resolved
 /// boot config. The durable flip (the production posture) is
-/// `a_switch_flip_writes_back_into_the_dotenv`.
+/// `a_switch_flip_writes_back_into_the_store`.
 #[test]
 fn the_engine_switch_without_an_env_path_falls_back_to_the_boot_config() {
     let (a, _b) = strategies();

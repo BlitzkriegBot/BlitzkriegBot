@@ -123,8 +123,10 @@ pub(crate) fn fee_quote_at(
 /// LIVE config. Returns the default effective duration plus a per-account map
 /// of `account_id → seconds`. Accounts absent from the map fall back to the
 /// default. The `source` field reports the boot resolution of the default
-/// grid; per-account overrides come from `ACCOUNT_<ID>_ROUND_DURATION_SEC`
-/// env keys and are not separately sourced.
+/// grid; per-account overrides are the boot-resolved grid (SQLite
+/// `account_settings` rows, with the `ACCOUNT_<ID>_ROUND_DURATION_SEC` env
+/// spelling as the first-import read fallback) and are not separately
+/// sourced.
 pub fn round_duration_readout(core: &Core) -> crate::schema::RoundDurationResult {
     use crate::schema::{RoundDurationOption, RoundDurationResult};
     let effective = core.config().default_round_duration_sec;

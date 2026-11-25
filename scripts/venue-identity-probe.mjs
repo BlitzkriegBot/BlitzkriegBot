@@ -64,8 +64,13 @@ const SOCK_OVERRIDE = opt('--socket', null);
 const SOCK = SOCK_OVERRIDE ?? resolveSocketPath(process.env);
 /** Liveness window for the upstream feed-counter delta (seconds). */
 const SAMPLE_SEC = Math.max(1, parseFloat(opt('--sample-sec', '3')));
-/** trades.history limit; 0 = drain ALL closed rows (the gateway's own read). */
-const TRADE_LIMIT = Math.max(0, parseInt(opt('--trade-limit', '0'), 10));
+/**
+ * trades.history limit. #186: the kernel no longer treats 0 as "uncapped" —
+ * a zero resolves to the default 50-row page — so the old default silently
+ * capped this probe's comparison to 50 rows. The default now asks for the
+ * kernel's own ceiling (1,000); pass `--trade-limit <n>` for a wider sample.
+ */
+const TRADE_LIMIT = Math.max(1, parseInt(opt('--trade-limit', '1000'), 10));
 const TIMEOUT_MS = 8000;
 
 // Strict: a read that fails is a finding (the probe must never mistake a

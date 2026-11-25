@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::core::ipc_client::IpcClient;
+use crate::core::ipc_client::{DEFAULT_SNAPSHOT_TRADE_LIMIT, IpcClient};
 use crate::core::types::{NetCheckReportExt, NetCheckReportView, UiSnapshot};
 use crate::gateway::supervisor::{
     RestartPolicy, StartOutcome, StopOutcome, Supervisor, SupervisorConfig,
@@ -92,8 +92,13 @@ impl Dispatcher {
 
     /// Assemble a full read-only snapshot through this dispatcher's client.
     /// Exposed for the interactive panel; the web adapter uses its own client.
+    ///
+    /// #186: `0` used to ride the wire here, which the kernel reads as
+    /// "uncapped" — every call re-read the whole append-only trade log. The
+    /// snapshot window is a page (`DEFAULT_SNAPSHOT_TRADE_LIMIT`); the depth
+    /// path is the paged `trades.history` route.
     pub fn snapshot(&mut self) -> UiSnapshot {
-        self.client.snapshot(0)
+        self.client.snapshot(DEFAULT_SNAPSHOT_TRADE_LIMIT)
     }
 
     /// Raw registry reads for the plugin-manager tab: strategies / extensions /
@@ -759,11 +764,7 @@ impl PluginKind {
 }
 
 fn state_mark(on: bool) -> &'static str {
-    if on {
-        "[on ]"
-    } else {
-        "[off]"
-    }
+    if on { "[on ]" } else { "[off]" }
 }
 
 fn status_json(disp: &Dispatcher, s: &UiSnapshot) -> serde_json::Value {

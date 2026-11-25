@@ -30,3 +30,9 @@ mod closing;
 mod fallback;
 mod orders;
 mod settlement;
+
+// #186: `ORDERS_DEFAULT_LIMIT` is the wire handler's bound; the two pure page
+// helpers below it back the pagination tests, so they are test-only here.
+pub(crate) use orders::ORDERS_DEFAULT_LIMIT;
+#[cfg(test)]
+pub(crate) use orders::{orders_page_keeps, orders_page_window};

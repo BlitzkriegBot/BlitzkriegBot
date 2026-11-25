@@ -373,14 +373,21 @@ fn two_venue_book_fixture() -> Core {
     Core::with_account_book(cfg, book)
 }
 
-/// A failed capability self-check freezes trading, and the report stays
-/// visible in the diagnostics; a passing report does not.
+/// A failed capability self-check halts the venue that failed, and the report
+/// stays visible in the diagnostics; a passing report does not.
+///
+/// #187 CHANGED THE OBJECT OF THIS ASSERTION, NOT ITS STRENGTH. It used to
+/// assert `c.is_killed()` for an unbound venue — i.e. it pinned the audit's
+/// P1-7 defect (one venue's blip became a process-level kill switch). The
+/// correct halt for a venue health failure is venue-scoped, so that is what is
+/// asserted now, plus the NEW teeth: the venue's own token is refused and no
+/// global row exists. `halt_scope_tests.rs` carries the full scope contract.
 #[test]
-fn failed_self_check_freezes_trading() {
+fn failed_self_check_halts_the_venue() {
     let mut c = core();
     // issue #1127: `default` is born bound to polymarket; this test asserts the
-    // legacy "no bound accounts → global freeze" path, so keep `default`
-    // unbound here (the production binding is exercised by account/mod.rs tests).
+    // UNBOUND-venue path, so keep `default` unbound here (the production
+    // binding is exercised by account/mod.rs tests).
     c.accounts
         .account_mut(&crate::account::default_account_id())
         .unwrap()
@@ -397,18 +404,29 @@ fn failed_self_check_freezes_trading() {
             }],
         },
     );
-    // The failing probe is polymarket's: the freeze lands on the accounts
-    // bound to that venue. The in-process `core()` has no bound accounts,
-    // so the fallback keeps the legacy global freeze — the assertion is
-    // unchanged.
-    assert!(c.is_killed());
     let stats = c.engine_stats();
+    // The report is still fully visible (nothing was swallowed).
     assert_eq!(stats["selfCheck"]["ok"], false);
-    assert_eq!(stats["tradingFrozen"]["active"], true);
+    // The halt is venue-scoped (#187) …
+    assert!(
+        c.venue_halt("polymarket", 1_000)
+            .is_some_and(|h| h.reason.contains("self-check failed")),
+        "the failed venue is halted with its own reason"
+    );
+    // … and NOT a global kill switch: the operator's master lever stays down.
+    assert!(
+        !c.is_killed(),
+        "an unbound venue's failed probe must not engage the process-level kill switch"
+    );
+    assert_eq!(stats["tradingFrozen"]["active"], false, "{stats}");
 
-    // An explicit resume clears the freeze (operator decision).
-    c.risk.resume();
+    // An explicit resume clears the venue axis (operator decision).
+    c.resume();
     assert!(!c.is_killed());
+    assert!(
+        c.active_venue_halts(1_000).is_empty(),
+        "risk.resume is the master lever and releases venue halts too"
+    );
 }
 
 /// #624 acceptance, venue-scoped kill switch (2026-10-25 多场馆雪崩定谳):

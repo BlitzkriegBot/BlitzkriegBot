@@ -80,15 +80,22 @@ impl Core {
             // The freeze lands on the venue's bound accounts (multi-account
             // #532 routing): same contract as `freeze_account` — new entries
             // refused, closes keep flowing.
-            for account in self.accounts.account_ids_bound_to_venue(venue) {
-                self.freeze_account_auto(&account, message.clone(), Some(venue), ts);
-            }
-            // No bound account (unbound deployments, dry tests): keep the
-            // legacy global freeze so the failure is never silently dropped.
-            if !self.accounts.account_ids_bound_to_venue(venue).is_empty() {
+            let bound = self.accounts.account_ids_bound_to_venue(venue);
+            if bound.is_empty() {
+                // #187: NO account carries this venue's failure. The old code
+                // escalated to `freeze_trading` → `risk.kill` +
+                // `GLOBAL_KILL_ACCOUNT`, so one venue's network blip stopped
+                // every account on every venue (the audit's P1-7). A venue
+                // failure may only ever produce a VENUE-scoped halt, so it
+                // lands on the venue axis and stays unattributed — the alert
+                // names the venue and says no account is bound, instead of
+                // quietly pretending the whole kernel is broken.
+                self.halt_venue_unattributed(venue, message, ts);
                 return;
             }
-            self.freeze_trading(message, ts);
+            for account in bound {
+                self.freeze_account_auto(&account, message.clone(), Some(venue), ts);
+            }
         }
     }
 
@@ -134,29 +141,54 @@ impl Core {
             now_ms,
         );
         if streak >= SWEEP_FAILURE_FREEZE {
+            let message = format!(
+                "reconciliation sweep failed {streak} times in a row on {venue}: {}",
+                err.message
+            );
             let accounts = self.accounts.account_ids_bound_to_venue(venue);
             if accounts.is_empty() {
-                self.freeze_trading(
-                    format!(
-                        "reconciliation sweep failed {streak} times in a row on {venue}: {}",
-                        err.message
-                    ),
-                    now_ms,
-                );
+                // #187: same narrowing as the self-check path above — a venue
+                // with nobody bound to it gets a VENUE halt and an unattributed
+                // alert, never a process-level kill switch.
+                self.halt_venue_unattributed(venue, message, now_ms);
                 return;
             }
             for account in accounts {
-                self.freeze_account_auto(
-                    &account,
-                    format!(
-                        "reconciliation sweep failed {streak} times in a row on {venue}: {}",
-                        err.message
-                    ),
-                    Some(venue),
-                    now_ms,
-                );
+                self.freeze_account_auto(&account, message.clone(), Some(venue), now_ms);
             }
         }
+    }
+
+    /// #187: a venue health failure with **no account bound to it**. The venue
+    /// axis takes the halt; the operator gets an unattributed alert that says so
+    /// in words. It does NOT touch `risk.kill` / `GLOBAL_KILL_ACCOUNT` — that
+    /// is the operator's lever alone (`HaltScope::GlobalOperator`).
+    ///
+    /// Returns `true` when this transitioned the venue from healthy to halted
+    /// (the 0 → 1 edge) — the alert fires once per outage, not once per probe.
+    fn halt_venue_unattributed(&mut self, venue: &str, message: String, now_ms: i64) -> bool {
+        let is_new = self.venue_halts.halt(venue, message.clone(), now_ms);
+        if !is_new {
+            return false;
+        }
+        tracing::error!(
+            venue = %venue,
+            "{}",
+            format!(
+                "venue `{venue}` halted (venue scope, NO account bound): {message}"
+            )
+        );
+        // An unattributed alert, not a silent drop and not an escalation: the
+        // panel's risk-alert lane shows the venue and the fact that nobody is
+        // bound to it, so the operator can bind an account or fix the venue.
+        self.emit(Event::RiskAlert {
+            code: blitzkrieg_market_api::CoreErrorCode::VenueError,
+            message: format!(
+                "场馆 {venue} 已停止新入场（venue 作用域）：没有任何账户绑定该 venue，\
+                 因此无法落到账户闸门；未升级为全局熔断。原因：{message}"
+            ),
+        });
+        true
     }
 
     /// Legacy global form kept for callers with no venue attribution. The
@@ -347,6 +379,12 @@ impl Core {
         // 内部已按 reason_kind 过滤，这里只需遍历全部闸门。
         for account in self.account_gates().keys().cloned().collect::<Vec<_>>() {
             self.auto_lift_if_venue_healthy(account.as_str(), Some(venue), snap.now_ms);
+        }
+        // #187: the venue axis lifts on the SAME evidence — a sweep that just
+        // ran is proof the venue's transport works. Same debounce discipline as
+        // the account axis (a flapping venue must not open/close every cycle).
+        if !venue.is_empty() {
+            self.auto_lift_venue_halt(venue, snap.now_ms);
         }
         // Ledger + position effects for any gap fills the OME just applied.
         for gap in report.actions.iter().filter_map(|a| match a {

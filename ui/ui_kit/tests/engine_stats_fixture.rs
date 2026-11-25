@@ -69,23 +69,27 @@ fn the_kernels_real_engine_stats_payload_deserializes_into_the_view() {
     assert!(!report.items[0].ok);
     assert_eq!(report.items[0].detail, "HTTP 401 unauthorized");
 
-    // The kill switch is down globally (the freeze below is account-scoped),
-    // and the account freeze book names the reason.
+    // #187: the failed self-check did NOT freeze the kernel. The failure stays
+    // fully visible through `selfCheck`/`lastError` above, but the report is a
+    // VENUE fact: with no account bound to polymarket it halts that venue and
+    // deliberately leaves the operator's global switch alone. Pinning
+    // `active: true` here would pin the audit's P1-7 defect (one venue's blip
+    // stopping every venue); the global-freeze shape is pinned by the
+    // hand-built views in `web::safety_tests` and by
+    // `halt_scope_tests::operator_kill_still_produces_global_scope`.
     let frozen = v.trading_frozen.expect("tradingFrozen carried");
-    assert!(frozen.active);
-    assert!(frozen
-        .reason
-        .as_deref()
-        .unwrap_or_default()
-        .contains("self-check"));
-    assert_eq!(v.account_gates.len(), 1);
-    assert_eq!(v.account_gates[0].account, "global");
-    assert!(v.account_gates[0].blocked);
-    assert!(v.account_gates[0]
-        .reason
-        .as_deref()
-        .unwrap_or_default()
-        .contains("self-check"));
+    assert!(
+        !frozen.active,
+        "a venue-scoped probe failure must not read as a kernel-wide freeze"
+    );
+    assert!(
+        frozen.reason.is_none(),
+        "no global reason is invented for a venue-scoped halt"
+    );
+    assert!(
+        v.account_gates.is_empty(),
+        "no global gate row is written for a venue-scoped halt"
+    );
 
     // E9-g: the per-strategy accounting row.
     assert_eq!(v.strategies.len(), 1);

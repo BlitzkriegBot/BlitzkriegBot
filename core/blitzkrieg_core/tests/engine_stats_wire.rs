@@ -89,8 +89,17 @@ fn engine_stats_matches_the_frozen_dry_fixture_byte_for_byte() {
     let mut c = dry_core();
     // Exercise the paths so the safety keys are populated exactly as in the
     // frozen fixture: a venue refusal fills the error slot, a failed sweep
-    // fills the streak, and a failed self-check freezes trading (which is why
-    // it goes LAST — a frozen kernel refuses new placements).
+    // fills the streak, and a failed self-check fills the report block.
+    //
+    // #187 CHANGED WHAT THE SELF-CHECK DOES and this fixture records it: a
+    // failed probe on a venue with NO bound account halts THAT VENUE (the venue
+    // axis) and no longer escalates to `risk.kill` + `GLOBAL_KILL_ACCOUNT`.
+    // The wire therefore carries an INACTIVE `tradingFrozen` and an EMPTY
+    // `accountGates` while `selfCheck`/`lastError` still report the failure —
+    // which is the whole point of the fix: the failure stays visible without
+    // stopping every other venue. The global freeze shape is still pinned, by
+    // the hand-built views in `ui_kit`'s safety tests and by
+    // `halt_scope_tests::operator_kill_still_produces_global_scope`.
     let (id, _) = c.place_pending(intent("k1"), NOW + 2).expect("pending");
     c.reject_live_result(
         &id,
@@ -118,8 +127,8 @@ fn engine_stats_matches_the_frozen_dry_fixture_byte_for_byte() {
         },
     );
     assert!(
-        c.is_killed(),
-        "fixture: the failed self-check froze trading"
+        !c.is_killed(),
+        "fixture (#187): a failed self-check on an unbound venue must NOT freeze the kernel"
     );
 
     let raw = c.engine_stats_at(NOW + 6);

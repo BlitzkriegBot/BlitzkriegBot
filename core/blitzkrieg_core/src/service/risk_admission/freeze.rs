@@ -1,6 +1,158 @@
 use super::*;
 use crate::account::AccountStatus;
+use crate::contracts::{Halt, HaltScope, VenueId};
 use serde::Serialize;
+
+/// 场地级 halt（#187）：一个 venue 的健康失败只能停这个 venue。
+///
+/// **废除**的是「venue 故障 = 系统故障」这条单 venue 时代的映射。审计实测：
+/// `on_venue_self_check` / `on_venue_reconcile_failed` 在
+/// `account_ids_bound_to_venue` 为空时调 `freeze_trading` →
+/// `risk.kill + GLOBAL_KILL_ACCOUNT`，于是一个 venue 的网络抖动停掉**全部**
+/// venue 的全部账户的全部新入场（已有仓位仍可平），直到操作员 `risk.resume`
+/// 或重启。这是用最粗的刀切最细的问题 —— 跨账户日亏熔断早已按
+/// `(strategy, account)` 隔离，venue 健康失败却是全局。
+///
+/// 用 [`Halt`] + [`HaltScope::Venue`] 取代：作用域是**必填字段**，构造一个
+/// 「没有作用域」的 halt 在类型上不可能。没有任何账户绑定该 venue 时，正确
+/// 输出是一条 unattributed 告警，**不是**升级为全局。
+///
+/// `GlobalOperator` 仍然存在，且只能由操作员的 `risk.kill` 产生 —— 人工
+/// 总闸不能被这次收窄带走。
+///
+/// 与 `account_gates` 的关系：这张表是 **venue 轴**，`account_gates` 是
+/// **账户轴**，两者都在 `account_gate_permits` 里读。分开存是因为 venue
+/// halt 必须能在「没有任何账户绑定该 venue」时存在（那种情况下没有任何
+/// 账户键可以承载它）。
+///
+/// **判定用的是「这笔单将在哪个 venue 执行」，不是「账户绑定在哪个 venue」。**
+/// 两者在「账户无绑定」时不同：`refuse_cross_venue_order` 对空绑定直接放行，
+/// 随后 `execution_venue_of` 按 token 的唯一候选把它们路由到**真实**的 venue。
+/// 若闸门只看绑定，一个未绑定账户的单子会绕过故障 venue 的 halt —— 而它恰恰
+/// 要去那里下单。所以 `account_gate_permits` 读的是执行 venue，未绑定账户的
+/// 订单在归因不到 venue 时才按「无 venue 身份」放行（未知维度不用于拒绝，
+/// 与 #174 同向）。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct VenueHalts {
+    /// venue → 现行 halt。键是 venue 名，**不是**账户：一个 venue 一份。
+    halts: HashMap<String, ActiveVenueHalt>,
+}
+
+/// 表内一行：[`Halt`]（契约读出面）加上柜面自用的上锁时点。
+///
+/// `since_ms` 不是 `Halt` 的字段（契约冻结，且 `until_ms` 是「何时自行失效」，
+/// 另一个意思）。它有两个用途，都不是装饰：操作员要看到「这个 venue 坏了
+/// 多久」，以及场地恢复后的自愈去抖（`FREEZE_AUTO_LIFT_MIN_MS`，与账户轴
+/// 同一条纪律 —— 一个抖动的 venue 不该每个周期都开合一次）。
+#[derive(Debug, Clone)]
+struct ActiveVenueHalt {
+    halt: Halt,
+    since_ms: i64,
+}
+
+impl VenueHalts {
+    /// 记录一条 venue 级 halt。返回 `true` 当这是新上锁（0 → 1），调用方
+    /// 据此决定是否告警 —— 一场持续的 venue 故障不该每次探测都重印一行。
+    ///
+    /// 只接受 [`HaltScope::Venue`]：venue 轴的表里放不下别的作用域，类型上
+    /// 就挡住「venue 故障升级为全局」这条路径。
+    ///
+    /// venue halt 没有时钟驱动的失效：它只由「恢复健康」或操作员解除。
+    /// 所以 `until_ms` 恒为 `None` —— 一个 venue 的故障不会自己变好，给个
+    /// 倒计时反而是编造一个没人观测过的恢复时间。
+    pub(crate) fn halt(&mut self, venue: &str, reason: String, now_ms: i64) -> bool {
+        if venue.is_empty() {
+            // 空 venue 不是「未知 venue 的 halt」—— 它是一个没有身份的失败，
+            // 落进这张表会让下一笔真实 venue 的判定查询到它。调用方必须先
+            // 证明手里有 venue id（`venue_of`/报告自带），否则这是调用方的
+            // 编程错误：不写入，由调用方的测试/断言去钉住。这里**不** panic：
+            // 一个空串不该让内核在运行时崩掉，它只要不生效就够了。
+            return false;
+        }
+        let is_new = !self.halts.contains_key(venue);
+        // 同一 venue 再次失败时保留首次的原因与时点（与 `set_account_gate` 同
+        // 纪律：重复上锁不覆盖根因；时点也要保留，否则自愈去抖会被每次失败
+        // 重新计时，一个持续故障就永远等不到 debounce 满）。
+        self.halts
+            .entry(venue.to_string())
+            .or_insert(ActiveVenueHalt {
+                halt: Halt {
+                    scope: HaltScope::Venue(VenueId(venue.to_string())),
+                    reason,
+                    until_ms: None,
+                },
+                since_ms: now_ms,
+            });
+        is_new
+    }
+
+    /// 该 venue 当前是否被 halt。过期视为未 halt（自动到期，无需清理动作）。
+    pub(crate) fn is_halted(&self, venue: &str, now_ms: i64) -> bool {
+        if venue.is_empty() {
+            // 空 venue = 未声明（旧语料、engine 未起）。没有身份就没有 halt
+            // 判定，如实放行 —— 这正是 #174 类缺陷的反面：不要用一个未知
+            // 维度去拒绝。
+            return false;
+        }
+        self.halts
+            .get(venue)
+            .is_some_and(|e| e.halt.until_ms.is_none_or(|until| now_ms < until))
+    }
+
+    /// 该 venue 的现行 halt（含原因），供面板与回执读。过期的不返回。
+    pub(crate) fn active(&self, venue: &str, now_ms: i64) -> Option<&Halt> {
+        let e = self.halts.get(venue)?;
+        if e.halt.until_ms.is_some_and(|until| now_ms >= until) {
+            return None;
+        }
+        Some(&e.halt)
+    }
+
+    /// 上锁时点（自愈去抖用）。未上锁返回 `None`。
+    pub(crate) fn since_ms(&self, venue: &str) -> Option<i64> {
+        self.halts.get(venue).map(|e| e.since_ms)
+    }
+
+    /// 解除一个 venue 的 halt（venue 恢复健康，或操作员显式解除）。
+    /// 返回被清除的 halt。
+    pub(crate) fn clear(&mut self, venue: &str) -> Option<Halt> {
+        self.halts.remove(venue).map(|e| e.halt)
+    }
+
+    /// 解除全部 halt（操作员 `risk.resume`：总闸解除时，自动 venue halt 也
+    /// 一并让路 —— 否则 #187 之前的「操作员能把内核弄回可用」这条杠杆就没了）。
+    /// 返回被清除的条数。
+    pub(crate) fn clear_all(&mut self) -> usize {
+        let n = self.halts.len();
+        self.halts.clear();
+        n
+    }
+
+    /// 全部**生效中**的 halt。按 venue 名排序：来源是 `HashMap`，遍历序每进程
+    /// 随机，会抖的报告没法逐行 diff。过期条目不出现在回执里。
+    ///
+    /// 今日只有内核测试读它：面板读出要另开 issue（`engine.stats` 是带字节级
+    /// fixture 的冻结契约，本 PR 不许加键）。故这里 `cfg(test)` —— 非测试构建
+    /// 不留未用访问器（R8：新增债务为 0）。加面板面时连同 `Core::venue_halt`
+    /// 一起去掉这个门控。
+    #[cfg(test)]
+    pub(crate) fn active_halts(&self, now_ms: i64) -> Vec<&Halt> {
+        let mut live: Vec<(&String, &Halt)> = self
+            .halts
+            .iter()
+            .filter(|(_, e)| e.halt.until_ms.is_none_or(|until| now_ms < until))
+            .map(|(venue, e)| (venue, &e.halt))
+            .collect();
+        live.sort_by(|a, b| a.0.cmp(b.0));
+        live.into_iter().map(|(_, h)| h).collect()
+    }
+
+    /// 测试与诊断用：表内条目数（含已过期待清理项）。
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.halts.len()
+    }
+}
 
 /// 账户入场闸门（#1045）：每账户一份，**纯内存、永不落盘**，进程重启即清，
 /// 唯一由 `account.freeze` / `account.unfreeze`、日内亏损熔断和场地自愈三条
@@ -227,7 +379,9 @@ impl Core {
     /// 两条依据：
     /// 1. `account_gates` 内存表（由 `emit_daily_trip`、手动冻结、
     ///    场地自愈、进程级熔断设置） - 运行时闸门；
-    /// 2. 进程级全局熔断闸门 `GLOBAL_KILL_ACCOUNT` - 对全账户生效。
+    /// 1. 进程级全局熔断闸门 `GLOBAL_KILL_ACCOUNT` - 对全账户生效。
+    /// 2. **venue 轴**（#187）：这笔单的执行 venue 被 halt 时拒 —— 只拒这个
+    ///    venue 上的新入场，别的 venue 照常。
     ///
     /// `ConfigReadOnly` 是唯一也拦平仓的姿态（`ReadOnly` 配置态映射其上；
     /// `Frozen`/`TradingDisabled`/`Manual`/`KillSwitch` 均放行平仓，绝不
@@ -252,6 +406,24 @@ impl Core {
                     gate.reason
                 ),
             ));
+        }
+
+        // #187: venue 轴。执行 venue 被 halt → 只拒这个 venue 的入场，平仓
+        // 照旧（halt 永远不是拆仓位）。
+        if !is_close {
+            let venue = self.venue_in_scope_of(account_id, &req.token_id);
+            if self.venue_halts.is_halted(&venue, now_ms)
+                && let Some(halt) = self.venue_halts.active(&venue, now_ms)
+            {
+                return Err(CoreError::new(
+                    CoreErrorCode::MarketHalted,
+                    format!(
+                        "venue `{venue}` is halted (scope venue): {} - new orders on this venue \
+                         are refused, other venues and every exit keep flowing",
+                        halt.reason
+                    ),
+                ));
+            }
         }
 
         if let Some(gate) = self.account_gate(account_id)
@@ -285,6 +457,49 @@ impl Core {
         }
 
         Ok(())
+    }
+
+    /// #187: the venue an order for `token` under `account` is in scope of.
+    ///
+    /// Two sources, in order, and the ORDER MATTERS:
+    ///
+    /// 1. The account's own binding when it has one. `refuse_cross_venue_order`
+    ///    has already refused a bound account's order for a token that routes
+    ///    elsewhere, so a bound account's order can only ever execute on its
+    ///    own venue — that is the venue whose halt must judge it, and it is
+    ///    answerable with no engine attached (which is what makes this gate
+    ///    total rather than best-effort).
+    /// 2. The engine's execution route, for UNBOUND accounts. An unbound
+    ///    account passes `refuse_cross_venue_order` untouched and is then
+    ///    routed by token (`Engine::execution_venue_for`), so reading only the
+    ///    binding would let its order walk into a halted venue. This needs a
+    ///    live engine; with none attached there is no route to check, and the
+    ///    empty answer admits — an unknown dimension never refuses (#174).
+    fn venue_in_scope_of(&self, account_id: &str, token_id: &str) -> String {
+        if let Some(account) = self.accounts.account(&AccountId::from(account_id))
+            && !account.venue.is_empty()
+        {
+            return account.venue.clone();
+        }
+        self.execution_venue_of(account_id, token_id)
+    }
+
+    /// #187: the venue axis, read-only, for in-kernel readers. Tests today; a
+    /// panel readout needs its own issue — `engine.stats` is a frozen contract
+    /// with a byte-exact fixture and must not grow a key here. The `cfg(test)`
+    /// gate is what keeps the non-test build free of a dead accessor (R8); the
+    /// admission check itself reads `venue_halts` DIRECTLY, so gating the
+    /// reader removes nothing from the enforcement path.
+    #[cfg(test)]
+    pub(crate) fn venue_halt(&self, venue: &str, now_ms: i64) -> Option<&Halt> {
+        self.venue_halts.active(venue, now_ms)
+    }
+
+    /// #187: every ACTIVE venue halt, venue-name sorted (a `HashMap` source
+    /// would shuffle between runs and defeat diffing).
+    #[cfg(test)]
+    pub(crate) fn active_venue_halts(&self, now_ms: i64) -> Vec<&Halt> {
+        self.venue_halts.active_halts(now_ms)
     }
 
     /// Freeze ONE account (operator route, `account.freeze {frozen: true}`):
@@ -471,6 +686,41 @@ impl Core {
         });
     }
 
+    /// #187: lift a venue halt once the venue has proved itself healthy.
+    ///
+    /// Same debounce as the account axis ([`FREEZE_AUTO_LIFT_MIN_MS`]): a venue
+    /// that fails, recovers, fails again must not open and close its gate every
+    /// sweep interval. `venue` is the reporting/swept venue — the caller only
+    /// calls this with evidence that venue's transport answered.
+    pub(crate) fn auto_lift_venue_halt(&mut self, venue: &str, now_ms: i64) -> bool {
+        if venue.is_empty() {
+            return false;
+        }
+        let Some(since_ms) = self.venue_halts.since_ms(venue) else {
+            return false;
+        };
+        if now_ms - since_ms < crate::service::FREEZE_AUTO_LIFT_MIN_MS {
+            return false;
+        }
+        let Some(halt) = self.venue_halts.clear(venue) else {
+            return false;
+        };
+        let minutes = (now_ms - since_ms).max(0) / 60_000;
+        tracing::warn!(
+            venue = %venue,
+            halted_duration_ms = now_ms - since_ms,
+            "venue halt auto-lifted - venue proved healthy"
+        );
+        self.emit(Event::RiskAlert {
+            code: blitzkrieg_market_api::CoreErrorCode::KillSwitchActive,
+            message: format!(
+                "场馆 {venue} 的 halt 已解除（{minutes} 分钟后场馆恢复）：{}",
+                halt.reason
+            ),
+        });
+        true
+    }
+
     /// Freeze trading (kill switch) with a reason the panel can show. A
     /// restart or an explicit `risk.resume` clears it; the startup self-check
     /// re-probes either way. The freeze is logged at error level (#184) - a kill
@@ -597,6 +847,16 @@ impl Core {
         // is persisted, so a restart comes up clear and the operator must
         // explicitly re-arm.
         self.account_gates.remove(GLOBAL_KILL_ACCOUNT);
+        // #187: `risk.resume` is the operator's master lever. Before this issue
+        // a failed venue probe reached the same switch, so resume had to be
+        // enough to bring the kernel back; with venue failures confined to the
+        // venue axis, resume must ALSO release those — otherwise the narrowing
+        // would have quietly removed the operator's ability to recover a
+        // kernel whose venue came back.
+        let lifted = self.venue_halts.clear_all();
+        if lifted > 0 {
+            tracing::warn!(count = lifted, "risk.resume cleared venue-scoped halts");
+        }
         self.persist_risk_state();
     }
 

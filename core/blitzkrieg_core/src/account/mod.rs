@@ -504,8 +504,9 @@ impl AccountLedgers {
     /// Every ACTIVE-status account bound to `venue` — the venue-scoped
     /// freeze's routing table (2026-10-25 多场馆雪崩定谳): one venue's failed
     /// sweep/self-check freezes the accounts that trade it, never the whole
-    /// book. Empty = nobody trades this venue (the caller decides the
-    /// fallback — the legacy global freeze keeps unbound deployments loud).
+    /// book. Empty = nobody trades this venue — the caller then takes the
+    /// VENUE axis (#187: `VenueHalts` + an unattributed alert), never the
+    /// process-level kill switch.
     pub fn account_ids_bound_to_venue(&self, venue: &str) -> Vec<String> {
         self.accounts
             .values()

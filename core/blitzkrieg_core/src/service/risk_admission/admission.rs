@@ -1,4 +1,5 @@
 use super::*;
+use crate::service::intent_gate::IntentGate;
 
 impl Core {
     // ── Orders ─────────────────────────────────────────────────────────────
@@ -621,6 +622,12 @@ impl Core {
                         "pair completion gap-fill: retiring the resting leg order, \
                          the requote replaces it (same internal key, one live order)"
                     );
+                    // #185: the intent row still names the order being
+                    // retired. Supersede it BEFORE the cancel, so a duplicate
+                    // replays the REPLACEMENT (recorded below), never the dead
+                    // id; a failed cancel leaves the row re-claimable and the
+                    // retry finds the resting order here again.
+                    self.supersede_intent(&req, now_ms);
                     self.cancel(&resting_id, now_ms)?;
                 } else {
                     let (id, status) = resting
@@ -634,6 +641,20 @@ impl Core {
                 }
             }
         }
+
+        // ── Issue #185: the durable intent gate ─────────────────────────────
+        // Every refusal gate and the #848 replace have had their turn above;
+        // the next statement is the first WRITE (a reservation). Claiming the
+        // intent HERE is what makes the guard honest: a duplicate is answered
+        // from the first submit's recorded result and can never reach the
+        // reservation or the OME. `Open` = nothing claimed (a close, an
+        // escalation, or a core with no store wired) — unchanged behaviour.
+        let intent_owned = match self.intent_gate(&req, now_ms)? {
+            IntentGate::Open => None,
+            IntentGate::Replay(outcome) => return Ok(outcome),
+            IntentGate::ReplayRefusal(err) => return Err(err),
+            IntentGate::Claimed(key) => Some(key),
+        };
 
         let id = self.new_order_id();
         let buy = req.side == Side::Buy;
@@ -674,9 +695,39 @@ impl Core {
             if buy && let Some(l) = self.accounts.get_mut(&req_account).ok() {
                 l.release(&id);
             }
+            // #185: no order exists behind this claim — release it so a later
+            // attempt inside the round window is not refused by a phantom.
+            if let Some(key) = &intent_owned {
+                self.abandon_intent(key, now_ms);
+            }
             return Err(e);
         }
-        let rejection = self.place_after_submit(&id, maker_timeout_ms, now_ms)?;
+        let rejection = match self.place_after_submit(&id, maker_timeout_ms, now_ms) {
+            Ok(r) => r,
+            Err(e) => {
+                // The order IS registered in the OME now: record it as the
+                // intent's result before propagating, or a duplicate would be
+                // free to place a second order for an order that exists. The
+                // status read reflects whatever transition the error left.
+                if let Some(key) = &intent_owned {
+                    let status = self
+                        .ome
+                        .get(&id)
+                        .map(|o| o.status)
+                        .unwrap_or(OrderStatus::Pending);
+                    self.settle_intent_ordered(
+                        key,
+                        &PlaceOutcome {
+                            order_id: id.clone(),
+                            status,
+                            rejection: Some(e.clone()),
+                        },
+                        now_ms,
+                    );
+                }
+                return Err(e);
+            }
+        };
 
         let status = self
             .ome
@@ -684,11 +735,17 @@ impl Core {
             .map(|o| o.status)
             .unwrap_or(OrderStatus::Pending);
         self.emit_order(&id);
-        Ok(PlaceOutcome {
+        let outcome = PlaceOutcome {
             order_id: id,
             status,
             rejection,
-        })
+        };
+        // #185: record the FIRST submit's real result, so every duplicate
+        // replays exactly this (same order id, same status, same rejection).
+        if let Some(key) = &intent_owned {
+            self.settle_intent_ordered(key, &outcome, now_ms);
+        }
+        Ok(outcome)
     }
 
     /// issue #848: is this BUY the naked-leg completion re-entry of a

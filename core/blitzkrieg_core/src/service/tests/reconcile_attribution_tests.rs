@@ -433,15 +433,32 @@ fn unknown_buy_never_lands_on_default_account() {
         paper_before - dec!(2.25) - fee,
         "the cash the venue spent leaves B's book (notional + its taker fee)"
     );
+    // #184 CONTRACT CHANGE (merge of #184 onto #175): the never-acked place is
+    // NOT retired any more. This fixture is #184's exact motivating case — the
+    // venue traded this order's token from an id the core cannot name, so "the
+    // POST timed out" is NOT evidence the venue lacks the order. Releasing the
+    // reservation here would let a real position be paid twice, once by the
+    // venue and once by cash the ledger had already re-spent.
+    //
+    // So the money must STAY held and the status must NOT be invented. The old
+    // assertion (`Cancelled` + reservation 0) encoded the defect #184 exists to
+    // remove; this one is stricter, not looser: it pins the reservation, the
+    // live status, and the recorded probe.
     assert_eq!(
         reserved_of(&c, "paper"),
-        Decimal::ZERO,
-        "the retired place released its reservation"
+        dec!(4),
+        "the unverifiable place keeps its reservation — the venue may hold the order"
     );
+    let unresolved = c.ome().get(&id).expect("the order still exists");
     assert_eq!(
-        c.ome().get(&id).unwrap().status,
-        OrderStatus::Cancelled,
-        "the never-acked place is retired by the sweep"
+        unresolved.status,
+        OrderStatus::Pending,
+        "no local verdict is invented for a place the venue never acknowledged"
+    );
+    assert!(
+        unresolved.probe_attempts >= 1,
+        "#184: the sweep records that the probe ran and answered Unknown (got {})",
+        unresolved.probe_attempts
     );
 }
 

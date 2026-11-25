@@ -250,8 +250,8 @@ impl Core {
             .collect()
     }
 
-    /// [`Self::pending_unbound`] filtered to ONE venue: the multi-plugin
-    /// executor drain. The routing truth is the ORDER'S OWN execution venue
+    /// `pending_unbound` filtered to ONE venue: the multi-plugin executor
+    /// drain. The routing truth is the ORDER'S OWN execution venue
     /// (`execution_venue_for`: RFC-661 M1 — the placing account's binding
     /// resolves its OWN (venue, token) dual-key row first, so a shared
     /// token's two accounts each route to their own executor; the account
@@ -267,6 +267,21 @@ impl Core {
         self.pending_unbound()
             .into_iter()
             .filter(|o| self.execution_venue_of(o.account_id.as_str(), &o.token_id) == venue)
+            .collect()
+    }
+
+    /// Live orders whose execution venue resolves to a DIFFERENT venue than
+    /// `venue`. `reconcile_scoped` treats this set as "not my snapshot's
+    /// business" — a Kalshi sweep must never judge a Polymarket order.
+    fn other_venue_orders(&self, venue: &str) -> std::collections::HashSet<crate::model::OrderId> {
+        self.ome
+            .live_orders()
+            .into_iter()
+            .filter(|o| {
+                let own = self.execution_venue_of(o.account_id.as_str(), &o.token_id);
+                !own.is_empty() && own != venue
+            })
+            .map(|o| o.order_id.clone())
             .collect()
     }
 
@@ -355,16 +370,7 @@ impl Core {
             // sweep's business. An order whose venue cannot be resolved today
             // (engine down, token delisted) stays in scope: no other sweep can
             // prove anything about it either.
-            let skip: std::collections::HashSet<crate::model::OrderId> = self
-                .ome
-                .live_orders()
-                .into_iter()
-                .filter(|o| {
-                    let own = self.execution_venue_of(o.account_id.as_str(), &o.token_id);
-                    !own.is_empty() && own != venue
-                })
-                .map(|o| o.order_id.clone())
-                .collect();
+            let skip = self.other_venue_orders(venue);
             crate::reconcile::reconcile_scoped(self, &snap, &skip)?
         };
         // The sweep channel just proved itself alive — a failed-sweep streak
@@ -489,6 +495,55 @@ impl Core {
                 }
             }
         }
+        // #184 backstop: an order whose withdrawal was requested but whose
+        // venue ack never arrived. If THIS venue's authoritative snapshot no
+        // longer lists it, the absence is proof the order is off the book —
+        // the confirm we were waiting for was simply dropped (queue cap, bridge
+        // death, WS gap). Terminalise on that proof and release; an order the
+        // snapshot still lists is left live with its money held, because it can
+        // still fill.
+        //
+        // Scoped to the reporting venue on purpose: another venue's snapshot
+        // cannot speak for this order (`skip` already encodes that), and an
+        // EMPTY venue name means the sweep is unscoped (in-process tests,
+        // replay) where the snapshot IS the whole world.
+        let cancel_waiting: Vec<(OrderId, String)> = self
+            .ome
+            .live_orders()
+            .into_iter()
+            .filter(|o| o.cancel_requested)
+            .filter(|o| {
+                venue.is_empty()
+                    || self.execution_venue_of(o.account_id.as_str(), &o.token_id) == venue
+            })
+            .filter_map(|o| {
+                let vid = o.venue_order_id.clone()?;
+                Some((o.order_id.clone(), vid))
+            })
+            .filter(|(_, vid)| !snap.open_order_ids.iter().any(|open| open == vid))
+            .collect();
+        for (id, vid) in cancel_waiting {
+            let Some(order) = self.ome.get(&id).cloned() else {
+                continue;
+            };
+            let was_live = live_before.contains(order.order_id.as_str());
+            tracing::warn!(
+                order = %id,
+                venue_order_id = %vid,
+                "cancel-requested order is absent from the venue snapshot — \
+                 terminalising on the venue's own absence (#184)"
+            );
+            self.ome.mark_terminal_with_evidence(
+                &id,
+                OrderStatus::Cancelled,
+                crate::model::TerminalEvidenceSource::VenueCancelAck {
+                    venue_order_id: vid,
+                },
+                snap.now_ms,
+            )?;
+            self.release_order_bookkeeping(&order, was_live, "reconcile cancel backstop")?;
+            self.emit_order(&id);
+        }
         // A terminal status the sweep just stamped (filled-without-gap,
         // vanished→cancelled, ghost→force-closed) must reach orders.jsonl the
         // same way every other status change does — otherwise a restart
@@ -511,10 +566,10 @@ impl Core {
                     self.persist_order(core_order_id)?;
                 }
                 crate::reconcile::ReconcileAction::MarkedCancelled { core_order_id } => {
-                    // detect_ghosts closed these through Core::cancel (exits.rs:93),
-                    // which already ran release_order_bookkeeping and validated it.
-                    // Re-releasing here observes an emptied reservation and aborts
-                    // a clean sweep — bookkeeping happened exactly once, at cancel.
+                    // detect_ghosts stamped Cancelled + released the reservation
+                    // itself (#184: stamp first, release second, both fail-closed).
+                    // Re-releasing here would observe an emptied reservation and
+                    // abort a clean sweep — bookkeeping happened exactly once.
                     self.persist_order(core_order_id)?;
                 }
                 crate::reconcile::ReconcileAction::MarkedForceClosed { core_order_id } => {
@@ -1123,51 +1178,107 @@ impl Core {
         }
     }
 
-    /// Retire every order a place TIMEOUT left pending (#462) when the venue
-    /// never gave evidence for it.
+    /// Re-examine every order a place TIMEOUT left pending (#462, rewritten by
+    /// #184).
     ///
-    /// `note_place_timeout` deliberately does NOT reject: the venue may have
-    /// accepted the POST after the client gave up. But "pending forever"
-    /// leaks the cash reservation and strands the intent, and the OME-side
-    /// ghost sweep cannot judge these orders — they carry no venue id to
-    /// match, so it skips them. The three endings all resolve without
-    /// adoption:
-    ///   really filled   → the unknown BUY fold in `apply_external_fills`
-    ///                     books the position; this retirement then frees
-    ///                     the now-stale reservation;
-    ///   really resting  → the bridge's orphan sweep cancels the unknown
-    ///                     venue id (exposure removed at the venue);
-    ///   never received  → nothing at the venue; only this retirement
-    ///                     closes the local intent.
-    /// The budget clears the bridge's sweep cadence (5 s) plus the place
-    /// timeout itself, so a POST that is merely slow is never raced, and
-    /// the folded position occupies the per-asset slot in the window
-    /// before retirement — a strategy re-attempt cannot double the entry.
+    /// The old shape called `self.cancel(...)` here, on the assumption that
+    /// "the venue never acked ⇒ the venue has no order". A POST timeout proves
+    /// nothing of the sort: the venue may have accepted the order and the ack
+    /// may simply be lost. `Cancel` also put the money back immediately, so a
+    /// fill landing in the window became a ghost position paid for by cash the
+    /// ledger had already re-spent.
+    ///
+    /// What this does now, per order: it NEVER invents a local verdict.
+    ///
+    /// - It counts the probe attempt on the order (`probe_attempts`, the
+    ///   transport's `Found` / `Absent` / `Unknown` surface is what a real
+    ///   probe would answer, but this sweep cannot issue one — see below).
+    /// - It reads the ONE probe answer the snapshot actually carries: the
+    ///   venue's own trade history. A trade on this token, from a venue order id
+    ///   the core cannot name, is evidence the place DID land. That is reported
+    ///   loudly and the order stays live with its money held.
+    /// - Everything else is `Unknown`. The order stays live, keeps its
+    ///   reservation and is reported as UNVERIFIED — never converted into a
+    ///   cancellation. Resolving it needs a real probe or an operator.
+    ///
+    /// A probe that answers `Absent` WOULD be evidence (`PlaceNeverAccepted
+    /// {Absent}` is a legal terminal proof, and the OME accepts it). This sweep
+    /// has no probe transport, so it never claims that answer: the absence a
+    /// venue snapshot shows for an order with NO venue id proves nothing,
+    /// because the core never learned an id to look for.
+    ///
+    /// The reservation deliberately survives the whole window: holding cash for
+    /// an order that might exist is the conservative, traceable error; reusing
+    /// it while a real order may fill is how exposure doubles.
     pub(super) fn resolve_place_timeouts(&mut self, snap: &crate::reconcile::VenueSnapshot) {
-        for (id, submitted_at) in self
+        let candidates: Vec<(String, i64)> = self
             .ome
             .live_orders()
             .into_iter()
             // #12: `confirm_live` can mark an order Live before the venue
             // answers with a venue id; such an order has no place-verdict
             // source other than the place-timeout sweep, so it must be
-            // retired here too — otherwise its reservation leaks forever.
+            // examined here too.
             .filter(|o| o.venue_order_id.is_none() && o.status.is_live())
             .map(|o| (o.order_id.clone(), o.submitted_at_ms))
-            .collect::<Vec<_>>()
-        {
+            .collect();
+        for (id, submitted_at) in candidates {
             if snap.now_ms - submitted_at < PLACE_TIMEOUT_VERDICT_MS {
                 continue;
             }
-            if let Err(e) = self.cancel(&id, snap.now_ms) {
-                tracing::warn!(order = %id, error = %e, "place-timeout retirement failed");
-            } else {
-                tracing::warn!(
+            let probes = match self.ome.note_probe_attempt(&id, snap.now_ms) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!(order = %id, error = %e, "place-timeout probe stamp failed");
+                    continue;
+                }
+            };
+            // The venue's own trade history is the only probe answer this sweep
+            // can actually read: a trade matching this order's token+side while
+            // the order has no venue id is evidence the place DID reach the
+            // venue. Everything else is an unanswered probe, and an unanswered
+            // probe is reported — never converted into a cancellation.
+            let venue_filled = snap.trades.iter().any(|t| {
+                t.token_id
+                    == self
+                        .ome
+                        .get(&id)
+                        .map(|o| o.token_id.clone())
+                        .unwrap_or_default()
+                    && !t.venue_order_id.is_empty()
+                    && self.core_id_for_venue(&t.venue_order_id).is_none()
+            });
+            if venue_filled {
+                tracing::error!(
                     order = %id,
-                    waited_ms = snap.now_ms - submitted_at,
-                    "place timed out and the venue never acknowledged it — order retired, reservation released (#462)"
+                    probes,
+                    "place-timeout order: the venue traded a token this order targeted — \
+                     the place DID reach the venue; keeping the order live and the reservation held (#184)"
                 );
+                self.emit(Event::RiskAlert {
+                    code: blitzkrieg_market_api::CoreErrorCode::Internal,
+                    message: format!(
+                        "place-timeout order {id}: venue evidence says the place landed — \
+                         reservation kept, do not treat it as cancelled (#184)"
+                    ),
+                });
+                continue;
             }
+            tracing::error!(
+                order = %id,
+                probes,
+                waited_ms = snap.now_ms - submitted_at,
+                "place-timeout order has NO venue evidence either way — UNVERIFIED, \
+                 kept live with its reservation; reporting instead of cancelling (#184)"
+            );
+            self.emit(Event::RiskAlert {
+                code: blitzkrieg_market_api::CoreErrorCode::Timeout,
+                message: format!(
+                    "order {id}: place timed out and no probe could prove the venue lacks it \
+                     (probe {probes} = Unknown) — order stays UNVERIFIED and keeps its \
+                     reservation; reconcile or an operator must resolve it (#184)"
+                ),
+            });
         }
     }
 }

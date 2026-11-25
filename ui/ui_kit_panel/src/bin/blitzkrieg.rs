@@ -14,12 +14,12 @@
 use blitzkrieg_ui_kit::core::doctor;
 use blitzkrieg_ui_kit::core::net_check::{render_json, render_text};
 use blitzkrieg_ui_kit::gateway::{
-    Dispatcher, StartOutcome, Supervisor, SupervisorConfig, discover_binary,
+    discover_binary, Dispatcher, StartOutcome, Supervisor, SupervisorConfig,
 };
-use blitzkrieg_ui_kit::web::{PANEL_CREDENTIALS_MISSING, WebServer};
-use blitzkrieg_ui_kit::{IpcClient, resolve_socket_path};
+use blitzkrieg_ui_kit::web::{WebServer, PANEL_CREDENTIALS_MISSING};
+use blitzkrieg_ui_kit::{resolve_socket_path, IpcClient};
 use blitzkrieg_ui_panel::{
-    PanelArgs, Tab, parse_args_from, run_panel, run_panel_with_dispatcher, stop_stack,
+    parse_args_from, run_panel, run_panel_with_dispatcher, stop_stack, PanelArgs, Tab,
 };
 use std::io::IsTerminal;
 use std::os::unix::fs::PermissionsExt;
@@ -649,7 +649,7 @@ async fn run_core_subcommand(raw_args: Vec<String>) -> std::io::Result<()> {
     // orphaned, still serving its socket (the exact shape the orphaned readonly
     // cores in unified-launcher-check exposed). With the streams registered
     // first, a signal that early is caught and routed through supervisor.stop().
-    use tokio::signal::unix::{SignalKind, signal};
+    use tokio::signal::unix::{signal, SignalKind};
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sigterm = signal(SignalKind::terminate())?;
 
@@ -1252,7 +1252,7 @@ async fn run_unified(args: Vec<String>) -> std::io::Result<()> {
     if !cli.use_tui {
         let d_signal = dispatcher.clone();
         tokio::spawn(async move {
-            use tokio::signal::unix::{SignalKind, signal};
+            use tokio::signal::unix::{signal, SignalKind};
             let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT listener");
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM listener");
             tokio::select! {

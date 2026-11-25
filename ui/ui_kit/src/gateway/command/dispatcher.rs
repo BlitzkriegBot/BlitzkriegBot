@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::core::ipc_client::{DEFAULT_SNAPSHOT_TRADE_LIMIT, IpcClient};
+use crate::core::ipc_client::{IpcClient, DEFAULT_SNAPSHOT_TRADE_LIMIT};
 use crate::core::types::{NetCheckReportExt, NetCheckReportView, UiSnapshot};
 use crate::gateway::supervisor::{
     RestartPolicy, StartOutcome, StopOutcome, Supervisor, SupervisorConfig,
@@ -764,7 +764,11 @@ impl PluginKind {
 }
 
 fn state_mark(on: bool) -> &'static str {
-    if on { "[on ]" } else { "[off]" }
+    if on {
+        "[on ]"
+    } else {
+        "[off]"
+    }
 }
 
 fn status_json(disp: &Dispatcher, s: &UiSnapshot) -> serde_json::Value {

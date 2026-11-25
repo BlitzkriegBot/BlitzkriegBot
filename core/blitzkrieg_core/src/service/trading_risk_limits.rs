@@ -300,7 +300,10 @@ impl Core {
             // issue #1199 P1-6: max_daily_drawdown_usd 是日亏熔断预算，与
             // PositionConfig.max_daily_loss_usd 为同一预算；setSystemic 写入后
             // 同步进内存，使本会话立即按新值裁决（live，与 maxSingleLossUsd 一致）。
-            if risk_changes.iter().any(|c| c.field == "maxDailyDrawdownUsd") {
+            if risk_changes
+                .iter()
+                .any(|c| c.field == "maxDailyDrawdownUsd")
+            {
                 self.config.positions.max_daily_loss_usd = row.max_daily_drawdown_usd.value();
                 let positions = self.config.positions.clone();
                 self.positions.set_config(positions);
@@ -330,25 +333,25 @@ impl Core {
             Some(r) => self.persist_risk_bounds(&target, r, &risk_changes)?,
             None => false,
         };
-        if let Some(to) = patch.size_pct {
-            if let Some(store) = self.store.as_deref() {
-                let scope_id = crate::account::AccountId::from(target.as_str());
-                store
-                    .put_setting(
-                        crate::store::AccountScope::new(&scope_id),
-                        crate::risk::account_store::SIZE_PCT_SETTING,
-                        Some(&to.to_string()),
+        if let Some(to) = patch.size_pct
+            && let Some(store) = self.store.as_deref()
+        {
+            let scope_id = crate::account::AccountId::from(target.as_str());
+            store
+                .put_setting(
+                    crate::store::AccountScope::new(&scope_id),
+                    crate::risk::account_store::SIZE_PCT_SETTING,
+                    Some(&to.to_string()),
+                )
+                .map_err(|e| {
+                    CoreError::new(
+                        CoreErrorCode::Internal,
+                        format!(
+                            "sizePct NOT applied: the account_settings store write failed ({e})"
+                        ),
                     )
-                    .map_err(|e| {
-                        CoreError::new(
-                            CoreErrorCode::Internal,
-                            format!(
-                                "sizePct NOT applied: the account_settings store write failed ({e})"
-                            ),
-                        )
-                    })?;
-                persisted = true;
-            }
+                })?;
+            persisted = true;
         }
         for c in &changes {
             tracing::info!(

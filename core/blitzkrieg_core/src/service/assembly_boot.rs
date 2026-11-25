@@ -432,12 +432,15 @@ impl Core {
                 .load_settings()
                 .unwrap_or_else(|e| panic!("refusing to boot: account_settings read failed ({e})"))
         });
-        let risk_db = sqlite.as_ref().map(|s| s.risk_db());
         let execution_policy = {
             let policy = Self::load_execution_policy_at_boot(&config);
             match (policy, sql_policy_settings.as_ref()) {
                 (Some(mut p), Some(settings)) => {
-                    if let Err(reason) = p.overlay_sql_settings(settings, risk_db) {
+                    // #180: the self-heal write-back goes through the store
+                    // seam (`put_setting` + typed `AccountScope`), not the raw
+                    // `AccountRiskDb` writer — the same handle the store below
+                    // is built from, so the write lands on the identical row.
+                    if let Err(reason) = p.overlay_sql_settings(settings, store.as_deref()) {
                         panic!(
                             "refusing to boot: the SQLite policy sections do not validate \
                              ({reason}) — fix the rows and restart (fail-closed)"

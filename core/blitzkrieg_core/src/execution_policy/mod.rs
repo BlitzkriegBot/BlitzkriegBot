@@ -1002,10 +1002,17 @@ impl Policy {
     /// kernel — there is no UI to reach without a running kernel. The
     /// offending cap(s) are clamped to `MAX_BUDGET_CEILING_USD`, persisted back
     /// to the database, and boot continues with a warn.
+    ///
+    /// #180: the write-back goes through [`crate::store::StoreApi::put_setting`]
+    /// with a typed [`crate::store::AccountScope`] naming the reserved
+    /// `defaults` selector — not `AccountRiskDb::save_setting("defaults", …)`.
+    /// Same row, but the account is spelled by the one constant that owns it
+    /// and the write lands through the seam (which also stamps the reserved-row
+    /// marker a raw `save_setting` never wrote).
     pub fn overlay_sql_settings(
         &mut self,
         settings: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
-        risk_db: Option<&crate::risk::account_store::AccountRiskDb>,
+        store: Option<&dyn crate::store::StoreApi>,
     ) -> Result<(), String> {
         fn lookup_of<'a>(
             keys: &'a std::collections::BTreeMap<String, String>,
@@ -1036,18 +1043,34 @@ impl Policy {
             }
             if !healed.is_empty() {
                 let ceiling_str = ceiling.to_string();
+                let scope_id = crate::account::AccountId::from(crate::store::DEFAULTS_ACCOUNT_ID);
                 for (key, old) in &healed {
-                    if let Some(risk_db) = risk_db {
-                        if let Err(e) = risk_db.save_setting("defaults", key, Some(&ceiling_str)) {
-                            tracing::warn!(
-                                "issue 1253 self-heal: could not persist defaults.{key} clamp \
-                                 {old} → {ceiling} ({e})"
-                            );
-                        } else {
-                            tracing::warn!(
+                    if let Some(store) = store {
+                        match store.put_setting(
+                            crate::store::AccountScope::new(&scope_id),
+                            key,
+                            Some(&ceiling_str),
+                        ) {
+                            Ok(crate::store::WriteOutcome::Persisted) => tracing::warn!(
                                 "issue 1253 self-heal: SQLite defaults.{key} was {old} above the \
                                  $1,000,000 sanity ceiling — clamped to {ceiling} and persisted"
-                            );
+                            ),
+                            // MemoryOnly: the in-memory clamp stands for this
+                            // run, the poisoned VALUE is still on disk. Say so
+                            // — a "clamped" line over a row that will reload
+                            // unchanged is the silent-degradation shape.
+                            Ok(crate::store::WriteOutcome::MemoryOnly { reason }) => {
+                                tracing::warn!(
+                                    "issue 1253 self-heal: defaults.{key} clamp {old} → {ceiling} is \
+                                 NOT durable ({reason:?}) — this boot is clamped, the stored \
+                                 row still carries {old} and will reload unless the row is fixed"
+                                )
+                            }
+                            Err(e) => tracing::warn!(
+                                "issue 1253 self-heal: could not persist defaults.{key} clamp \
+                                 {old} → {ceiling} ({e}) — this boot is clamped, the stored row \
+                                 still carries {old}"
+                            ),
                         }
                     }
                 }

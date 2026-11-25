@@ -83,7 +83,17 @@ impl FeedHandle {
 
 impl blitzkrieg_bk_contract::SubscriptionControl for FeedHandle {
     fn set_tokens(&self, tokens: Vec<TokenId>) {
-        let _ = self.tx.try_send(tokens);
+        // See the kalshi twin: the trait is fire-and-forget (#182), so a dropped
+        // control message can only be made visible here. Silently keeping the
+        // old token set while the kernel assumes the new one is published is
+        // the L4 shape (a failed dependency that looks like success).
+        if let Err(e) = self.tx.try_send(tokens) {
+            tracing::warn!(
+                error = %e,
+                "subscription control send dropped (channel full or closed) — \
+                 the feed keeps polling the previous token set"
+            );
+        }
     }
 }
 

@@ -26,7 +26,7 @@ import {
 } from '@/lib/format'
 import { useAccountBalance } from '@/lib/account-balance'
 import { filterByAccount, filterByVenue } from '@/lib/account-filter'
-import { newestFirst, positionExpired, isKnownPnl } from '@/lib/trades'
+import { newestFirst, positionExpired, isKnownPnl, winLossFlat } from '@/lib/trades'
 import { roundEndSec, exchangeUpdownUrl } from '@/lib/round-id'
 import { selectCurrentRound, currentRoundBarFraction, currentRoundSpanSec, currentRoundLeftSec } from '@/lib/current-round'
 import { stepCountdownSelfHeal, emptyHealState } from '@/lib/countdown-self-heal'
@@ -576,7 +576,9 @@ const cumStats = computed(() => {
   const known = rows.filter(isKnownPnl)
   const unknownPnlCount = rows.length - known.length
   const net = known.reduce((x, t) => x + Number(t.netPnlUsd), 0)
-  const wins = known.filter((t) => Number(t.netPnlUsd) > 0).length
+  // 三分口径：平手笔（净利恰为 0）不进胜负分母，与内核 `metrics::Outcome` 同源。
+  const split = winLossFlat(known)
+  const wins = split.wins
   const fees = known.reduce((x, t) => x + (Number(t.feesUsd) || 0), 0)
   // 最佳/最差单笔与 summary 同口径（USD 净额），不再折叠 netPnlPct 百分数：
   // 百分数与美元金额不是同一量纲，折叠口径混用会把「最佳单笔」读成百分数，
@@ -591,8 +593,8 @@ const cumStats = computed(() => {
     fees,
     net,
     wins,
-    losses: known.length - wins,
-    winRate: winRateOf(wins, known.length - wins),
+    losses: split.losses,
+    winRate: winRateOf(split.wins, split.losses),
     unknownPnlCount,
     avgHold: undefined as number | undefined,
     bestTradePnl: usds.length ? Math.max(...usds) : undefined,
@@ -673,7 +675,7 @@ const filteredRows = computed<TradeRow[]>(() => {
     if (fOutcome.value !== 'all' && fOutcome.value !== 'unverifiable' && !isKnownPnl(t)) return false
     const pnl = Number(t.netPnlUsd)
     if (fOutcome.value === 'win' && !(isKnownPnl(t) && pnl > 0)) return false
-    if (fOutcome.value === 'loss' && !(isKnownPnl(t) && pnl <= 0)) return false
+    if (fOutcome.value === 'loss' && !(isKnownPnl(t) && pnl < 0)) return false
     if (fOutcome.value === 'unverifiable' && t.exitReason !== 'unverifiable_expiry') return false
     return true
   })
@@ -687,12 +689,13 @@ const filteredStats = computed(() => {
   // 「含 N 笔未知盈亏」标注）。折叠成 0 会把它读成打平。
   const known = rows.filter(isKnownPnl)
   const net = known.reduce((a, t) => a + Number(t.netPnlUsd), 0)
-  const wins = known.filter((t) => Number(t.netPnlUsd) > 0).length
+  // 三分口径：平手笔不进胜负分母（同 `metrics::Outcome`）。
+  const split = winLossFlat(known)
   return {
     count: rows.length,
     net,
-    wins,
-    losses: known.length - wins,
+    wins: split.wins,
+    losses: split.losses,
     unknownPnlCount: rows.length - known.length,
   }
 })
@@ -1059,7 +1062,13 @@ const {
 const expiredOrderRows = computed(() => orderRows.value.filter((o) => o.status === 'LIVE' || o.status === 'PARTIALLY_FILLED' || o.status === 'PENDING').filter(orderExpired))
 const positionUnrealized = computed(() =>
   positions.value.reduce(
-    (a, p) => a + ((Number(p.currentPrice) - Number(p.entryPrice)) * (Number(p.shares) || 0) || 0),
+    (a, p) => {
+      // 无报价行的 `currentPrice` 是 0 哨兵，不是价格：折进合计会把「没报价」
+      // 画成「本金全亏」。老内核不带 markObserved（undefined）按已观测处理。
+      if (p.markObserved === false) return a
+      const shares = Number(p.shares) || 0
+      return a + ((Number(p.currentPrice) - Number(p.entryPrice)) * shares || 0)
+    },
     0,
   ),
 )

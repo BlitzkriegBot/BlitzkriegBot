@@ -253,12 +253,13 @@ pub(crate) async fn handle_misc(
 /// `balance + reserved − oe` is impossible here.
 /// Returns `None` when `opening_equity` is unknown — never derived from
 /// trade folding.
-pub(crate) fn cumulative_net_pnl(
-    balance: Decimal,
-    opening_equity: Option<Decimal>,
-) -> Option<Decimal> {
-    opening_equity.map(|oe| balance - oe)
-}
+///
+/// The formula itself lives on the ledger ([`crate::ledger::cumulative_net_pnl`])
+/// — it is re-exported through here because this handler is where it was first
+/// written, but there is exactly ONE definition now: `account.list` calls the
+/// same function with the same projected balance, which is what stops the two
+/// verbs disagreeing about one account (#1277).
+pub(crate) use crate::ledger::cumulative_net_pnl;
 
 #[cfg(test)]
 mod tests {

@@ -1154,10 +1154,14 @@ impl Core {
                 venue: p.venue.clone(),
                 entry_price: p.entry_price,
                 // Issue #176: the panel's mark. An unobserved position renders
-                // `0`, the "no mark" spelling the pages already gate on — never
-                // the entry price, which would draw a fake flat line for a
-                // token nobody has quoted.
+                // `0` in `current_price` AND `mark_observed: false` — never the
+                // entry price, which would draw a fake flat line for a token
+                // nobody has quoted. The flag is what lets the panel tell "no
+                // quote" from "quoted at zero"; without it the 0 sentinel was
+                // indistinguishable from a price and got folded into money sums
+                // as a total loss.
                 current_price: p.mark_or_zero(),
+                mark_observed: p.mark().is_some(),
                 shares: p.shares,
                 unrealized_pct: p
                     .mark()

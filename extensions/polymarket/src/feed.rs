@@ -388,6 +388,13 @@ fn same_token_set(a: &[String], b: &[String]) -> bool {
 
 /// Push `tokens` only when the set actually changed. Unchanged republishes
 /// must not fill the control channel or cut the poller wait.
+///
+/// The cache is advanced ONLY after the send succeeds. It used to be written
+/// first, which turned one full-channel `try_send` into PERMANENT suppression:
+/// the cache claimed the set was delivered, so every later identical republish
+/// was de-duplicated away and the poller kept serving the previous round's
+/// tokens until some *different* set happened along. A dropped control message
+/// is a transient failure; the dedup cache must not record it as success.
 fn try_send_if_changed(
     tx: &mpsc::Sender<Vec<String>>,
     last: &std::sync::Mutex<Option<Vec<String>>>,
@@ -399,8 +406,21 @@ fn try_send_if_changed(
     {
         return;
     }
-    *guard = Some(tokens.clone());
-    let _ = tx.try_send(tokens);
+    match tx.try_send(tokens.clone()) {
+        Ok(()) => *guard = Some(tokens),
+        Err(e) => {
+            // Leave the cache untouched so the next republish retries, and make
+            // the drop visible: a silently unsent subscription means the feed
+            // polls a stale token set while the kernel believes it published
+            // this one (R7.1 L4 — a failed dependency must not look like success).
+            tracing::warn!(
+                tokens = tokens.len(),
+                error = %e,
+                "subscription control send dropped (channel full or closed) — \
+                 token-set cache NOT advanced, the next publish will retry"
+            );
+        }
+    }
 }
 
 /// Poll `POST /books` for the current token set.

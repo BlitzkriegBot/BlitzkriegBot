@@ -292,16 +292,38 @@ impl Core {
         if self.config.unverified_expiry_policy != UnverifiedExpiryPolicy::Receivable {
             return 0;
         }
-        let position_ids: Vec<String> = self
+        // (position_id, account_id) pairs — the account is read BEFORE the claim
+        // is consumed, so an unconfigured book refuses the redemption instead of
+        // letting `redeem_fallback_claim` drop the claim into the void.
+        let pending: Vec<(String, String)> = self
             .settlement
             .fallback_claims()
-            .map(|c| c.position_id.clone())
+            .map(|c| (c.position_id.clone(), c.account_id.clone()))
             .collect();
         let mut redeemed = 0usize;
-        for position_id in position_ids {
+        for (position_id, claim_account) in pending {
             let Some(venue_price) = truth(&position_id) else {
                 continue;
             };
+            // The account lookup is part of the redemption's precondition, not a
+            // post-hoc error branch: `redeem_fallback_claim` REMOVES the claim and
+            // journals the redemption before returning, so a failure discovered
+            // only after it (the old shape) left the receivable gone, the cash
+            // uncredited and `redeemed` still incremented — a claim that vanished
+            // with a "success" count next to it. Refusing first keeps the claim
+            // in the pool for the next sweep, where it stays visible in
+            // `pendingFallbackClaims` / `oldestFallbackClaimAgeMs` instead of
+            // silently disappearing.
+            let account = AccountId::from(claim_account.as_str());
+            if self.accounts.get_mut(&account).is_err() {
+                tracing::error!(
+                    position = %position_id,
+                    account = %claim_account,
+                    "fallback claim names an unconfigured account — redemption refused, \
+                     claim KEPT in the pool (cash not credited, receivable unchanged)"
+                );
+                continue;
+            }
             let Some((account_id, booked, booked_net, closed_at_ms, shares, fallback_price)) =
                 self.settlement.redeem_fallback_claim(&position_id, now_ms)
             else {
@@ -315,16 +337,21 @@ impl Core {
                     l.credit_redemption_with_correction(booked, venue_usd, &position_id);
                 }
                 Err(e) => {
-                    // An unknown account cannot happen (the claim was booked
-                    // from a configured book); if it ever does, the claim is
-                    // already gone from the pool — surface it loudly rather
-                    // than crediting a sibling book.
+                    // UNREACHABLE by construction: this pass resolved the same
+                    // account above, before consuming the claim, and the whole
+                    // redemption runs under one `&mut self` with no await in
+                    // between. Kept as a loud error rather than an `expect`
+                    // because panicking in a money path is worse than a row the
+                    // operator has to read: if it ever fires, the claim IS
+                    // already consumed (the pre-check was defeated), so this is
+                    // the one branch that must page a human.
                     tracing::error!(
                         position = %position_id,
                         account = %account_id,
                         error = %e,
-                        "fallback claim redemption names an unconfigured account — \
-                         claim redeemed in the pool, cash NOT credited"
+                        "fallback claim redemption lost its account between the \
+                         precondition and the credit — claim consumed, cash NOT \
+                         credited: manual reconciliation required"
                     );
                 }
             }

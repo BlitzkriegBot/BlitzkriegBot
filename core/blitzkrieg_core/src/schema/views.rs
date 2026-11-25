@@ -308,6 +308,19 @@ pub struct PositionView {
     pub entry_price: Decimal,
     #[serde(with = "crate::decimal")]
     pub current_price: Decimal,
+    /// Whether `current_price` is a real observation. `false` = no venue quote
+    /// has been seen for this token, and `current_price` carries the legacy
+    /// `0` sentinel — NOT a price. Issue #176 wrote "the pages already gate on
+    /// 0" here, and that was never true: no Vue file tested `currentPrice > 0`,
+    /// so an unmarked position was folded as `(0 − entry) × shares` and drawn
+    /// as "the whole principal is lost". A sentinel inside a bare `Decimal`
+    /// cannot be gated on when no consumer knows the convention, so the unknown
+    /// becomes first-class on the wire (R7.1 L4's only legal exit): the panel
+    /// skips unmarked rows in money sums and renders `—` instead of `0.000`.
+    /// Always serialized (this view is `Serialize`-only — a serde default would
+    /// be dead code): a pre-field snapshot simply lacks the key, and the panel
+    /// treats a missing key as "observed", preserving the old display.
+    pub mark_observed: bool,
     #[serde(with = "crate::decimal")]
     pub shares: Decimal,
     #[serde(with = "crate::decimal")]

@@ -537,6 +537,26 @@ impl Core {
                     ),
                 ));
             }
+            // E26 (§4.2) parity: the ACCOUNT-level consecutive-loss streak is
+            // recorded by `closing.rs` under the reserved `__account__:` key, but
+            // it used to be enforced ONLY by the arbitration pipeline — which
+            // `orders.place` never enters (`place_outcome` → `place_inner` →
+            // `place_gated`). So once an account's streak halted it, a manual
+            // IPC order still went through: the one channel that most needs the
+            // account brake (a human chasing a loss) was the one that skipped it.
+            // Same breaker map, same vocabulary as the strategy check above, so
+            // both halts show up in the audit as LossBreaker rejections.
+            let account_breaker = crate::risk::limits::account_breaker_key(req.account_id.as_str());
+            if self.breaker.is_halted(&account_breaker, now_ms) {
+                return Err(CoreError::new(
+                    CoreErrorCode::RiskRejected,
+                    format!(
+                        "breaker active until {} for account {}",
+                        self.breaker.halted_until_ms(&account_breaker),
+                        req.account_id.as_str()
+                    ),
+                ));
+            }
             let direction = parse_direction(&req.direction);
             if let Err(reason) = self.positions.can_open(
                 req.account_id.as_str(),

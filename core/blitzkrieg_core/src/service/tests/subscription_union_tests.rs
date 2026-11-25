@@ -15,7 +15,7 @@
 //! this is a read-only subscription assertion, no money path is mocked.
 
 use super::*;
-use crate::account::{Account, AccountId, AccountLedgers, AccountStatus};
+use crate::account::{Account, AccountId, AccountLedgers, AccountStatus, CredentialKeys};
 use crate::ipc::server::engine_handler_for_tests;
 use crate::market::registry::MarketPluginRegistry;
 use crate::model::default_account_id;
@@ -306,4 +306,113 @@ async fn rollover_does_not_drop_sibling() {
         !ctl.live().contains(&"old-round-up".to_string()),
         "the previous round's tokens must not linger in the live set"
     );
+}
+
+/// #7 (audit): the plane is DERIVED state of the account book, so every
+/// runtime account mutation must move it. Before the fix only `round_duration.set`
+/// and the boot re-synced: a runtime `account.create` left the venue unknown to
+/// the plane, so `data_family_plan` (`market/host.rs:655`) answered `Silent` for
+/// the whole session — the new tenant's discovery never pulled a round market.
+/// Symmetrically, a removed account's `account:{id}` ref survived, keeping the
+/// venue "configured" with a live family no owner could ever release.
+///
+/// This drives the REAL persist methods (the same transaction points the IPC
+/// arms call), not a copy of them, and reads the plane the host reads.
+#[tokio::test]
+async fn runtime_account_mutations_move_the_feed_plane() {
+    let dir = std::env::temp_dir().join(format!(
+        "bk-plane-sync-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    std::fs::create_dir_all(dir.join("ledger")).expect("journal dir");
+    let db = dir.join("store.sqlite");
+    let book = AccountLedgers::new(vec![account("default")], default_account_id());
+    let cfg = CoreConfig {
+        default_round_duration_sec: 900,
+        round_duration_sec: 900,
+        account_round_durations: [("default".to_string(), 900)].into_iter().collect(),
+        db_path: Some(db),
+        ledger_journal_dir: Some(dir.join("ledger").to_string_lossy().into_owned()),
+        trade_log_path: None,
+        order_log_path: None,
+        position_log_path: None,
+        ..Default::default()
+    };
+    let core = Arc::new(AsyncMutex::new(Core::with_account_book(cfg, book)));
+    // The fixture's one account anchors the family: the plane starts
+    // configured, so a "still configured" reading later is not a vacuous pass.
+    {
+        let c = core.lock().await;
+        assert!(
+            c.family_feed().venue_is_configured(VENUE),
+            "the seeded account must anchor the venue before the test moves it"
+        );
+    }
+
+    // ── create: the new tenant's venue must become configured ────────────
+    {
+        let mut c = core.lock().await;
+        c.create_account_persisting(
+            &AccountId::from("fresh"),
+            Some("fresh tenant"),
+            Some("kalshi"),
+            CredentialKeys::default(),
+            ("test", "plane sync"),
+            1,
+        )
+        .expect("the mint lands");
+        let plane = c.family_feed();
+        assert!(
+            plane.venue_is_configured("kalshi"),
+            "account.create must extend the plane: without it the new tenant's \
+             discovery reads `Silent` for the whole session (market/host.rs:655)"
+        );
+        assert_eq!(
+            plane.live_ref_count("kalshi", 900),
+            1,
+            "the minted account is exactly one live ref on its own venue"
+        );
+    }
+
+    // ── unbind: the old venue must lose its ref ──────────────────────────
+    {
+        let mut c = core.lock().await;
+        c.set_account_venue_persisting(&AccountId::from("fresh"), "", "test", "unbind", 2)
+            .expect("the unbind persists");
+        let plane = c.family_feed();
+        assert_eq!(
+            plane.live_ref_count("kalshi", 900),
+            0,
+            "an unbound account must not leave a phantom live ref behind"
+        );
+    }
+
+    // ── remove: the venue must drop out of the configured set ────────────
+    {
+        let mut c = core.lock().await;
+        c.remove_account_persisting(&AccountId::from("fresh"), "test", "retire")
+            .expect("the removal lands");
+        let plane = c.family_feed();
+        assert!(
+            !plane
+                .inspect()
+                .venues_with_accounts
+                .contains(&"kalshi".to_string()),
+            "a removed account's venue must drop out of the configured set"
+        );
+    }
+
+    // The surviving account still owns its own venue: the sync must be a
+    // rebuild, never a wipe.
+    {
+        let c = core.lock().await;
+        assert!(
+            c.family_feed().venue_is_configured(VENUE),
+            "the rebuild must keep the surviving tenant's venue configured"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

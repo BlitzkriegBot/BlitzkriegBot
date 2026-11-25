@@ -145,11 +145,19 @@ const activePositions = computed(() => props.positions)
             <td class="px-2 py-2.5 text-[12px] text-muted-fg">{{ p.venue || '—' }}</td>
             <td class="px-2 py-2.5 text-[12px] text-muted-fg">{{ p.strategy ?? '—' }}</td>
             <td class="px-2 py-2.5 text-right num text-muted-fg"><RollingNumber :value="Number(p.entryPrice).toFixed(3)" /></td>
-            <td class="px-2 py-2.5 text-right num"><RollingNumber :value="Number(p.currentPrice).toFixed(3)" /></td>
+            <td class="px-2 py-2.5 text-right num">
+              <RollingNumber v-if="p.markObserved !== false" :value="Number(p.currentPrice).toFixed(3)" />
+              <span v-else class="text-muted-fg">—</span>
+            </td>
             <td class="px-2 py-2.5 text-right num text-muted-fg"><RollingNumber :value="p.shares ?? '—'" /></td>
-            <td class="px-2 py-2.5 text-right num font-semibold" :class="p.unrealizedPct >= 0 ? 'text-up' : 'text-down'">
+            <td
+              v-if="p.markObserved !== false"
+              class="px-2 py-2.5 text-right num font-semibold"
+              :class="p.unrealizedPct >= 0 ? 'text-up' : 'text-down'"
+            >
               <RollingNumber :value="`${Number(p.unrealizedPct) >= 0 ? '+' : ''}${Number(p.unrealizedPct).toFixed(2)}%`" />
             </td>
+            <td v-else class="px-2 py-2.5 text-right num text-muted-fg">—</td>
             <td class="px-2 py-2.5 text-right num text-faint-fg">
               <RollingNumber :value="positionRemainingLabel(p)" />
             </td>

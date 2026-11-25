@@ -101,7 +101,20 @@ impl FeedHandle {
 
 impl blitzkrieg_bk_contract::SubscriptionControl for FeedHandle {
     fn set_tokens(&self, tickers: Vec<TokenId>) {
-        let _ = self.tx.try_send(tickers);
+        // A full/closed control channel used to swallow the drop entirely: the
+        // kernel believed it had published a new token set while the poller kept
+        // serving the old one, with no counter and no log line (R7.1 L4). The
+        // `Result` cannot travel back through `SubscriptionControl` (the trait is
+        // fire-and-forget by design, #182), so the drop is at least LOUD here —
+        // `subscribe()` above is the awaitable form callers use when they must
+        // know the set landed.
+        if let Err(e) = self.tx.try_send(tickers) {
+            tracing::warn!(
+                error = %e,
+                "subscription control send dropped (channel full or closed) — \
+                 the feed keeps polling the previous ticker set"
+            );
+        }
     }
 }
 

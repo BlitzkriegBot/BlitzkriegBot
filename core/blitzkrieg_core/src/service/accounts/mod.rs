@@ -679,7 +679,15 @@ impl Core {
                     }
                     crate::model::Mode::Live => a.opening_equity,
                 };
-                let cumulative_net_pnl = opening_equity.map(|oe| ledger.balance() - oe);
+                // `balance`, NOT `ledger.balance()`: this view already decided at
+                // `:668-672` that an unfunded live book shows zero. Feeding the
+                // raw balance into the net here made the SAME account report two
+                // different `cumulative_net_pnl` values on one screen —
+                // `ledger.balance` zeroes first (`misc.rs:113-128`), this view
+                // did not. One pure function of (balance, opening_equity), fed
+                // the same projected balance both places, is the whole point of
+                // the single-truth rule (#1277 / #1063).
+                let cumulative_net_pnl = crate::ledger::cumulative_net_pnl(balance, opening_equity);
                 crate::schema::AccountView {
                     id: id.as_str().to_string(),
                     name: a.name.clone(),

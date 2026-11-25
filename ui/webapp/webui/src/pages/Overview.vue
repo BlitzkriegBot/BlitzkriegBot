@@ -18,7 +18,7 @@ import { useAccountBalance } from '@/lib/account-balance'
 import { equityHeadline } from '@/lib/balance'
 import type { BalanceView } from '@/lib/balance'
 import { filterByAccount, filterByVenue } from '@/lib/account-filter'
-import { isKnownPnl } from '@/lib/trades'
+import { isKnownPnl, winLossFlat } from '@/lib/trades'
 import StatTile from '@/components/ui/stat/StatTile.vue'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
@@ -144,14 +144,17 @@ const trades = computed(() => {
   // 未知行单独计数并在面板上披露，绝不被「硬塞」为输。
   const known = rows.filter(isKnownPnl)
   const unknownPnlCount = rows.length - known.length
-  const win = known.filter((t) => Number(t.netPnlUsd) > 0).length
+  // 三分口径（与内核 `metrics::Outcome` 同源）：净利恰为 0 的平手笔不进胜负
+  // 分母。旧写法 `known.length - win` 把平手算成亏，4 胜 6 平会显示 40%
+  // 而不是内核的 100%。
+  const split = winLossFlat(known)
   return {
     count: rows.length,
     net: known.reduce((a, t) => a + Number(t.netPnlUsd), 0),
     fees: rows.reduce((a, t) => a + (Number(t.feesUsd) || 0), 0),
-    winRate: winRateOf(win, known.length - win),
-    win,
-    loss: known.length - win,
+    winRate: winRateOf(split.wins, split.losses),
+    win: split.wins,
+    loss: split.losses,
     unknownPnlCount,
   }
 })
@@ -344,7 +347,14 @@ const confirmedPreview = computed(() => {
 // `Number(p.shares) || 0` 兜底成 0；价格缺位产生的 NaN 也被末尾 `|| 0` 吞掉。
 const unrealized = computed(() =>
   positions.value.reduce(
-    (a, p) => a + ((Number(p.currentPrice) - Number(p.entryPrice)) * (Number(p.shares) || 0) || 0),
+    (a, p) => {
+      // `markObserved === false` = 该 token 没有任何 venue 报价，`currentPrice`
+      // 只是 0 哨兵。把它折进合计等于宣称「本金全亏」——R7.1 L4 明令禁止
+      // 用默认值继续跑。老内核不带此字段（undefined），按已观测处理。
+      if (p.markObserved === false) return a
+      const shares = Number(p.shares) || 0
+      return a + ((Number(p.currentPrice) - Number(p.entryPrice)) * shares || 0)
+    },
     0,
   ),
 )
@@ -604,7 +614,10 @@ const needsStrategyHint = computed(() => {
                   </Badge>
                 </td>
                 <td class="px-2 py-2.5 text-right num text-muted-fg"><RollingNumber :value="Number(p.entryPrice).toFixed(3)" /></td>
-                <td class="px-2 py-2.5 text-right num"><RollingNumber :value="Number(p.currentPrice).toFixed(3)" /></td>
+                <td class="px-2 py-2.5 text-right num">
+                  <RollingNumber v-if="p.markObserved !== false" :value="Number(p.currentPrice).toFixed(3)" />
+                  <span v-else class="text-muted-fg">—</span>
+                </td>
                 <td class="px-2 py-2.5 text-right num text-muted-fg"><RollingNumber :value="p.shares ?? '—'" /></td>
                 <td
                   class="px-2 py-2.5 text-right num font-semibold"

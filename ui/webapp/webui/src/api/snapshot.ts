@@ -303,6 +303,13 @@ export interface Position {
   direction: string
   entryPrice: number
   currentPrice: number
+  /**
+   * `currentPrice` 是否是一次真实观测。`false` = 该 token 没有任何 venue 报价，
+   * `currentPrice` 只是老内核的 0 哨兵（不是价格）。资金合计必须跳过这些行、
+   * 行内价格渲染成 `—`，否则「没报价」会被折成「本金全亏」（R7.1 L4）。
+   * 老内核不带此字段 → `undefined`，按「已观测」处理（保持原有显示）。
+   */
+  markObserved?: boolean
   unrealizedPct: number
   shares?: number
   strategy?: string

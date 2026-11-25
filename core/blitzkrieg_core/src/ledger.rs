@@ -136,6 +136,24 @@ pub struct Ledger {
     venue_reported: bool,
 }
 
+/// The ONE net-PnL formula, `balance − opening_equity`, as a pure function.
+///
+/// It lives here — on the ledger, not in an IPC handler — because two handlers
+/// project the same account (`ledger.balance` and `account.list`) and both must
+/// answer with the same number. It used to be duplicated: `misc.rs` fed the
+/// venue-projected balance, `accounts/mod.rs` fed the RAW balance, so an
+/// unfunded live book reported `−opening_equity` on one card and a stale
+/// positive on the account row, on the same screen. One function, one input
+/// rule: callers pass the balance they are ALREADY showing.
+///
+/// `reserved` is deliberately absent from the signature: `balance` is venue
+/// cash gross of local reservations (`available + reserved == balance`), so
+/// adding it back is the `balance + reserved − oe` double-count #1063 fixed.
+/// `None` when `opening_equity` is unknown — never derived from trade folding.
+pub fn cumulative_net_pnl(balance: Decimal, opening_equity: Option<Decimal>) -> Option<Decimal> {
+    opening_equity.map(|oe| balance - oe)
+}
+
 impl Ledger {
     pub fn new() -> Self {
         Self::default()

@@ -89,6 +89,36 @@ export function isKnownPnl(t: { netPnlUsd?: unknown }): boolean {
   return Number.isFinite(n)
 }
 
+/**
+ * The three-way win/loss/flat split the kernel already uses
+ * (`metrics::Outcome`: `net > 0` win, `net < 0` loss, `net == 0` FLAT — flat is
+ * excluded from the win-rate denominator, `metrics.rs`).
+ *
+ * Pages used to fold with `losses = known − wins`, which silently classifies
+ * every break-even trade as a LOSS: 4 wins + 6 flat displayed 40% instead of
+ * the kernel's 100%. The kernel's rule was never wrong — it just never reached
+ * the wire (`trades.history` rows carry no flat marker), so the fold had to
+ * re-derive the split from the sign, and the sign has THREE outcomes.
+ * Every fold must use this, never `known.length - wins`.
+ */
+export function winLossFlat(rows: readonly { netPnlUsd?: unknown }[]): {
+  wins: number
+  losses: number
+  flats: number
+} {
+  let wins = 0
+  let losses = 0
+  let flats = 0
+  for (const t of rows) {
+    if (!isKnownPnl(t)) continue
+    const n = Number(t.netPnlUsd)
+    if (n > 0) wins++
+    else if (n < 0) losses++
+    else flats++
+  }
+  return { wins, losses, flats }
+}
+
 /** When a trade closed, falling back to when it opened (a row always has one). */
 function closeStamp(r: { exitTime?: number; entryTime?: number }): number {
   return Number(r.exitTime ?? r.entryTime ?? 0) || 0

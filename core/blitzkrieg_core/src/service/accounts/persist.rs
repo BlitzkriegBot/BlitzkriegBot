@@ -56,6 +56,14 @@ impl Core {
             )
         })?;
         self.accounts.set_venue(id, venue, now_ms)?;
+        // The feed plane is derived state of the account book, so it is
+        // rebuilt HERE — at the same commit point as the book — instead of
+        // waiting for the next boot. A re-bind that leaves the plane stale
+        // makes `data_family_plan` answer `Silent` for a venue that NOW has
+        // an account (discovery never asks the venue again) and `Active` for
+        // a venue that no longer does (phantom `live_refs` keep a
+        // subscription nobody reads).
+        self.sync_family_feed_from_accounts();
         tracing::info!(
             target: "risk",
             actor = %actor,
@@ -1127,6 +1135,11 @@ impl Core {
         {
             ledger.fund(self.config.dry_seed_balance, "account.create");
         }
+        // The plane is derived state of the account book: a runtime mint must
+        // extend it NOW, or the new tenant's discovery reads `Silent`
+        // (`market/host.rs` — the venue is not "configured" until an account
+        // names it) for the whole session and never pulls a round market.
+        self.sync_family_feed_from_accounts();
         tracing::info!(
             target: "risk",
             actor = %actor,
@@ -1305,6 +1318,12 @@ impl Core {
         // (`repair_display_after_removal`) so the live snapshot never names
         // a removed account.
         self.accounts.repair_display_after_removal(id);
+        // The plane is derived state of the account book: dropping the
+        // account from memory/disk while its `account:{id}` ref survives
+        // leaves the venue "configured" with a live family nobody owns — the
+        // refcount can never reach zero because the owner no longer exists to
+        // release it.
+        self.sync_family_feed_from_accounts();
         tracing::info!(
             target: "risk",
             actor = %actor,

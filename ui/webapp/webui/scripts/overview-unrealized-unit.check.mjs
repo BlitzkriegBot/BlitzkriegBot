@@ -32,13 +32,20 @@ const page = readFileSync(join(here, '..', 'src', 'pages', 'Overview.vue'), 'utf
 
 console.log('overview unrealized total: dollars, not percent')
 
-// The aggregate expression, extracted verbatim from the computed — evaluated
-// below so the fixtures exercise the page's real arithmetic.
+// The aggregate reducer, extracted verbatim from the computed — evaluated
+// below so the fixtures exercise the page's real arithmetic. TWO shapes are
+// legal: a bare expression `(a, p) => a + ...`, and a block body
+// `(a, p) => { ... }`. The block form is what a per-row guard needs (a row
+// whose mark is unobserved must contribute nothing rather than fold a 0
+// sentinel in as "principal wiped out"), so the extractor accepts both and
+// the fixtures below run whichever one the page actually ships.
 const m = page.match(
-  /const unrealized = computed\(\(\) =>\s*\n\s*positions\.value\.reduce\(\s*\(a, p\) => (.*?),\s*\n\s*0,/,
+  /const unrealized = computed\(\(\) =>\s*\n\s*positions\.value\.reduce\(\s*\(a, p\) => (.*?),\s*\n\s*0,/s,
 )
-const step = m?.[1]
-const run = step ? new Function('a', 'p', `return ${step}`) : null
+const step = m?.[1]?.trim()
+const run = step
+  ? new Function('a', 'p', step.startsWith('{') ? step : `return ${step}`)
+  : null
 
 check('the reduce is present and pure-price × shares shaped', () => {
   assert.ok(step, 'the unrealized computed reduce was not found in Overview.vue')
@@ -60,6 +67,21 @@ check('a missing shares field contributes zero (old cores)', () => {
 
 check('a missing price cannot poison the sum with NaN', () => {
   assert.equal(run?.(0, { currentPrice: undefined, entryPrice: 0.5, shares: 10 }), 0)
+})
+
+// `markObserved === false` = the venue never quoted this token, so
+// `currentPrice` is only the kernel's 0 sentinel. Folding that zero in reads as
+// "principal fully lost" — -50 on a 10-share 0.50 entry that has no mark at
+// all. The row must contribute NOTHING, and a pre-field snapshot (undefined)
+// must still count (the panel treats a missing key as observed).
+check('an unobserved mark contributes nothing instead of a fake total loss', () => {
+  const unobserved = { currentPrice: 0, entryPrice: 0.5, shares: 10, markObserved: false }
+  assert.equal(run?.(0, unobserved), 0, 'a 0 sentinel must never reach the aggregate')
+  assert.equal(
+    run?.(0, { ...unobserved, markObserved: undefined }),
+    -5,
+    'a core without the field is treated as observed — the old arithmetic stands',
+  )
 })
 
 check('the stat still renders the total as money, not a percent', () => {

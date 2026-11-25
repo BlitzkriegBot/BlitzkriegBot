@@ -15,6 +15,7 @@ import {
 } from '@/lib/format'
 import { api } from '@/api/client'
 import { useAccountBalance } from '@/lib/account-balance'
+import { equityHeadline } from '@/lib/balance'
 import type { BalanceView } from '@/lib/balance'
 import { filterByAccount, filterByVenue } from '@/lib/account-filter'
 import { isKnownPnl } from '@/lib/trades'
@@ -24,7 +25,6 @@ import CardHeader from '@/components/ui/card/CardHeader.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
 import PnLCurveCard from '@/components/ui/pnl/PnLCurveCard.vue'
 import EmptyState from '@/components/ui/empty/EmptyState.vue'
-import Tooltip from '@/components/ui/tooltip/Tooltip.vue'
 import EquityCurve from '@/components/charts/EquityCurve.vue'
 import RejectionChart from '@/components/charts/RejectionChart.vue'
 import RollingNumber from '@/components/ui/roll/RollingNumber.vue'
@@ -76,21 +76,21 @@ async function clearExpiredPosition(positionId: string): Promise<void> {
   }
 }
 
-// ── balance (真实余额 = 账本现金，唯一来源：useAccountBalance) ──────
-// issue 561（裁决 1）：真实余额瓦片跟随显示账户 —— 读 account.list 行
+// ── account book (唯一来源：useAccountBalance) ──────
+// issue 561（裁决 1）：账户现金瓦片跟随显示账户 —— 读 account.list 行
 // （内核 account_views 已按 ledger_of(id) 读该账户自有账本：balance/
 // available/reserved），不再读快照顶层的进程级 ledger.balance。
-// issue 561 + 用户原则：余额 = 账本现金影子，统一来源 useAccountBalance，
-// 绝不拿成交折叠净利去拼余额。
+// issue 179：权益（equity）恒为 null —— AccountView 没有该字段，面板不拼
+// seed + net（R7.1 L5），显示「—」。净利只认账本 SSOT cumulativeNetPnl。
 const isDry = computed(() => (snap.value?.mode ?? 'dry') === 'dry')
 const accountBalance = computed<BalanceView>(() => {
   const row = store.activeAccountRow
   if (!row) return {
-    seed: null, net: 0, fees: 0, gross: 0, equity: null, identityBroken: false,
+    net: 0, fees: 0, gross: 0, equity: null,
     cash: 0, reserved: 0, available: 0,
   }
   return useAccountBalance(row) ?? {
-    seed: null, net: 0, fees: 0, gross: 0, equity: null, identityBroken: false,
+    net: 0, fees: 0, gross: 0, equity: null,
     cash: 0, reserved: 0, available: 0,
   }
 })
@@ -157,35 +157,16 @@ const trades = computed(() => {
 })
 
 /**
- * 真实余额 = 本金 ＋ 净利润，但两个加数都是**账本口径**（操作员裁决
- * 2026-11-08：现金流水=唯一真相）：净利 = 该账户账本现金 − 累计种子入金
- * （`seededTotal`）——构造上恒等，面板不再拿成交行的模型费净利去拼一个
- * 可能两头都不是的余额（default 曾拼出 $996.92：账本 $1,000 + 重置前旧
- * 净利 −$3.08）。成交行折叠（trades.net）只服务权益曲线/胜率/手续费这些
- * 「成交口径」展示，与钱数分离后另行标注。
- *
- * Fees are an expense, so they are shown as a cost charged against gross profit
- * — never folded into the balance, which would make the fee look like it moved
- * the principal.
- */
-const foldDiverges = computed(() => {
-  const ab = accountBalance.value
-  if (!ab || ab.seed === null || ab.net === null) return false
-  return Math.abs(trades.value.net - ab.net) > 0.005
-})
-
-/**
- * The tile label tracks what the figure above it actually is. When the equity is
- * computable the headline is 本金 ＋ 净利润; when the core reports no principal
- * the panel falls back to the cash ledger and the label must say so, or the
- * number would be read as a balance it is not.
- * issue 561：读数源已是显示账户自有账本（account.list 行）；行未到的兜底
+ * 权益读数瓦片的标题。issue 179：`AccountView` 没有 `equity` /
+ * `opening_equity` 字段，面板无法计算权益（`seed + net` 不是权益恒等式），
+ * 所以标题恒为「账户权益」，未知时数值显示「—」。不再按「是否算得出权益」
+ * 切换成「内核现金账 / 交易所余额」——那等于用现金账冒充权益。
+ * issue 561：读数源是显示账户自有账本（account.list 行）；行未到的兜底
  * 一拍标注「进程级」—— 那是快照顶层字段的口径，如实说出它属于谁。
  */
 const balanceTitle = computed(() => {
   if (store.activeAccountRow === null) return '进程级读数'
-  if (accountBalance.value.equity !== null) return isDry.value ? '真实余额' : '账户权益'
-  return isDry.value ? '内核现金账' : '交易所余额'
+  return '账户权益'
 })
 
 /**
@@ -415,58 +396,31 @@ const needsStrategyHint = computed(() => {
     <div class="grid gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
       <StatTile
         :label="balanceTitle"
-        :value="accountBalance.equity === null ? '—' : money(accountBalance.cash)"
+        :value="equityHeadline(accountBalance.equity)"
         :tone="isDry ? 'gold' : 'default'"
       >
         <template #sub>
           <!--
-            径流恒等式（操作员裁决 2026-11-08：现金流水=唯一真相）：净利 =
-            账本现金 − 累计种子入金，两个加数同源自该账户的 journal，相加
-            构造上恒等于 headline。成交折叠口径只出现在手续费/曲线这些
-            「成交口径」展示里，并与钱数分离标注。
+            issue 179（R7.1 L5）：`AccountView` 没有 `equity` / `opening_equity`
+            字段，面板无法计算权益 —— 所以 headline 恒为「—」，且**不再**用
+            `money(cash)` 冒充（那会把「本金 ＋ 本次会话净利」印成账户权益）。
+            副行只列两项真实存在的账本读数：累计净利（`cumulativeNetPnl`，
+            账本 SSOT）与该账户自有现金的可用/预留。等式文案（本金 ＋ 净利）
+            已删除：`seeded_total` 是累计种子入金、不是期初权益，等式不成立。
           -->
-          <Tooltip
-            v-if="accountBalance.equity !== null"
-            :content="`真实余额 = 本金 ${money(accountBalance.seed)} ＋ 账本净利 ${signedMoney(accountBalance.net)}（账本口径：该账户现金流水累计，含手续费）。手续费支出 ${money(accountBalance.fees)} 与毛利 ${money(accountBalance.gross)} 是成交记录口径（成交行按费率模型折叠），与账本口径可能有差额——它们描述成交史，不参与余额计算。`"
-          >
-            <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2 figures">
-              本金 {{ money(accountBalance.seed) }} ＋ 账本净利 {{ signedMoney(accountBalance.net) }}
-            </span>
-          </Tooltip>
-          <!--
-            No principal on the wire (LIVE, or a core older than the field): the
-            equity is not computable, so show the cash ledger and say plainly that
-            the principal is missing rather than inventing an equation.
-            issue 561: the cash number is the DISPLAY account's own book
-            (account.list row) once the rows have arrived.
-          -->
-          <Tooltip v-else-if="isDry && store.activeAccountRow" content="账户未上报本金，无法计算「本金 ＋ 净利」的真实余额，这里显示该账户自有现金账。本金由内核按 --seed-balance 持有；当前运行中的内核早于该字段，重启内核后即可显示真实余额。">
-            <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2">
-              内核现金账 · 本金未上报
-            </span>
-          </Tooltip>
-          <template v-else>
-            可用 <RollingNumber :value="accountBalance.equity === null ? '—' : money(accountBalance.available)" /> · 预留 <RollingNumber :value="accountBalance.equity === null ? '—' : money(accountBalance.reserved)" />
+          <template v-if="store.activeAccountRow">
+            账本净利 <RollingNumber :value="accountBalance.net === null ? '—' : signedMoney(accountBalance.net)" /> ·
+            可用 <RollingNumber :value="money(accountBalance.available)" /> · 预留 <RollingNumber :value="money(accountBalance.reserved)" />
           </template>
+          <!-- 账户行未到的一拍：读数来自快照顶层的进程级账本，不再逐字段冒充账户级。 -->
+          <span v-else>账户行未到 · 本拍为进程级读数</span>
         </template>
 
-        <!-- Fees are a cost: shown against gross profit, never inside the balance. -->
-        <div
-          v-if="accountBalance.equity !== null && accountBalance.fees > 0"
-          class="mt-2 flex items-center gap-1.5 text-[10.5px] leading-snug text-faint-fg"
-        >
-          <Tooltip :content="`手续费支出 ${money(accountBalance.fees)} · 毛利 ${money(accountBalance.gross)} —— 成交记录口径（成交行按费率模型折叠）${foldDiverges ? '；与账本口径相差 ' + money(Math.abs(trades.net - (accountBalance.net ?? 0))) + '，钱数以账本为准' : ''}。手续费是成本：从利润里扣，不改变本金。`">
-            <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2 figures">
-              手续费支出 {{ money(accountBalance.fees) }}（成交口径）· 毛利 {{ money(accountBalance.gross) }}
-            </span>
-          </Tooltip>
-        </div>
-
         <!--
-          No cash-ledger footnote in DRY: 本金 ＋ 净利润 above is already the real
-          balance, and the core's ledger is only 本金 ＋ 本次会话净利, so showing
-          both forced a per-page explanation of a difference that carries nothing
-          the trade log does not already record.
+          No cash-ledger footnote beside the headline: the headline is 「—」
+          whenever equity is unknown, and the cash ledger is already spelled out
+          on the sub line as 可用/预留. Printing the same cash figure twice under
+          two labels is what let one of them pass for equity.
         -->
         <div v-if="isDry" class="mt-2 flex items-center gap-1.5 text-[10.5px] text-faint-fg">
           <CircleDot class="size-3" /> 模拟资金，非真实资产

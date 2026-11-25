@@ -601,17 +601,13 @@ const cumStats = computed(() => {
   }
 })
 
-// ── balance (本金 + 净利 is the real balance; cash is the ledger it commits against)
+// ── balance (账户自有账本，唯一来源：useAccountBalance)
 // issue 561（裁决 1）：瓦片换源到显示账户自有账本 —— account.list 行
 // （内核 account_views 按 ledger_of(id) 读该账户账本），不再读快照顶层的
 // 进程级 ledger.balance。切户后下一拍 refreshAccounts 镜像带回新账户的
-// balance/available/reserved，读数随显示账户走；行未到的一拍回落快照顶层，
-// 下面的标注 computed 如实说出该兜底口径，绝不冒充账户级。
-// ── balance (真实余额 = 账本现金，唯一来源：useAccountBalance) ──────
-// issue 561（裁决 1）：瓦片换源到显示账户自有账本 —— account.list 行
-// （内核 account_views 按 ledger_of(id) 读该账户账本），不再读快照顶层的
-// 进程级 ledger.balance。issue 561 + 用户原则：余额 = 账本现金影子，
-// 统一来源 useAccountBalance，绝不拿成交折叠净利去拼余额。
+// balance/available/reserved，读数随显示账户走；行未到的一拍回落空默认。
+// issue 179：净利只认账本 SSOT（cumulativeNetPnl），权益（equity）恒为
+// null → 显示「—」，禁止 seed + net 或拿现金账冒充（R7.1 L5）。
 const accountBalance = computed(() => {
   const row = store.activeAccountRow
   if (!row) return null
@@ -631,14 +627,15 @@ const balanceAccountSuffix = (label: string): string => {
   if (!id || store.accounts.length <= 1) return label
   return `${label} · ${id}`
 }
-const balanceLabel = computed(() =>
-  balanceAccountSuffix(isDry.value ? (accountBalance.value?.equity !== null ? '真实余额' : '内核现金账') : (accountBalance.value?.equity !== null ? '账户权益' : '交易所余额')),
-)
+// issue 179：标签不再按「权益是否可算」切换（equity 恒为 null，兜底已删）。
+// 卡片恒叫「账户权益」，未知时显示「—」—— 标签与读数不再有第二种含义。
+const balanceLabel = computed(() => balanceAccountSuffix('账户权益'))
 
 // 与 StatsRow 的 recon 接口保持兼容：始终存在一个 BalanceView 形状的对象，
-// 账户行未到时给出空默认（不渲染编造的数字）。
+// 账户行未到时给出空默认（不渲染编造的数字）。issue 179：equity 恒为 null
+// （后端无该字段）→ 卡片显示「—」；cash 只作字段透传，不作为权益兜底。
 const recon = computed(() => accountBalance.value ?? {
-  seed: null, net: null, fees: 0, gross: null, equity: null, cash: 0, reserved: 0, available: 0,
+  net: null, fees: 0, gross: null, equity: null, cash: 0, reserved: 0, available: 0,
 })
 
 // ── history filters ─────────────────────────────────────────────────────────

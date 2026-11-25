@@ -15,6 +15,7 @@ import PnLCurveCard from '@/components/ui/pnl/PnLCurveCard.vue'
 import StatRow from '@/components/ui/stat/StatRow.vue'
 import Tooltip from '@/components/ui/tooltip/Tooltip.vue'
 import { money, signedMoney, pct, signedPct, duration } from '@/lib/format'
+import { equityHeadline } from '@/lib/balance'
 import RollingNumber from '@/components/ui/roll/RollingNumber.vue'
 
 defineProps<{
@@ -23,7 +24,7 @@ defineProps<{
   cumStats: CumStats
   winBands: { label: string; tone: 'up' | 'down'; count: number; frac: number }[]
   tradeStats: { count: number; today: number; todayNet: number | null; todayUnknownPnlCount: number; volume: number; avg: number }
-  recon: { equity: number | null; cash: number; seed: number | null; net: number | null; gross: number | null; fees: number }
+  recon: { equity: number | null; cash: number; net: number | null; gross: number | null; fees: number }
   /** 持仓浮动合计（今日表现卡的浮动行）。 */
   positionUnrealized: number
   /** DRY / LIVE 运行模式（词不是数字 — 那一行 :roll="false"）。 */
@@ -127,32 +128,35 @@ defineProps<{
       <StatRow label="行情轮次" :value="roundMarkets ?? '—'" tone="dim" />
       <div class="mt-2.5 border-t border-line pt-2.5">
         <!--
-          Headline is 本金 ＋ 净利润 (the real balance). No cash-ledger row
-          underneath in DRY: the core's ledger is 本金 ＋ 本次会话净利, a strict
-          subset of what the history tab below already shows.
+          Headline is the account's equity, or 「—」 while the core reports none.
+          issue 179 (R7.1 L5): this used to fall back to `money(recon.cash)` —
+          the core's cash ledger presented under an equity label. That is a
+          number the panel cannot vouch for (it is 本金 ＋ 本次会话净利, a strict
+          subset of the trade log), so an unknown equity now renders as 「—」.
         -->
         <StatRow
           :label="balanceLabel"
-          :value="recon.equity !== null ? money(recon.equity) : money(recon.cash)"
+          :value="equityHeadline(recon.equity)"
           :tone="isDry ? 'gold' : 'default'"
         />
         <p v-if="recon.equity !== null" class="mt-1 text-[10px] leading-snug text-faint-fg figures">
-          本金 {{ money(recon.seed) }} ＋ 已实现净利 {{ signedMoney(recon.net) }}
-          <Tooltip :content="`真实余额 = 本金 ${money(recon.seed)} ＋ 扣费后净利 ${signedMoney(recon.net)}。手续费是成本：毛利 ${money(recon.gross)} − 手续费 ${money(recon.fees)} = 净利。手续费不改变本金，因此不并入余额。${balanceAccountNote}`">
+          已实现净利 {{ signedMoney(recon.net) }}
+          <Tooltip :content="`手续费是成本：毛利率 ${money(recon.gross)} − 手续费 ${money(recon.fees)} = 净利。手续费不改变本金，因此不并入权益。${balanceAccountNote}`">
             <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2">
               手续费支出 {{ money(recon.fees) }}
             </span>
           </Tooltip>
         </p>
         <!--
-          No principal on the wire: either LIVE, or a core older than the field
-          that reports it. Show the cash ledger and say the principal is
-          missing instead of printing an equation the panel cannot verify.
+          No equity on the wire: the core's AccountView carries neither `equity`
+          nor `opening_equity`, and `seededTotal` is not an opening equity, so
+          the panel cannot compute one. Say that plainly instead of printing a
+          cash figure under an equity label.
         -->
-        <p v-else-if="isDry" class="mt-1 text-[10px] leading-snug text-faint-fg">
-          <Tooltip content="内核未上报本金，无法计算「本金 ＋ 净利」的真实余额，此处显示内核现金账。本金由内核按 --seed-balance 持有；当前运行中的内核早于该字段，重启内核后即可显示真实余额。">
+        <p v-else class="mt-1 text-[10px] leading-snug text-faint-fg">
+          <Tooltip content="内核未上报账户权益（AccountView 无 equity / opening_equity 字段），面板无法计算权益，因此显示「—」而不是拿现金账冒充。">
             <span class="cursor-help underline decoration-dotted decoration-line underline-offset-2">
-              内核现金账 · 本金未上报
+              权益未上报 · 不以现金账代替
             </span>
           </Tooltip>
         </p>

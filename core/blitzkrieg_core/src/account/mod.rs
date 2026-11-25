@@ -420,6 +420,13 @@ impl AccountLedgers {
         }
     }
 
+    // #191 conflict resolution: the incoming hunk re-adds
+    // `AccountLedgers::install_store`, but that member no longer exists on
+    // main — #217/#219 moved store installation to
+    // `store::test_support::install_store(&mut Core, Arc<dyn StoreApi>)` and
+    // `AccountLedgers` carries no `store` field. Restoring it would resurrect
+    // the very dead path #191 exists to delete, so the hunk is dropped.
+
     /// issue 561 账户维重置：只翻新 `id` 这一本账 —— 余额回种子、journal
     /// 重写为单行 Reset 行（见 [`crate::ledger::Ledger::reset_account_to_seed`]
     /// 的语义论证）。显式拒绝未知账户，与 [`Self::get_mut`] 同一纪律；
@@ -1009,57 +1016,6 @@ impl AccountLedgers {
                         .unwrap_or_else(default_account_id)
                 });
         }
-    }
-
-    /// E28 Gate 2 (§9.1): the account's durable CONFIG posture must PERMIT this
-    /// order — only `Active` with `trading_enabled` places new entries; closes
-    /// pass every posture except `ReadOnly` (a freeze must never be the reason a
-    /// position is trapped — the kill-switch posture).
-    ///
-    /// This is the runtime half of Gate 2: `trading_enabled` / `status` are read
-    /// LIVE from the account book on every order, so `account.trading.set` and a
-    /// tightened `status` take effect without a restart. The other half is
-    /// [`crate::Core::account_gate_permits`] (runtime gates: Manual / DailyLoss /
-    /// VenueRejection / TradingDisabled / KillSwitch). Both are applied at every
-    /// entry path — `permits_order` (the old parallel second door) is retired:
-    /// config posture is now expressed as AccountGates at boot
-    /// ([`crate::Core::reconcile_config_gates`]) instead of a separate check.
-    ///
-    /// An unknown account is refused with the standard `unknown account` error,
-    /// never implicitly created (reverse acceptance C).
-    #[allow(dead_code)]
-    pub(crate) fn posture_permits(&self, id: &AccountId, is_close: bool) -> CoreResult<()> {
-        let Some(account) = self.accounts.get(id) else {
-            return Err(unknown_account(id));
-        };
-        let allowed = if is_close {
-            account.status.allows_closes()
-        } else {
-            account.trading_enabled && account.status.allows_entries()
-        };
-        if !allowed {
-            let why = if !account.trading_enabled && !is_close {
-                "trading-closed (开仓拒、平仓放行)".to_string()
-            } else {
-                account.status.to_string()
-            };
-            return Err(CoreError::new(
-                CoreErrorCode::AccountLimit,
-                format!("account `{id}` is {why} — refused at config Gate 2",),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Config-truth entry read (tests only since #1057): `unfreeze` writes the
-    /// config posture back to `.env` before clearing the gate and reports
-    /// `entries_allowed` from the gate alone, so production no longer consults
-    /// this. Removal is tracked under #1061 (single-point implementation).
-    #[allow(dead_code)]
-    pub(crate) fn entry_open(&self, id: &AccountId) -> bool {
-        self.accounts
-            .get(id)
-            .is_some_and(|a| a.trading_enabled && a.status.allows_entries())
     }
 }
 

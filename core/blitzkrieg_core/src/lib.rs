@@ -82,7 +82,6 @@ pub mod ipc;
 pub(crate) mod jsonl;
 pub mod kline;
 pub mod ledger;
-pub mod ledger_api;
 pub mod logging;
 pub mod market;
 pub mod marketdata;
@@ -119,7 +118,6 @@ pub mod reconcile;
 pub mod regime_eval;
 pub mod registry;
 pub mod risk;
-pub mod risk_context;
 /// #824 cycle-1: the runtime-config persistence helpers (market plugin /
 /// round duration / credentials cells) hoisted to the crate top level — they
 /// are DTO/persistence helpers the service layer shares, not IPC-transport

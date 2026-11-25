@@ -48,6 +48,19 @@ const PORT2 = Number(process.env.WEBAPP_CHECK_PORT2 ?? 18998);
 
 const gate = createChecks();
 const { check } = gate;
+
+/**
+ * The last `n` non-empty lines of a captured child output, for the one-line
+ * `detail` of a failed `check()`. The full body is printed separately (issue
+ * #233); this is only the summary line's copy, so it must stay short.
+ */
+function lastLines(text, n) {
+  const lines = String(text ?? '')
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter((l) => l.length > 0);
+  return lines.slice(-n).join(' / ');
+}
 // [0] The Vue build artifact must exist, be non-trivial, and be the thing the
 //     server hands out. Asserting only that `dist/` exists would pass on a stale
 //     or empty build; comparing bytes against what `/panel` returns is what ties
@@ -291,9 +304,26 @@ try {
       cwd: TAURI_DIR, encoding: 'utf8', timeout: 420000,
       env: { ...process.env, BLITZKRIEG_CORE_BIN: BIN },
     });
+    const chainOut = `${chainCheck?.stderr ?? ''}${chainCheck?.stdout ?? ''}`;
+    // Issue #233: this used to hand `check()` a `slice(-160)`. cargo test prints
+    // its `failures:` summary AFTER the panic body, so 160 characters kept only
+    // the tail of the list and the actual assertion — message and file:line —
+    // was thrown away. A red `webapp gate` then read `... a backtrace` and the
+    // test could not be diagnosed from the log at all.
+    //
+    // The one-line `detail` stays short on purpose (`check()` prints one line);
+    // what changes is that a FAILURE also dumps the full body below it. The
+    // tail is still what goes in `detail` — it is the part with the failures
+    // list — but it is no longer the only copy.
+    const chainOk = chainCheck?.status === 0;
+    if (!chainOk) {
+      console.log('\n--- cargo test --test chain (full output) ---');
+      console.log(chainOut.trim() || '(no output captured)');
+      console.log('--- end cargo test --test chain ---\n');
+    }
     check('desktop_snapshot/desktop_command reach a live core (tauri seam)',
-      chainCheck?.status === 0,
-      ((chainCheck?.stderr ?? '') + (chainCheck?.stdout ?? '')).slice(-160));
+      chainOk,
+      chainOk ? '' : lastLines(chainOut, 12));
   } else {
     check('desktop_snapshot/desktop_command reach a live core (tauri seam)',
       existsSync(join(TAURI_DIR, 'tests/chain.rs')),

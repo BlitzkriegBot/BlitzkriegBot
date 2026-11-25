@@ -180,6 +180,13 @@ pub enum CoreErrorCode {
     VenueError,
     Timeout,
     Internal,
+    /// #177: this kernel runs in `Mode::ReadOnly`, which refuses execution at
+    /// the settle point — no simulated fill, no trade row, no position. A
+    /// call that reaches the execution path in a read-only core (an IPC client
+    /// that bypassed the verb gate, a strategy driving the engine) is refused
+    /// here rather than booked. Distinct from `RiskRejected`: this is a mode
+    /// fact, not a risk-gate judgment — read-only has no economy to judge.
+    ReadOnlyNoExecution,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

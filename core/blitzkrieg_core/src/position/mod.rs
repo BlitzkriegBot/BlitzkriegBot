@@ -260,8 +260,10 @@ fn same_day_rebase_deviation_pct() -> Decimal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EquityBasis {
-    /// The simulated book: `Mode::Dry` and `Mode::ReadOnly` both settle against
-    /// it (see `Mode::settles_locally`).
+    /// The simulated book: `Mode::Dry` and `Mode::ReadOnly` both keep their
+    /// money in it (see `Mode::settles_locally`). Read-only records no
+    /// execution there — #177 refuses orders before submission — it only
+    /// measures what boot seeding put in.
     Dry,
     /// The venue-reconciled live book.
     Live,

@@ -183,6 +183,10 @@ fn error_code_from_api(c: api::CoreErrorCode) -> m::CoreErrorCode {
         A::VenueError => C::VenueError,
         A::Timeout => C::Timeout,
         A::Internal => C::Internal,
+        // #177: a kernel-side mode refusal crossing the plugin seam keeps its
+        // identity — a caller must be able to tell "read-only refused" apart
+        // from a generic venue or risk failure.
+        A::ReadOnlyNoExecution => C::ReadOnlyNoExecution,
     }
 }
 

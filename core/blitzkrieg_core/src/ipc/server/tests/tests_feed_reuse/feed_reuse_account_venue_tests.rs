@@ -599,8 +599,8 @@ async fn account_venue_set_round_trips_get_and_the_persisted_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 显示账户配置化: `display.account.set` 是写动词 —— 只读模式照
-/// READONLY_REFUSED 名单整体拒绝（config 写不该从只读面溜进去）。
+/// 显示账户配置化: `display.account.set` 是写动词 —— 只读模式由分类表
+/// 整体拒绝（`Write` 类，config 写不该从只读面溜进去；#177 前是手工白名单）。
 #[tokio::test]
 async fn display_account_set_is_refused_in_read_only_mode() {
     let (core, registry, peer) = two_account_fixture().await;

@@ -833,6 +833,7 @@ mod tests_grid_pool_boot;
 mod tests_hot_reload;
 mod tests_pagination_bounds;
 mod tests_read_envelopes;
+mod tests_readonly_surface;
 mod tests_risk_rounds;
 mod tests_risk_rounds_carrier;
 mod tests_risk_rounds_immediate;

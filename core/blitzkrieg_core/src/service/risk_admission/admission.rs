@@ -305,6 +305,22 @@ impl Core {
         now_ms: i64,
         entry_gates: bool,
     ) -> CoreResult<PlaceOutcome> {
+        // #177 second layer, first enforcement point: a read-only core does not
+        // EXECUTE, and execution starts here. Refusing before `reserve` /
+        // `ome.submit` is what keeps read-only free of side effects — an order
+        // registered and then rejected would still write a row into the shared
+        // order log (a persistent write in the very mode that must not write),
+        // and an engine-driven intent in read-only mode would do that every
+        // tick. The IPC gate refuses these verbs already; this guard is the
+        // kernel-side fact for callers that never pass the gate (the strategy
+        // engine's `Core::place`, an in-process embedder).
+        if self.config.mode.readonly() {
+            return Err(CoreError::new(
+                CoreErrorCode::ReadOnlyNoExecution,
+                "read-only core refuses execution: no order is registered, no \
+                 simulated fill is booked and no position is opened",
+            ));
+        }
         // An intent the venue just refused waits out its backoff locally —
         // re-POSTing at full tick rate is exactly the rejection storm this
         // guards against. Manual attempts are only paused while the backoff
@@ -809,9 +825,18 @@ impl Core {
         CoreError::new(CoreErrorCode::WouldCross, message)
     }
 
-    /// The dry/read-only half of submission: settle the leg locally, since there
-    /// is no venue to report a fill. Returns the kernel-side refusal when the leg
-    /// was rejected here, so the submitter learns WHY (#180).
+    /// The locally-settling half of submission: on a `Mode::Dry` core, settle
+    /// the leg against the mirrored book, since there is no venue to report a
+    /// fill. Returns the kernel-side refusal when the leg was rejected here, so
+    /// the submitter learns WHY (#180).
+    ///
+    /// #177: `Mode::ReadOnly` never reaches the settle logic. `place_gated`
+    /// refuses read-only before submission, and the `Mode::ReadOnly` arm below
+    /// unwinds the submit and answers `ReadOnlyNoExecution` as a second line —
+    /// a read-only core books no fill, no trade and no position, simulated or
+    /// otherwise. `Mode::settles_locally` still answers true for read-only
+    /// (boot seeding, valuation basis, exit ladders read it); what changed is
+    /// that nothing *executes* there to produce a fill in the first place.
     pub(crate) fn place_after_submit(
         &mut self,
         id: &str,
@@ -824,11 +849,52 @@ impl Core {
             })?;
 
         match self.config.mode {
-            // Dry and ReadOnly share the settle path: neither has a venue that
-            // can report a fill, so waiting would leave the order Pending
-            // forever and the ledger would never move. What separates them is
-            // egress, not accounting — see `Mode::readonly`.
-            Mode::Dry | Mode::ReadOnly => {
+            // #177: read-only produces NO execution — not a real one and not a
+            // simulated one. `place_gated` refuses before submission, so this
+            // arm is the defensive second line: it can only run if the mode
+            // flipped between `ome.submit` and here. Unwind what the submit
+            // took (reservation, virtual hold, pending token) and refuse; never
+            // a fill, a trade row or a position. The refusal travels back to
+            // the submitter as the `orders.place` error, not as a booked leg.
+            Mode::ReadOnly => {
+                if order.side == Side::Buy {
+                    if let Ok(l) = self.accounts.get_mut(&order.account_id) {
+                        l.release(id);
+                    }
+                    self.virtual_release_order(&order);
+                }
+                self.ome.mark_terminal(id, OrderStatus::Rejected, now_ms)?;
+                self.pair_on_order_event(&order.internal_key, Decimal::ZERO, true);
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.release_pending_token_for_strategy(
+                        order.account_id.as_str(),
+                        &order.strategy,
+                        &order.token_id,
+                    );
+                }
+                let err = CoreError::new(
+                    CoreErrorCode::ReadOnlyNoExecution,
+                    "read-only core produced no execution: no simulated fill, \
+                     trade row or position",
+                );
+                // Stamp WHY on the row before emitting: if this branch ever
+                // runs, the stored order is a refusal, not a trading fact.
+                self.ome
+                    .mark_rejected_with_reason(id, &err.message, now_ms)?;
+                tracing::error!(
+                    order = id,
+                    token = %order.token_id,
+                    "order refused at the settle point: this core is read-only"
+                );
+                self.emit_error_at(err.clone(), now_ms);
+                self.emit_order(id);
+                Err(err)
+            }
+            // Dry settles locally: no venue can report a fill, so waiting would
+            // leave the order Pending forever and the ledger would never move.
+            // This is the simulation's economy and is unchanged by #177 — only
+            // read-only left this arm.
+            Mode::Dry => {
                 // #351: an in-flight taker has NOT reached the venue yet — it
                 // stays Pending (the same shape a LIVE order has until the
                 // venue acks) and turns terminal only at its report time.

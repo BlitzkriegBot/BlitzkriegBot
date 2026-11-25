@@ -20,6 +20,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, oneshot};
 
 mod data_plane;
+/// #177: the IPC verb classification table the read-only gate derives from.
+pub(crate) mod method_spec;
 mod session;
 use data_plane::{DataPlaneRuntime, enable_venue_at_runtime};
 pub use session::run;
@@ -346,49 +348,43 @@ async fn handle_line(
     let method = req.method.as_str();
     let params = req.params;
 
-    // #460: kernel-side defense in depth. A `Mode::ReadOnly` core serves
-    // observations only — until now the mode only gated venue egress, which
-    // left every CONFIGURATION verb open to any local process that can reach
-    // the socket. The panel now gates its own proxy routes, but the panel is
-    // one client; the kernel is the boundary. One list, checked before any
-    // arm: a new write verb must be added HERE, the same discipline as the
-    // method table itself.
-    const READONLY_REFUSED: &[&str] = &[
-        method::RISK_SET_LIMITS,
-        method::RISK_SET_SYSTEMIC,
-        method::RISK_SET_EXIT,
-        method::EXECUTION_POLICY_SET,
-        method::EXECUTION_POLICY_RESET,
-        method::BLUEPRINT_SAVE,
-        method::BLUEPRINT_SAVE_SOURCE,
-        method::SYSTEM_UPDATE_CONFIGURE,
-        method::SYSTEM_ENV_RELOAD,
-        method::ROUND_DURATION_SET,
-        method::MARKET_PLUGIN_SET,
-        method::ACCOUNT_VENUE_SET,
-        method::ACCOUNT_ROUNDS_SET,
-        method::ACCOUNT_CREATE,
-        method::ACCOUNT_REMOVE,
-        method::DISPLAY_ACCOUNT_SET,
-        method::SYSTEM_RESET_TRADING,
-        method::STRATEGY_PARAMS_SET,
-        method::STRATEGY_RELOAD,
-        method::STRATEGY_PACKAGES_RELOAD,
-        method::UNIFIED_CONFIRM,
-        method::UNIFIED_REVOKE,
-        method::ARB_CONFIG_SET,
-        method::EXTENSION_ENABLE,
-        method::SE_ENABLE,
-        method::SE_SET_AUTO,
-        method::SYSTEM_UPDATE_STAGE,
-    ];
-    if READONLY_REFUSED.contains(&method) && core.lock().await.mode() == Mode::ReadOnly {
+    // #177: kernel-side defense in depth, DERIVED from the verb's
+    // classification instead of a hand-registered whitelist.
+    //
+    // The retired form (#460) was a 27-entry `READONLY_REFUSED` list whose own
+    // comment said "a new write verb must be added HERE". It had been built
+    // from CONFIGURATION verbs, so every execution verb — `orders.place`,
+    // `orders.cancel`, `orders.force_close`, `positions.exit`,
+    // `positions.force_close`, `account.freeze`, `account.unfreeze`,
+    // `account.strategies.set`, `strategy.enable`, `risk.kill`,
+    // `risk.resume`, `market.credentials.set` — was absent and simply ran on a
+    // read-only core (which also simulated fills, second layer:
+    // `risk_admission/admission.rs`). Registration-as-opt-in is the defect; the
+    // gate now keys on `MethodSpec::kind` and REFUSES BY DEFAULT:
+    //
+    //   * a verb with no spec is not a verb this build serves — the match below
+    //     answers METHOD_NOT_FOUND, so read-only cannot serve it either;
+    //   * a spec whose kind is not `Read` is refused unless its
+    //     `readonly` policy explicitly allows it, and `allowed_in_readonly`
+    //     structurally ignores `Allow` for `Write` / `Action` / `Stream`;
+    //   * `Read` is always served.
+    //
+    // `Ingest` is the one relaxable kind and no ingest verb relaxes it today —
+    // the argument is in `method_spec.rs` (a book ingest runs the maker-fill
+    // simulation, so it can fill a restored resting order).
+    if let Some(spec) = method_spec::get(method)
+        && !spec.allowed_in_readonly()
+        && core.lock().await.mode() == Mode::ReadOnly
+    {
         return fail(
             id,
             Failure::APPLICATION,
-            "this core runs in read-only mode; configuration verbs are refused \
-             (start with a writable mode to change risk, policy or strategies)"
-                .to_string(),
+            format!(
+                "this core runs in read-only mode; {method} is classified \
+                 {kind:?} and is refused (start with a writable mode to change \
+                 orders, risk, policy or strategies)",
+                kind = spec.kind
+            ),
             None,
         );
     }

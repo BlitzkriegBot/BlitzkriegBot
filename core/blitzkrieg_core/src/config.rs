@@ -486,10 +486,7 @@ mod tests {
         assert_eq!(cfg.meta.name.as_deref(), Some("chainlink"));
         assert_eq!(cfg.meta.extension_type.as_deref(), Some("market"));
         assert_eq!(cfg.meta.enabled, Some(false));
-        assert!(
-            cfg.check_against("chainlink", "0.1.0", "market")
-                .is_empty()
-        );
+        assert!(cfg.check_against("chainlink", "0.1.0", "market").is_empty());
         assert!(
             cfg.declared_only.iter().any(|d| d.key == "market.symbols"),
             "{:?}",

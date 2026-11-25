@@ -200,12 +200,12 @@ async fn a_stalled_writer_drops_notifications_without_losing_responses() {
             if line.is_empty() {
                 continue;
             }
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) {
-                if let Some(id) = v.get("id").and_then(|v| v.as_u64()) {
-                    ids.push(id);
-                    response_text.extend_from_slice(line);
-                    response_text.push(b'\n');
-                }
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(line)
+                && let Some(id) = v.get("id").and_then(|v| v.as_u64())
+            {
+                ids.push(id);
+                response_text.extend_from_slice(line);
+                response_text.push(b'\n');
             }
         }
     }

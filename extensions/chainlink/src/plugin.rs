@@ -85,9 +85,9 @@ impl DataFeed for ChainlinkDataFeed {
             // `chainlink_twap_loop` never returns (reconnects forever). It must
             // run on a background task so kernel boot is never blocked before
             // the IPC socket is bound.
-            tokio::spawn(
-                async move { crate::feed::chainlink_twap_loop(host, config.spot_assets).await },
-            );
+            tokio::spawn(async move {
+                crate::feed::chainlink_twap_loop(host, config.spot_assets).await
+            });
             Ok(())
         })
     }

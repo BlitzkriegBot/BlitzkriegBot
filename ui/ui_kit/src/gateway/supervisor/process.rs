@@ -824,7 +824,10 @@ fn silent_max_order_notional_leaves_core_and_risk_panel_in_charge() {
     let mut explicit = cfg;
     explicit.max_order_notional = Some("25.00".into());
     let args = explicit.to_args();
-    let i = args.iter().position(|a| a == "--max-order-notional").unwrap();
+    let i = args
+        .iter()
+        .position(|a| a == "--max-order-notional")
+        .unwrap();
     assert_eq!(args[i + 1], "25.00");
 }
 

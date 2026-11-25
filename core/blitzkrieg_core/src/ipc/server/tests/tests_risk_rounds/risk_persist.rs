@@ -119,7 +119,8 @@ async fn risk_set_systemic_persists_size_pct_and_reloads_on_boot() {
     };
     let mut c = Core::new(cfg.clone());
     c.set_balance(cfg.dry_seed_balance);
-    c.open_account_risk_db(&db_path).expect("temp risk db opens");
+    c.open_account_risk_db(&db_path)
+        .expect("temp risk db opens");
     c.store = Some(Arc::new(
         crate::store::SqliteStore::open(&db_path).expect("temp store opens"),
     ));
@@ -135,7 +136,10 @@ async fn risk_set_systemic_persists_size_pct_and_reloads_on_boot() {
         r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"sizePct":"2.5","reason":"webui"}}"#.to_string(),
     )
     .await;
-    assert!(applied.get("error").is_none(), "sizePct set failed: {applied}");
+    assert!(
+        applied.get("error").is_none(),
+        "sizePct set failed: {applied}"
+    );
     assert_eq!(applied["result"]["persisted"], serde_json::json!(true));
 
     let limits = rpc(

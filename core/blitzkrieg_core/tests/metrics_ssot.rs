@@ -213,8 +213,7 @@ fn three_exits_report_the_same_win_rate_bit_for_bit() {
     // `trade_stats` 现在调用的那个函数（不是测试里的复刻）。
     let lines: Vec<TradeLine> = corpus
         .iter()
-        .enumerate()
-        .map(|(_i, c)| TradeLine {
+        .map(|c| TradeLine {
             id: c.id.clone(),
             asset: c.asset.clone(),
             direction: "up".into(),

@@ -354,7 +354,11 @@ impl TwapWindow {
             }
         }
         if total_ms > 0 {
-            Some((weighted_sum / Decimal::from(total_ms)).round_dp(8).normalize())
+            Some(
+                (weighted_sum / Decimal::from(total_ms))
+                    .round_dp(8)
+                    .normalize(),
+            )
         } else {
             self.samples.back().map(|(_, px)| *px)
         }
@@ -470,10 +474,7 @@ async fn run_polybolt_session(
                     match v.get("op").and_then(Value::as_str) {
                         Some("authed") => break,
                         Some("error") => {
-                            let code = v
-                                .get("code")
-                                .and_then(Value::as_str)
-                                .unwrap_or("unknown");
+                            let code = v.get("code").and_then(Value::as_str).unwrap_or("unknown");
                             if code == "auth_unavailable" {
                                 tracing::warn!(target: "chainlink", "polybolt auth_unavailable — retrying on fresh socket");
                                 return SessionEnd::Error;

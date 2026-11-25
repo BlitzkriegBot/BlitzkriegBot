@@ -403,6 +403,15 @@ impl IntentLedger {
     }
 
     /// Current row count (diagnostics / tests).
+    ///
+    /// `clippy::len_without_is_empty` is allowed rather than satisfied. The
+    /// lint assumes a `len()` over an in-memory collection the same type can
+    /// answer `is_empty()` for without I/O. Both calls here hit SQLite and
+    /// both return `Result`, so an `is_empty()` would be a second round-trip
+    /// that exists only to appease a heuristic; a caller who wants emptiness
+    /// can compare this count. Adding it would be the exact shape this audit
+    /// keeps flagging — an API written for the linter, not for the code.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> Result<i64, String> {
         self.db.with_connection(|conn| {
             conn.query_row("SELECT COUNT(*) FROM order_intents", [], |r| r.get(0))

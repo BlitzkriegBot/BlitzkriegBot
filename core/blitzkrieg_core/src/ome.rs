@@ -1354,11 +1354,13 @@ impl Ome {
             // honest `VenueFill`, so it is left for the proof the fill's own
             // path supplies rather than invented here.
             if order.status == OrderStatus::Filled {
-                let source = order.venue_order_id.clone().map(|vid| {
-                    TerminalEvidenceSource::VenueFill {
-                        venue_order_id: vid,
-                    }
-                });
+                let source =
+                    order
+                        .venue_order_id
+                        .clone()
+                        .map(|vid| TerminalEvidenceSource::VenueFill {
+                            venue_order_id: vid,
+                        });
                 if let Some(source) = source {
                     order.terminal_evidence = Some(TerminalEvidenceRecord {
                         status: OrderStatus::Filled,

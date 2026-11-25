@@ -13,15 +13,15 @@
 # implementations. It is the exact list PR-1/PR-2 retire.
 # The session.rs .env watcher is a READ path — not a violation, and part of
 # the PR-2 retirement face (map §3.2 A2): do not delete it.
-core/blitzkrieg_core/src/ledger.rs:641 json-direct if !crate::jsonl::rewrite_atomic(&path, &bytes) {
-core/blitzkrieg_core/src/order_db.rs:94 json-direct crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes());
-core/blitzkrieg_core/src/position/mod.rs:578 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
-core/blitzkrieg_core/src/position/mod.rs:649 json-direct if !crate::jsonl::rewrite_atomic(std::path::Path::new(path), text.as_bytes()) {
+core/blitzkrieg_core/src/ledger.rs:674 json-direct if !crate::jsonl::rewrite_atomic(&path, &bytes) {
+core/blitzkrieg_core/src/order_db.rs:70 json-direct crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes());
+core/blitzkrieg_core/src/position/mod.rs:580 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
+core/blitzkrieg_core/src/position/mod.rs:651 json-direct if !crate::jsonl::rewrite_atomic(std::path::Path::new(path), text.as_bytes()) {
 core/blitzkrieg_core/src/service/config/records.rs:98 json-direct if !crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
-core/blitzkrieg_core/src/service/risk_admission/persist.rs:128 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
-core/blitzkrieg_core/src/trade_db.rs:349 json-direct crate::jsonl::rewrite_atomic(&self.summary_path, text.as_bytes());
-core/blitzkrieg_core/src/trade_db.rs:415 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
-core/blitzkrieg_core/src/trade_db.rs:445 json-direct let _ = crate::jsonl::rewrite_atomic(&self.jsonl_path, b"");
-core/blitzkrieg_core/src/trade_db.rs:488 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
-core/blitzkrieg_core/src/trade_db.rs:535 json-direct if !crate::jsonl::rewrite_atomic(&archive_path, text.as_bytes()) {
-core/blitzkrieg_core/src/trade_db.rs:547 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
+core/blitzkrieg_core/src/service/risk_admission/persist.rs:129 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
+core/blitzkrieg_core/src/trade_db.rs:331 json-direct crate::jsonl::rewrite_atomic(&self.summary_path, text.as_bytes());
+core/blitzkrieg_core/src/trade_db.rs:397 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
+core/blitzkrieg_core/src/trade_db.rs:427 json-direct let _ = crate::jsonl::rewrite_atomic(&self.jsonl_path, b"");
+core/blitzkrieg_core/src/trade_db.rs:470 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
+core/blitzkrieg_core/src/trade_db.rs:517 json-direct if !crate::jsonl::rewrite_atomic(&archive_path, text.as_bytes()) {
+core/blitzkrieg_core/src/trade_db.rs:529 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {

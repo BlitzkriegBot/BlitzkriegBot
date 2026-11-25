@@ -123,7 +123,10 @@ fn the_trait_declares_every_write_without_a_default_body() {
         "save_credentials",
         "save_market_plugin",
         "load_market_plugin",
-        "append_money_fact",
+        // #192 (operator ruling 2026-11-25) DELETED `append_money_fact`:
+        // the `money_facts` table was write-only, so it was not a ledger.
+        // #180's core claim still holds for every face above — each is
+        // declaration-only, so a backend that forgets one fails to compile.
         "put_setting",
     ]
     .into_iter()

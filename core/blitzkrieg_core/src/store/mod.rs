@@ -239,7 +239,6 @@ pub trait StoreApi: Debug + Send + Sync {
     // （order snapshot / closed-trade record / ledger journal row /
     // settlement journal line）退回 JSONL —— 这是显式接受的一段时间弱持久化。
 
-
     /// Upsert (`Some(value)`) or delete (`None`) one account-scoped setting.
     /// [`SqliteStore`](crate::store::SqliteStore) lands it in `account_settings`
     /// (ensuring the account row first) and reports [`WriteOutcome::Persisted`].

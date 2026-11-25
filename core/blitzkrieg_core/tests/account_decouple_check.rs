@@ -349,18 +349,33 @@ fn decouple_core(accounts_path: Option<&Path>, pot: Option<Decimal>, enable_defa
         None => Core::new(config),
     };
     // Open the SQLite store so account.strategies.set / round_duration.set can
-    // persist (issue #1230: writes no longer go to .env). Use a per-test unique
-    // suffix so parallel tests never contend on the same database file.
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+    // persist (issue #1230: writes no longer go to .env). The suffix has to be
+    // unique per test, because `cargo test` runs these 15 tests as parallel
+    // threads of ONE process.
+    //
+    // Issue #233: this used to be `SystemTime::now().as_nanos()`, on the
+    // assumption that a nanosecond clock is nanosecond-precise. It is not —
+    // measured on macOS (darwin 27) `SystemTime::now()` advances in ~17µs
+    // steps, so 15 threads racing through a barrier collide on the same stamp
+    // most of the time (92.5% of rounds in `dev/tmp/clock-probe`). Two tests
+    // then opened the SAME `.sqlite`, and under the gate's parallel cargo load
+    // the 5s `busy_timeout` was not enough: `account risk store open failed:
+    // database is locked`.
+    //
+    // A process-local counter cannot collide: it is a single atomic increment,
+    // and the pid in `scratch_dir()` keeps separate processes apart. Same
+    // reasoning as `SOCK_SEQ` in `ui/webapp/src-tauri/tests/chain.rs:35`.
+    static DB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = DB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let db_path = match accounts_path {
         Some(p) => {
             let stem = p.file_stem().unwrap_or_default().to_string_lossy();
             p.with_file_name(format!("{stem}-{unique}.sqlite"))
         }
-        None => scratch_dir().join(format!("decouple-{unique}.sqlite")),
+        // The pid as well as the counter: the counter is per-process, so two
+        // `cargo test` binaries running at once (the gate builds and runs more
+        // than one target) would otherwise share `decouple-0.sqlite`.
+        None => scratch_dir().join(format!("decouple-{}-{unique}.sqlite", std::process::id())),
     };
     c.open_account_risk_db(&db_path)
         .expect("decouple test database opens");

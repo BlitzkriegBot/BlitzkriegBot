@@ -146,8 +146,7 @@ async fn venue_set_mounts_a_never_booted_venues_data_plane_at_runtime() {
     // without a panic proves the runtime feed's control is installed.
     core.lock()
         .await
-        .subscribe_feed_tokens("venuelive", vec!["tok-a".to_string()])
-        .await;
+        .subscribe_feed_tokens("venuelive", vec!["tok-a".to_string()]);
     assert!(
         data_plane.venue_mounted("venuelive"),
         "the mount is recorded — a re-bind must not restart the live feed"

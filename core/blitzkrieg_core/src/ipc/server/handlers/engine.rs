@@ -229,7 +229,7 @@ pub(crate) async fn handle_engine(
                     } else {
                         venue
                     };
-                    c.subscribe_feed_tokens(&plugin, tokens).await;
+                    c.subscribe_feed_tokens(&plugin, tokens);
                     Ok::<_, CoreError>(serde_json::json!({ "ok": true }))
                 }
             })

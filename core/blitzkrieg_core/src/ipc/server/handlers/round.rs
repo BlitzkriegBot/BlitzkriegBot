@@ -151,7 +151,11 @@ async fn ensure_round_family_mounted(
         }
         replay_dropped_family(host, data_plane, &venue, family).await;
         let c = core.lock().await;
-        c.publish_family_feed_subscriptions(&venue).await;
+        // #182: sync on purpose. The guard is live in this scope and the
+        // publish is a pair of `try_send`s onto the feeds' control channels —
+        // no suspend point may sit between acquiring the Core lock and
+        // dropping it, or one venue's subscription write parks every account.
+        c.publish_family_feed_subscriptions(&venue);
     }
 }
 

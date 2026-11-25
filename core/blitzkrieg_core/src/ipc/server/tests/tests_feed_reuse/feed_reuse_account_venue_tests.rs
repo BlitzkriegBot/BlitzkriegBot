@@ -112,8 +112,7 @@ async fn account_create_mounts_a_never_booted_venues_data_plane_at_runtime() {
     // same observable the venue.set test pins.
     core.lock()
         .await
-        .subscribe_feed_tokens("venuelive", vec!["tok-a".to_string()])
-        .await;
+        .subscribe_feed_tokens("venuelive", vec!["tok-a".to_string()]);
     assert!(
         data_plane.venue_mounted("venuelive"),
         "the mount is recorded — a later venue.set on the same venue must not restart the feed"

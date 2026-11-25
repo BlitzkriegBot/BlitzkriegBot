@@ -305,9 +305,168 @@ pub struct TrackedOrder {
     /// load unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejected_reason: Option<String>,
+    /// #184: the kernel asked for this order to be withdrawn but the terminal
+    /// stamp is still waiting on venue evidence. While this is set the order
+    /// stays LIVE (never terminal, never released) and `pending_unbound`
+    /// excludes it so no executor re-submits it. Cleared by the terminal
+    /// transition that carries [`TerminalEvidenceRecord`].
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cancel_requested: bool,
+    /// #184: how many place probes the transport has answered for an order
+    /// whose POST timed out. Diagnostic only — the terminal decision reads the
+    /// probe RESULT, never the count.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub probe_attempts: u8,
+    /// #184: the durable proof that terminalised this order. `None` on a live
+    /// order, and on a legacy log line written before #184 — a terminal order
+    /// without it is a data hole the reconcile sweep reports, never a default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_evidence: Option<TerminalEvidenceRecord>,
+}
+
+/// Persistence encoding of the frozen `crate::contracts::order::TerminalEvidence`.
+///
+/// The frozen contract (T0, Gitea #190) is derivation-free on purpose: it is
+/// the API-facing text, and adding serde derives to it would change frozen
+/// text, which T0 says needs re-approval. This record is the durable spelling:
+/// one variant per frozen evidence variant, plus the terminal status the
+/// evidence justifies (so a log line can never show evidence that disagrees
+/// with its own status). [`TrackedOrder::terminal_evidence_contract`] maps it
+/// back, variant for variant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalEvidenceRecord {
+    /// The terminal status this evidence justifies.
+    pub status: OrderStatus,
+    /// Where the terminal fact came from.
+    pub source: TerminalEvidenceSource,
+}
+
+/// What proved the terminal state. `Simulated*` and `KernelForcedClose` exist
+/// because the frozen `TerminalEvidence` has no variant that can honestly
+/// express them — see [`TrackedOrder::terminal_evidence_contract`]. Labelling
+/// a simulation or a kernel decision as a venue receipt would be a fake fill
+/// (R7.1 L2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TerminalEvidenceSource {
+    /// The venue acknowledged the cancel for this order id (`VenueCancelAck`).
+    VenueCancelAck { venue_order_id: String },
+    /// The venue reported a fill for this order id (`VenueFill`).
+    VenueFill { venue_order_id: String },
+    /// A probe established the venue never accepted the place; the probe
+    /// RESULT travels with the verdict (`PlaceNeverAccepted`). `Unknown` is
+    /// deliberately not accepted as a terminal verdict.
+    PlaceNeverAccepted { probe: ProbeOutcome },
+    /// The venue's authoritative snapshot proved the order is gone and the
+    /// cancellation the kernel asked for took effect (`ReconciledGhost`).
+    ReconciledGhost,
+    /// The order settled in a non-trading mode (Dry / ReadOnly): there is no
+    /// venue, so the simulated verdict is the terminal fact. NEVER a venue ack.
+    SimulatedFill,
+    /// A cancel in a non-trading mode. NEVER a venue ack.
+    SimulatedCancel,
+    /// A locally refused order in a non-trading mode (FOK with no depth).
+    SimulatedReject,
+    /// The kernel closed the order itself with no honest venue receipt: round
+    /// expiry, an in-flight taker killed at execute_at, or a ghost the venue
+    /// never knew. `ForceClosed` / `Rejected` status, no venue claim.
+    KernelForcedClose,
+}
+
+/// A probe's answer, mirroring the frozen `ProbeResult`. `Unknown` is NOT
+/// evidence of absence and can never terminalise an order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProbeOutcome {
+    Found,
+    Absent,
+    Unknown,
+}
+
+impl TerminalEvidenceRecord {
+    /// The frozen contract's [`crate::contracts::order::TerminalKind`] for this
+    /// record's status.
+    pub fn kind(&self) -> crate::contracts::order::TerminalKind {
+        use crate::contracts::order::TerminalKind;
+        match self.status {
+            OrderStatus::Filled => TerminalKind::Filled,
+            OrderStatus::Cancelled => TerminalKind::Cancelled,
+            OrderStatus::Rejected => TerminalKind::Rejected,
+            OrderStatus::Failed => TerminalKind::Failed,
+            OrderStatus::ForceClosed => TerminalKind::ForceClosed,
+            // `mark_terminal_with_evidence` refuses non-terminal statuses, so
+            // this arm is unreachable for a stored record. Reporting it as
+            // ForceClosed (the "kernel decided" kind) is the honest fallback:
+            // it claims no venue receipt.
+            OrderStatus::Pending | OrderStatus::Live | OrderStatus::PartiallyFilled => {
+                TerminalKind::ForceClosed
+            }
+        }
+    }
 }
 
 impl TrackedOrder {
+    /// #184: the frozen contract view of where this order is.
+    ///
+    /// `Terminal` is only produced when the durable record has a frozen
+    /// `TerminalEvidence` spelling. Three sources have none — a simulated
+    /// fill/cancel/reject (no venue exists), and a kernel-forced close (no
+    /// receipt exists) — so this answers `None` rather than dressing them up
+    /// as `VenueFill` / `VenueCancelAck` / `ReconciledGhost`. That is R7.1 L2:
+    /// a simulation or a kernel decision must never be labelled a venue fact.
+    /// The frozen `TerminalEvidence` enum cannot express these cases; the
+    /// durable [`TerminalEvidenceRecord`] is the authority and the gap is
+    /// recorded in `dev-docs/DECISIONS_PENDING.md`.
+    pub fn order_state_contract(&self) -> Option<crate::contracts::order::OrderState> {
+        use crate::contracts::ids::VenueOrderId;
+        use crate::contracts::order::{OrderState, ProbeResult, TerminalEvidence};
+        if let Some(rec) = self.terminal_evidence.as_ref() {
+            let evidence = match &rec.source {
+                TerminalEvidenceSource::VenueCancelAck { venue_order_id } => {
+                    TerminalEvidence::VenueCancelAck(VenueOrderId(venue_order_id.clone()))
+                }
+                TerminalEvidenceSource::VenueFill { venue_order_id } => {
+                    TerminalEvidence::VenueFill(VenueOrderId(venue_order_id.clone()))
+                }
+                TerminalEvidenceSource::PlaceNeverAccepted { probe } => {
+                    let probe = match probe {
+                        ProbeOutcome::Found => ProbeResult::Found,
+                        ProbeOutcome::Absent => ProbeResult::Absent,
+                        ProbeOutcome::Unknown => ProbeResult::Unknown,
+                    };
+                    TerminalEvidence::PlaceNeverAccepted { probe }
+                }
+                TerminalEvidenceSource::ReconciledGhost => TerminalEvidence::ReconciledGhost,
+                TerminalEvidenceSource::SimulatedFill
+                | TerminalEvidenceSource::SimulatedCancel
+                | TerminalEvidenceSource::SimulatedReject
+                | TerminalEvidenceSource::KernelForcedClose => return None,
+            };
+            return Some(OrderState::Terminal {
+                kind: rec.kind(),
+                evidence,
+            });
+        }
+        if let Some(venue_id) = self.venue_order_id.as_ref() {
+            return Some(OrderState::Resting {
+                venue_id: VenueOrderId(venue_id.clone()),
+                acked_at_ms: self.updated_at_ms,
+            });
+        }
+        if self.place_uncertain {
+            return Some(OrderState::Probing {
+                client_id: self.order_id.clone(),
+                probes: self.probe_attempts,
+            });
+        }
+        Some(OrderState::Placing {
+            client_id: self.order_id.clone(),
+            posted_at_ms: self.submitted_at_ms,
+            venue_ack: None,
+        })
+    }
+
     /// B1a: the order's effective round length, resolved three-state (read
     /// only — no write here): the order's OWN stamp when it carries one
     /// (B1b's write path), else the market's declared duration when the
@@ -339,6 +498,17 @@ impl TrackedOrder {
 /// wire, so a persisted log line written after this PR stays byte-identical
 /// with the pre-B1a shape whenever the field still carries the default.
 fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
+}
+
+/// #184 serde companion: the two new flags stay off the wire while unset, so
+/// an old order-log line and a line written by this PR are byte-identical
+/// whenever the new fields carry their defaults.
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+fn is_zero_u8(v: &u8) -> bool {
     *v == 0
 }
 
@@ -508,6 +678,9 @@ mod round_duration_tests {
             venue: String::new(),
             round_duration_sec: 0,
             rejected_reason: None,
+            cancel_requested: false,
+            probe_attempts: 0,
+            terminal_evidence: None,
         }
     }
 

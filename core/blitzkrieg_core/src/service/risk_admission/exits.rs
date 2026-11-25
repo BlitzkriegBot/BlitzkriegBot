@@ -82,6 +82,31 @@ pub(crate) fn position_pnl_pct(pos: &crate::position::OpenPosition) -> Decimal {
 }
 
 impl Core {
+    /// Withdraw an order (#184 rewrite of the #1291 shape).
+    ///
+    /// 「入队 ≠ 已撤」. What this does depends on what evidence the order can
+    /// actually produce:
+    ///
+    ///  - **Dry / ReadOnly** — no venue exists, so the simulated cancel IS the
+    ///    terminal fact. Stamp `Cancelled` with `SimulatedCancel`, then release
+    ///    bookkeeping. Nothing is claimed about a venue (R7.1 L2).
+    ///  - **Live, venue acknowledged the place** — queue the real venue cancel
+    ///    and mark `cancel_requested`, but keep the order LIVE and keep the
+    ///    reservation. The venue can still fill it while the DELETE is in
+    ///    flight; releasing now is exactly the 250 ms over-exposure the audit
+    ///    measured. [`Self::confirm_venue_cancel`] releases when the venue
+    ///    answers, and `reconcile_for_venue` is the backstop if that answer is
+    ///    dropped.
+    ///  - **Live, venue never acknowledged the place** — there is no venue id
+    ///    to cancel and a POST timeout proves nothing about the venue's book
+    ///    (#462). The order enters `Probing`: it stays live, keeps its money,
+    ///    and `note_probe_attempt` records every probe the transport answers.
+    ///    A bounded number of `Unknown` probes later the sweep reports the
+    ///    order as unverifiable instead of inventing a cancellation.
+    ///
+    /// Queue backpressure aborts BEFORE any local change (issue #8 / #18): an
+    /// order never becomes locally withdrawn while its venue copy rests with no
+    /// cancel in flight.
     pub fn cancel(&mut self, id: &str, now_ms: i64) -> CoreResult<()> {
         let order = self
             .ome
@@ -99,15 +124,94 @@ impl Core {
         // terminal transition. If the queue is at cap the cancel cannot be
         // enqueued (backpressure) — abort here so the order is never marked
         // `Cancelled` locally while it still rests on the venue (a ghost order
-        // with no cancel in flight). A transient venue failure is retried by
-        // the extension re-queueing via [`MarketHost::requeue_venue_cancel`].
-        // `cancel_all_live_orders_for_account` propagates this error and stops (#107).
-        if was_live && let Some(vid) = order.venue_order_id.as_ref() {
+        // with no cancel in flight). This runs in EVERY mode: an order that
+        // carries a venue id has a venue-side copy by definition, and a dry
+        // order never has one.
+        if let Some(vid) = order.venue_order_id.as_ref() {
             let venue = self.execution_venue_of(order.account_id.as_str(), &order.token_id);
             self.queue_venue_cancel(venue, vid.to_string())?;
         }
-        self.release_order_bookkeeping(&order, was_live, "cancel")?;
-        self.ome.mark_terminal(id, OrderStatus::Cancelled, now_ms)?;
+        if self.config.mode.settles_locally() {
+            // No venue decides this order: the simulated cancel IS the fact.
+            self.ome.mark_terminal_with_evidence(
+                id,
+                OrderStatus::Cancelled,
+                crate::model::TerminalEvidenceSource::SimulatedCancel,
+                now_ms,
+            )?;
+            self.release_order_bookkeeping(&order, was_live, "cancel")?;
+            self.emit_order(id);
+            return Ok(());
+        }
+        match order.venue_order_id.as_ref() {
+            Some(_) => {
+                // The venue holds this order and the DELETE is queued. Mark the
+                // withdrawal in flight WITHOUT terminalising: a fill can still
+                // land while the cancel travels, and the reservation must
+                // outlive that window.
+                self.ome.mark_cancel_requested(id, now_ms)?;
+                self.emit_order(id);
+                Ok(())
+            }
+            None => {
+                // The venue never acknowledged this order (or we never got the
+                // ack). Nothing to cancel by id, and "no ack" is not "no order":
+                // enter Probing and let the venue answer.
+                self.ome.mark_place_uncertain(id, now_ms)?;
+                self.ome.mark_cancel_requested(id, now_ms)?;
+                self.emit_order(id);
+                self.emit(Event::RiskAlert {
+                    code: blitzkrieg_market_api::CoreErrorCode::Timeout,
+                    message: format!(
+                        "cancel for {id}: the venue never acknowledged this place — \
+                         probing instead of assuming it is gone; reservation kept"
+                    ),
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// #184: the venue acknowledged a cancel. This is the ONLY moment a live
+    /// withdrawal may release money, because only now is the order provably
+    /// off the venue's book.
+    ///
+    /// Idempotent: a confirm for an already-terminal order whose reservation is
+    /// gone is a no-op; a confirm for an order that reached an HONEST terminal
+    /// status first (Filled, most importantly) is refused — the fill is the
+    /// truth and the late confirm must not rewrite it (#7).
+    pub fn confirm_venue_cancel(
+        &mut self,
+        id: &str,
+        venue_order_id: &str,
+        now_ms: i64,
+    ) -> CoreResult<()> {
+        let order = self
+            .ome
+            .get(id)
+            .cloned()
+            .ok_or_else(|| CoreError::new(CoreErrorCode::UnknownOrder, id))?;
+        if order.status.is_terminal() {
+            // A fill or a kernel close already ended this order. Never rewrite.
+            tracing::warn!(
+                order = %id,
+                venue_order_id = %venue_order_id,
+                status = ?order.status,
+                "venue cancel confirm for an order that already ended — status kept, nothing released again"
+            );
+            return Ok(());
+        }
+        let was_live = order.status.is_live();
+        self.ome.mark_terminal_with_evidence(
+            id,
+            OrderStatus::Cancelled,
+            crate::model::TerminalEvidenceSource::VenueCancelAck {
+                venue_order_id: venue_order_id.to_string(),
+            },
+            now_ms,
+        )?;
+        // The durable evidence is written; only now may the money move.
+        self.release_order_bookkeeping(&order, was_live, "venue cancel confirm")?;
         self.emit_order(id);
         Ok(())
     }
@@ -135,6 +239,52 @@ impl Core {
             n += 1;
         }
         Ok(n)
+    }
+
+    /// #184 pre-flight: prove the release is going to be EXACT before any
+    /// terminal fact is written.
+    ///
+    /// A terminal transition has two writes — the status+evidence row, then
+    /// the money. If the money half turns out to be impossible, aborting at
+    /// that point leaves a terminal order with its reservation still held (a
+    /// stray hold `run_accounting_audit` halts entries on). The only way to
+    /// keep the pair atomic from the book's point of view is to refuse BEFORE
+    /// the row is written, which is what this peek buys. `Ok(())` when the
+    /// order holds nothing (never reserved — the #55 fixture shape) or holds
+    /// exactly its outstanding commitment.
+    pub(crate) fn ensure_release_exact(
+        &self,
+        order: &crate::model::TrackedOrder,
+    ) -> CoreResult<()> {
+        if order.side != Side::Buy {
+            return Ok(());
+        }
+        let remaining = (order.size - order.filled_size).max(Decimal::ZERO);
+        let expected = order.price.checked_mul(remaining).ok_or_else(|| {
+            CoreError::new(
+                CoreErrorCode::InvalidParams,
+                format!(
+                    "order {} reservation notional overflow (price {} x remaining {})",
+                    order.order_id, order.price, remaining
+                ),
+            )
+        })?;
+        let Ok(l) = self.accounts.ledger_of(&order.account_id) else {
+            // No book for this account: the order never entered the money
+            // system, so there is nothing to release and nothing to validate.
+            return Ok(());
+        };
+        let held = l.held(&order.order_id);
+        if held != Decimal::ZERO && held != expected {
+            return Err(CoreError::new(
+                CoreErrorCode::InvalidParams,
+                format!(
+                    "order {} release mismatch: ledger holds {held}, outstanding commitment {expected}",
+                    order.order_id
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// Release every bookkeeping hold an order took when it was placed.
@@ -165,6 +315,7 @@ impl Core {
         was_live: bool,
         why: &str,
     ) -> CoreResult<Decimal> {
+        self.ensure_release_exact(order)?;
         let mut released = Decimal::ZERO;
         if order.side == Side::Buy {
             // E28: the reservation is released in the ORDER'S OWN book — a

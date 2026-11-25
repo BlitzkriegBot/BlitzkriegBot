@@ -810,7 +810,13 @@ impl MarketHost for CoreHost {
         Box::pin(async move {
             let mut c = self.core.lock().await;
             if let Some(core_id) = c.core_id_for_venue(&venue_id) {
-                let _ = c.cancel(&core_id, now_ms());
+                // #184: this callback IS the venue's cancel acknowledgement —
+                // the only honest proof that the order is off the book. It
+                // terminalises and releases; `cancel` (the withdrawal REQUEST)
+                // deliberately does neither.
+                if let Err(e) = c.confirm_venue_cancel(&core_id, &venue_id, now_ms()) {
+                    c.emit_error(e);
+                }
             }
         })
     }

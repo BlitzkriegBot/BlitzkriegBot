@@ -94,6 +94,9 @@ fn restored_live_orders_push_the_id_counter_past_their_ids() {
         venue: String::new(),
         round_duration_sec: 0,
         rejected_reason: None,
+        cancel_requested: false,
+        probe_attempts: 0,
+        terminal_evidence: None,
     };
     std::fs::write(&log, serde_json::to_string(&restored).unwrap() + "\n").unwrap();
     let mut c = Core::new(CoreConfig {

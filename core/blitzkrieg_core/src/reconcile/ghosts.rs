@@ -55,34 +55,62 @@ pub(super) fn detect_ghosts(
             Some((status, filled, size)) if status == OrderStatus::Filled || filled >= size => {
                 if status != OrderStatus::Filled {
                     // Venue reports a full fill the OME hasn't absorbed yet.
-                    // The sweep (reconcile_for_venue) runs release_order_bookkeeping
-                    // with `?` exactly once for MarkedFilled/MarkedForceClosed, so
-                    // detect_ghosts only stamps the terminal status here — a second
-                    // release would observe an already-emptied reservation and abort.
+                    // #184: stamp with `VenueFill` evidence and release with
+                    // `?` — FAIL-CLOSED. The old `let _ =` here could leave a
+                    // terminal `Filled` row whose reservation was never
+                    // released (a stray hold the audit halts on).
+                    //
+                    // The release is PRE-FLIGHTED first (`ensure_release_exact`):
+                    // if the book disagrees with the order's commitment, the
+                    // sweep aborts with the order still live and the next pass
+                    // retries the whole transition — never a half-completed
+                    // pair (terminal row / un-released hold).
                     let order = core
                         .ome
                         .get(&core_id)
                         .cloned()
                         .expect("ghost order just observed live");
+                    core.ensure_release_exact(&order)?;
                     let was_live = order.status.is_live();
-                    // Filled-absorption bookkeeping: release exactly once here
-                    // (the sweep only persists MarkedFilled). Errors are
-                    // swallowed like the pre-#54 path — the sweep's ForceClosed
-                    // arm is the fail-closed release point with `?`.
-                    let _ = core.release_order_bookkeeping(&order, was_live, "reconcile");
-                    core.ome
-                        .mark_terminal(&core_id, OrderStatus::Filled, snap.now_ms)?;
+                    core.ome.mark_terminal_with_evidence(
+                        &core_id,
+                        OrderStatus::Filled,
+                        crate::model::TerminalEvidenceSource::VenueFill {
+                            venue_order_id: venue_id.clone(),
+                        },
+                        snap.now_ms,
+                    )?;
+                    core.release_order_bookkeeping(&order, was_live, "reconcile")?;
                 }
                 report.actions.push(ReconcileAction::MarkedFilled {
                     core_order_id: core_id,
                 });
             }
             Some((_, filled, _)) if filled > Decimal::ZERO => {
-                // Partial fill but the venue dropped the order: cancel through
-                // Core::cancel so its #7 terminal guard, reservation release,
-                // venue-cancel queue and emit run exactly like an explicit
-                // operator cancel (issue #55).
-                core.cancel(&core_id, snap.now_ms)?;
+                // Partial fill but the venue dropped the order. The snapshot
+                // proves the venue no longer holds it, so the withdrawal the
+                // kernel wanted has taken effect — that absence IS the
+                // evidence. Stamp first, release second (#184); the old shape
+                // routed this through `Core::cancel`, whose new semantics
+                // correctly refuse to terminalise without an ack, so the two
+                // had to be separated.
+                let order = core
+                    .ome
+                    .get(&core_id)
+                    .cloned()
+                    .expect("ghost order just observed live");
+                core.ensure_release_exact(&order)?;
+                let was_live = order.status.is_live();
+                core.ome.mark_terminal_with_evidence(
+                    &core_id,
+                    OrderStatus::Cancelled,
+                    crate::model::TerminalEvidenceSource::VenueCancelAck {
+                        venue_order_id: venue_id.clone(),
+                    },
+                    snap.now_ms,
+                )?;
+                core.release_order_bookkeeping(&order, was_live, "reconcile")?;
+                core.emit_order(&core_id);
                 report.actions.push(ReconcileAction::MarkedCancelled {
                     core_order_id: core_id,
                 });
@@ -97,14 +125,24 @@ pub(super) fn detect_ghosts(
                     continue;
                 }
                 // A ghost: the venue has neither the order nor any fill for it.
-                // #457: this is the kernel closing an order nobody else closed
-                // — ForceClosed, not Cancelled.
-                // Stamp ForceClosed; release_order_bookkeeping runs exactly once
-                // with `?` in reconcile_for_venue's MarkedForceClosed arm —
-                // detect_ghosts must NOT release again (result discarded here,
-                // second release sees an empty reservation and aborts the sweep).
-                core.ome
-                    .mark_terminal(&core_id, OrderStatus::ForceClosed, snap.now_ms)?;
+                // #457 + #184: the kernel is closing an order nobody else
+                // closed — `ForceClosed` with `ReconciledGhost` evidence (no
+                // venue receipt is claimed). The sweep's MarkedForceClosed arm
+                // runs the release with `?` exactly once, so the release is
+                // pre-flighted here first: a book that disagrees aborts with
+                // the order still live rather than half-completing the pair.
+                let order = core
+                    .ome
+                    .get(&core_id)
+                    .cloned()
+                    .expect("ghost order just observed live");
+                core.ensure_release_exact(&order)?;
+                core.ome.mark_terminal_with_evidence(
+                    &core_id,
+                    OrderStatus::ForceClosed,
+                    crate::model::TerminalEvidenceSource::ReconciledGhost,
+                    snap.now_ms,
+                )?;
                 report.suspect_ghost_ids.push(core_id.clone());
                 report.actions.push(ReconcileAction::MarkedForceClosed {
                     core_order_id: core_id,

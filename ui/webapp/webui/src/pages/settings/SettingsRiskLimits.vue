@@ -16,6 +16,7 @@ import { RefreshCw, Save, ShieldCheck } from 'lucide-vue-next'
 import {
   type RiskBound, type RiskLimitsDoc,
 } from '@/api/client'
+import { finiteNumber } from '@/lib/format'
 import { useRiskLimitsStore } from '@/stores/risk-limits'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
@@ -154,13 +155,18 @@ const EXIT_ROW_DEFS: ExitRowDef[] = [
 ]
 const EXIT_FIELDS = new Set(EXIT_ROW_DEFS.filter((r) => !r.excluded).map((r) => r.field))
 
+function exitPctText(v: unknown): string {
+  const n = finiteNumber(v)
+  return n === null ? '—' : `${n}%`
+}
+
 /** 退出纪律行的当前值文本（单位随行）：输入框的参照。 */
 function exitCurrentText(field: string): string {
   const e = riskDoc.value?.exit
   if (!e) return '—'
-  if (field === 'stopLossPct') return `%（当前 ${e.stopLossPct}%）`
-  if (field === 'takeProfitPct') return `%（当前 ${e.takeProfitPct}%）`
-  if (field === 'holderStopPct') return `%（持有到期策略生效 ${e.holderStopPct ?? '—'}%；通用 12% 不绑它们）`
+  if (field === 'stopLossPct') return `%（当前 ${exitPctText(e.stopLossPct)}）`
+  if (field === 'takeProfitPct') return `%（当前 ${exitPctText(e.takeProfitPct)}）`
+  if (field === 'holderStopPct') return `%（持有到期策略生效 ${exitPctText(e.holderStopPct)}；通用 12% 不绑它们）`
   return `秒（当前 ${e.forceExitSec}s${Number(e.forceExitSec) === 0 ? '，关闭' : ''}）`
 }
 function exitPlaceholder(field: string): string {

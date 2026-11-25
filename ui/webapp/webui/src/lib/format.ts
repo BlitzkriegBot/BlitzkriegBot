@@ -68,21 +68,22 @@ export function winRateValue(raw: unknown, wins: number, losses: number): number
 }
 
 export function pct(v: unknown, digits = 1, fallback = '—'): string {
-  const n = Number(v)
-  if (!Number.isFinite(n)) return fallback
+  const n = finiteNumber(v)
+  if (n === null) return fallback
   return `${n.toFixed(digits)}%`
 }
 
 export function signedPct(v: unknown, digits = 1, fallback = '—'): string {
-  const n = Number(v)
-  if (!Number.isFinite(n)) return fallback
+  const n = finiteNumber(v)
+  if (n === null) return fallback
   const sign = n > 0 ? '+' : n < 0 ? '−' : ''
   return `${sign}${Math.abs(n).toFixed(digits)}%`
 }
 
-/** Finite number or null. Empty string, NaN, and Infinity are not prices. */
+/** Finite number or null. Empty string, booleans, NaN, and Infinity are not numbers. */
 export function finiteNumber(v: unknown): number | null {
-  if (v === undefined || v === null || v === '') return null
+  if (v === undefined || v === null || typeof v === 'boolean') return null
+  if (typeof v === 'string' && v.trim() === '') return null
   const n = Number(v)
   return Number.isFinite(n) ? n : null
 }

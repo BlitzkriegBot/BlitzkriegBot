@@ -39,7 +39,7 @@ pub(crate) async fn handle_strategy(
                     // `enabled` 口径（issue 552 审计）：这是 master-power 位
                     // —— 默认 scope 的全局开关，**不是** (账户,策略) 复合键
                     // 的真值。复合真值在 `accounts`（有 scope = 该账户的启
-                    // 用集点名了它）∪ operator `.env` 启用集；面板的策略页启
+                    // 用集点名了它）∪ store 的 `strategy_assignments` 启用集；面板的策略页启
                     // 用按钮按「账户+策略」读写（feature-detect），不直接
                     // 消费这个位。is_on 只在单账户/老面板降级面上近似正确。
                     let accounts = c
@@ -121,22 +121,15 @@ pub(crate) async fn handle_strategy(
                 // (`accounts_config_path.exists()`). #920 retired that file
                 // to make .env the single config source, which flipped this
                 // gate to permanently false: the engine flag still moved, but
-                // the .env half of the write was silently skipped and every
+                // the durable half of the write was silently skipped and every
                 // default-account toggle died at the next boot (issue 925).
-                // The honest gate now is the persistence-axes check the
-                // service layer itself performs: a configured accounts path
-                // (the book's durable home) admits the write, and a None —
-                // replays and in-process tests, per backtest.rs's None-ing —
-                // keeps the legacy engine-only success. The durable face of
-                // that write is SQLite (`account_settings.strategies`); the
-                // env grammar is read-only and never written (#1199). The
-                // legacy-exists refusal stays fail-closed inside
-                // `set_scoped_strategy_enabled` →
-                // `refuse_while_legacy_toml` (book.rs), so a write that would
-                // be dead data still errors instead of lying quiet. #1199:
-                // the check is the store handle's presence (the same
-                // per-call resolution the writers made, decided once at
-                // assembly).
+                // The honest gate now is the store handle's presence —
+                // `account_writes_enabled()` on the wired store (#1199): the
+                // durable face of that write is SQLite
+                // (`account_settings.strategies`); the env grammar is
+                // read-only and never written (#1199). A core without a store
+                // (replays and in-process tests, per backtest.rs's None-ing)
+                // keeps the legacy engine-only success.
                 let mirror_persistence = core
                     .lock()
                     .await

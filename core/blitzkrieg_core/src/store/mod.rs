@@ -61,6 +61,11 @@ pub trait StoreApi: Debug + Send + Sync {
 
     /// The account↔venue binding write (`account.venue.set`); an empty
     /// `venue` unbinds. Refuses while the legacy accounts toml exists.
+    ///
+    /// #225 conflict resolution: the incoming branch still carried a default
+    /// body here; #180 (now on main) deleted every default body on purpose —
+    /// a backend that forgets a write must fail to COMPILE rather than
+    /// degrade at runtime. HEAD wins; only #225's doc detail is kept.
     fn save_account_venue(&self, account_id: &str, venue: &str) -> Result<(), CoreError>;
 
     /// `account.create`: append the id with its display name, optional
@@ -77,6 +82,9 @@ pub trait StoreApi: Debug + Send + Sync {
     /// `account.remove`: drop the id and sweep every row it owns. Refuses
     /// an unknown id, an emptying removal, or a legacy-toml presence; the
     /// display pointer is re-derived when it named the removed id.
+    ///
+    /// #225 conflict resolution: same reason as `save_account_venue` above —
+    /// #180 removed the default body; HEAD wins, doc detail kept.
     fn remove_account(&self, account_id: &str) -> Result<(), CoreError>;
 
     /// The trading-switch write (`account.trading.set`). `true` clears the
@@ -166,9 +174,10 @@ pub trait StoreApi: Debug + Send + Sync {
 
     /// `execution_policy.set/.reset` for one account: the section's whole
     /// footprint (field → value, `None` = swept) as one sweep-then-write.
-    /// Refuses while the legacy policy toml exists (the kernel's own
-    /// bootstrap template is swept instead — the one exception the old
-    /// write face owned). Returns the footprint for the reload snapshot.
+    /// A reset with no POLICY_* row for the account is refused by name (no
+    /// section to revoke); a residual legacy policy toml is dead data the
+    /// handler WARNS about, not a store-level gate (#1199). Returns the
+    /// footprint for the reload snapshot.
     fn save_policy_section(
         &self,
         account_id: &str,

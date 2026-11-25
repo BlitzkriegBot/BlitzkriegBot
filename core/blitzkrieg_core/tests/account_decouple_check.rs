@@ -112,9 +112,9 @@ fn accounts_toml_path(name: &str, paper_strategies: Option<&[&str]>) -> PathBuf 
     // Env-single-source migration (issue 751): the book lives in ACCOUNT_* env
     // keys, so the fixture writes ONLY the per-test `.env` (same unique stem as
     // the nominal toml path — cargo runs tests in parallel, a shared `.env`
-    // would cross-contaminate). The toml path itself stays UNWRITTEN: the env
-    // write face refuses while any legacy toml exists (one-source gate), and
-    // the single-source loader takes the env book with no toml residue.
+    // would cross-contaminate). The toml path itself stays UNWRITTEN: no
+    // production writer consults it (the persist half is the SQLite store),
+    // and the single-source loader takes the env book with no toml residue.
     let path = scratch_dir().join(format!("accounts-{name}-{}.toml", std::process::id()));
     let env_path = path.with_extension("env");
     let mut env = String::from("ACCOUNT_LIST=default,paper\n");

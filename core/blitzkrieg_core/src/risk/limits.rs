@@ -149,7 +149,8 @@ pub struct AccountRiskLimits {
     pub cooldown_minutes: Bound,
     /// Per-order notional cap (USD) for THIS account — folds the old
     /// process-level `--max-order-notional` CLI flag into the account-level
-    /// systemic matrix so it persists to `.env`, hot-loads without restart,
+    /// systemic matrix so it persists to the SQLite `account_risk` row,
+    /// hot-loads without restart,
     /// and is judged per-account rather than process-wide (issue #983).
     pub max_order_notional_usd: Bound,
 }

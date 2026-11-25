@@ -709,8 +709,8 @@ impl AccountLedgers {
 
     /// Replace ONE account's round-family declaration (轮次多族) in memory.
     /// The durable half is the caller's job (B2's `account.rounds.set`
-    /// persists into the operator's `.env` beside this write — the venue.set
-    /// transaction posture). Unknown ids refuse (the book never mints an
+    /// persists to the SQLite `accounts.rounds_json` column beside this write
+    /// — the venue.set transaction posture). Unknown ids refuse (the book never mints an
     /// implicit account). The value arrives parse-validated and
     /// deduplicated; the set path re-checks the plugins' DECLARED union
     /// (`allowed` — the registry union the Core threads through) so an IPC
@@ -779,8 +779,8 @@ impl AccountLedgers {
     /// Forward-looking: this field is the input face of the next batch's
     /// plugin-ENABLEMENT derivation (boot reads the account book and enables
     /// every venue at least one account is bound to), so both arms of the
-    /// write — this in-memory one and the `.env` persist beside it —
-    /// must stay exactly correct.
+    /// write — this in-memory one and the SQLite `accounts.venue` persist
+    /// beside it (`set_account_venue_persisting`) — must stay exactly correct.
     pub fn set_venue(&mut self, id: &AccountId, venue: &str, now_ms: i64) -> CoreResult<()> {
         {
             let account = self
@@ -950,11 +950,11 @@ impl AccountLedgers {
     /// The retirement half of `account.remove`: drop the account AND its
     /// ledger. Every id is removable here — `default` included (the runtime
     /// keeps at least ONE account via the caller's last-account refusal; the
-    /// zero-config fallback re-derives on the next boot when the file lacks
-    /// the row). An unknown id is the standard refusal; removing the ACTIVE
-    /// account is legal at this layer — the caller repairs the active cell
-    /// beside it (the session switchers resolve against the book on their
-    /// next read).
+    /// zero-config fallback re-derives on the next boot when the store's
+    /// rows lack it). An unknown id is the standard refusal; removing the
+    /// ACTIVE account is legal at this layer — the caller repairs the active
+    /// cell beside it (the session switchers resolve against the book on
+    /// their next read).
     pub fn remove(&mut self, id: &AccountId) -> CoreResult<()> {
         if self.accounts.remove(id).is_none() {
             return Err(unknown_account(id));
@@ -987,11 +987,12 @@ impl AccountLedgers {
 
     /// The display pointer's removal companion: when the removed account is
     /// the one being displayed, re-derive the pointer the boot loader's own
-    /// order (first `active` entry, else lowest id — the file can no longer
-    /// answer, so memory spells the same default the next boot would read).
-    /// The PERSISTED file is the CALLER's concern: the service layer rewrites
-    /// the top-level `display_account` key beside the removal so the next
-    /// boot never reads a dangling id (which the loader refuses, fail-closed).
+    /// order (first `active` entry, else lowest id — the live book can no
+    /// longer answer, so memory spells the same default the next boot would
+    /// read). The DURABLE cell is the CALLER's concern: the `kernel_meta`
+    /// `display_account` row may still name the removed id, and the boot
+    /// loader filters a dangling pointer back to `active` (fail-closed), so
+    /// no write-back is needed here.
     pub fn repair_display_after_removal(&mut self, removed: &AccountId) {
         if self.display == *removed && !self.accounts.contains_key(&self.display) {
             self.display = self

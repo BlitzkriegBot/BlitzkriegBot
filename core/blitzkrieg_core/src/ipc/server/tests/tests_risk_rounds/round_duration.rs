@@ -12,16 +12,18 @@ use tokio::sync::Mutex as AsyncMutex;
 
 /// 轮次时间周期可设置（`round_duration.get`/`round_duration.set`）的
 /// wire 合同：readout 回答「本会话生效值 + 来源 + 白名单 + 下次会话将
-/// 解析到什么」；写路径把白名单内的值落进持久格（`nextSessionSec`
-/// 如实回报）、格内容用独立加载器读回验证（原子写 + 重启读回同一路
-/// 径）、白名单外的值拒绝且格不动、`reset` 清格、两者都给拒绝、无
-/// runtime_config_path 的 core 拒绝写（回测/进程内测试不落盘）。
+/// 解析到什么」；写路径把白名单内的值落进 SQLite `account_settings` 的
+/// `round.duration_sec` 格（`nextSessionSec` 如实回报；无 store 的内核
+/// 只在本会话生效）、白名单外的值拒绝且格不动、`reset` 清格、两者都给
+/// 拒绝、无 store 的 core（回测/进程内测试）只在本会话生效。
 /// **next_session 语义** 由构造保证（写路径只碰持久格），测试同时钉住
 /// 本会话的 `round_duration_sec` 一个字节不动。
 #[tokio::test]
 async fn round_duration_set_writes_the_cell_and_get_reads_it_back() {
     // Per-account round duration: `round_duration.set` now names an account
-    // and writes `ACCOUNT_<ID>_ROUND_DURATION_SEC` to `.env`. The readout
+    // and lands the value in the SQLite `account_settings` cell
+    // (`round.duration_sec`; the `.env` spelling is only the first-import
+    // read side since 操作者裁决 2026-11-14). The readout
     // reports `perAccount` plus the default effective duration.
     let dir = std::env::temp_dir().join(format!("bk-round-dur-wire-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

@@ -114,13 +114,13 @@ pub fn render_html_full(
             st.books, st.signals, st.place_rejected, st.confirmed.len()
         ));
     }
-    // Net PnL — ledger口径 (balance − seed)。seed 缺失时显示 "—"，source 透出。
+    // Net PnL — ledger口径 (balance − opening_equity)。opening_equity 缺失时显示 "—"，source 透出。
     let (net_class, net_big, net_sub) = match s.net_pnl() {
         Some(net) => (
             if net >= 0.0 { "pos" } else { "neg" },
             money(net),
             format!(
-                "{} trades · {:.0}% WR · ledger (balance − seed)",
+                "{} trades · {:.0}% WR · ledger (balance − opening_equity)",
                 s.trades.len(),
                 s.win_rate()
             ),

@@ -284,21 +284,36 @@ pub(super) fn arb_name_branch_warn_once(strategy: &str) {
 }
 
 /// #1165 (L6 契约)：the declared-but-NOT-accepted warn, rate-limited to the
-/// verdict — one line per strategy per DISTINCT reason CHANGE. `strategy_stats`
-/// is a read path re-built every cycle (and from several readouts per cycle);
-/// the same missing-leg verdict must not re-print per cycle (live: 4+ WARN
-/// lines per cycle). The memo keeps the LAST warned reason: a repeat of the
-/// current verdict is silence, a CHANGED verdict prints once (the operator is
-/// told on first sight and on every actual flip — #1164 acceptance: 首次 +
-/// 状态变化各一条).
-pub(super) fn arb_declared_unaccepted_warn_on_change(strategy: &str, reason: &str) {
-    static LAST: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
-        std::sync::OnceLock::new();
+/// verdict — one line per (ACCOUNT, strategy) per DISTINCT reason CHANGE.
+/// `strategy_stats` is a read path re-built every cycle (and from several
+/// readouts per cycle); the same missing-leg verdict must not re-print per
+/// cycle (live: 4+ WARN lines per cycle). The memo keeps the LAST warned
+/// reason per (account, strategy) cell: a repeat of the current verdict is
+/// silence, a CHANGED verdict prints once (the operator is told on first
+/// sight and on every actual flip — #1164 acceptance: 首次 + 状态变化各一条).
+///
+/// #189: the ACCOUNT dimension is real, not decoration — one package name
+/// runs as independent per-account scopes (own Lua state, own book, own
+/// account), so two accounts can hold different verdicts for the same
+/// strategy at the same time. A name-only memo let account A's warned reason
+/// suppress account B's DIFFERENT verdict (or its first-sight line entirely)
+/// — the operator then read "only account A is unhappy". The pair
+/// `(AccountId, strategy)` preserves the same-account dedup byte-for-byte:
+/// one account repeating its own verdict still prints once.
+pub(super) fn arb_declared_unaccepted_warn_on_change(
+    account: &crate::account::AccountId,
+    strategy: &str,
+    reason: &str,
+) {
+    type Memo = std::sync::Mutex<std::collections::HashMap<(String, String), String>>;
+    static LAST: std::sync::OnceLock<Memo> = std::sync::OnceLock::new();
     let map = LAST.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     if let Ok(mut m) = map.lock() {
-        let fresh = m.get(strategy).map(|r| r != reason).unwrap_or(true);
+        let key = (account.as_str().to_string(), strategy.to_string());
+        let fresh = m.get(&key).map(|r| r != reason).unwrap_or(true);
         if fresh {
             tracing::warn!(
+                account = account.as_str(),
                 strategy = strategy,
                 reason = reason,
                 "consumes_pair_book_stats declared but NOT accepted — the arb* face \
@@ -306,7 +321,7 @@ pub(super) fn arb_declared_unaccepted_warn_on_change(strategy: &str, reason: &st
                  entirely; a pair consumer must also declare atomic_batch and hold at \
                  least one live PairBook entry"
             );
-            m.insert(strategy.to_string(), reason.to_string());
+            m.insert(key, reason.to_string());
         }
     }
 }

@@ -27,9 +27,9 @@ impl Core {
     /// 止损，`takeProfitPct: 0` 语义同样荒谬 —— 负数/零不是操作员想要的
     /// 「关闭」，是笔误）。强平接受 `0`、拒绝负数。
     ///
-    /// 持久化走 store seam，载体由装配决定（issue #966/#965，#1199 PR-2）：
-    /// DB 开库（默认）时改动先落 SQLite 的 account_exit_policy 行；env-only
-    /// 后端时 `BK_EXIT_*` 键 upsert 进 `.env`。重启后按同一载体重新解析出
+    /// 持久化走 store seam（issue #966/#965，#1199 PR-2）：改动先落 SQLite 的
+    /// account_exit_policy 行（`StoreApi::save_exit`，唯一后端——操作者裁决
+    /// 2026-11-14 后 env-only 后端已删除）。重启后从同一行重新解析出
     /// 同样的值。这里只做内存热写，回执里的 `persisted` 由写路径
     /// 用真实落盘结果覆写（并给出 persistence=store|none）。
     pub fn apply_exit_set(

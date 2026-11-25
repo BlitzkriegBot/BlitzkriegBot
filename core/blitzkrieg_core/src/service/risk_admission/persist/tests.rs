@@ -80,10 +80,10 @@ fn core_with(path: &Path, ids: &[&str]) -> crate::service::Core {
 
 /// (a) The #854 finding, fixed: a hot `risk.setLimits` write lands in the
 /// risk-state file, and a rebuilt core (the kill -9 drill) judges orders by
-/// the SAME caps. The SYSTEMIC bounds are NOT on this file any more (issue
-/// #965): their durable carrier is `.env` (BK_RISK_* keys, the IPC write
-/// face's upsert — round-trip proven in the ipc tests), and the apply here
-/// reports the honest `persisted: false` for that carrier-less core.
+/// the SAME caps. The SYSTEMIC bounds are NOT on this file any more: their
+/// durable carrier is the SQLite `account_risk` row (`StoreApi::save_risk_bounds`
+/// — the only backend since #1199, the env-only backend was deleted), and
+/// this carrier-less core reports the honest `persisted: false` for them.
 #[test]
 fn hot_limits_and_systemic_bounds_recover_across_a_rebuild() {
     let root = TempRoot::new("roundtrip");

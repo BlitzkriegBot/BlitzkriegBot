@@ -33,6 +33,8 @@ mod engine_cycle;
 mod extensions;
 mod family_feed_sync;
 mod helpers;
+pub(crate) mod intent_gate;
+pub(crate) use intent_gate::IntentGate;
 mod persistence;
 mod pricing;
 mod risk_admission;
@@ -224,6 +226,13 @@ pub struct Core {
     shadow_evolution: ShadowEvolution,
     /// Closed-trade log (Node-compatible), when `trade_log_path` is set.
     trade_db: Option<crate::trade_db::TradeDb>,
+    /// Issue #185: the durable order-intent ledger (SQLite `order_intents`).
+    /// `None` = no store wired (backtester / most in-process tests): the
+    /// in-memory live-key dedup stays the only guard, and the boundary is
+    /// stated where it is read. When a store IS wired, the claim happens
+    /// BEFORE any reservation or OME registration, and a duplicate replays
+    /// the first submit's real outcome instead of placing again.
+    pub(crate) intent_ledger: Option<crate::db::intents::IntentLedger>,
     /// Durable order log, when `order_log_path` is set. Orders are restored from
     /// it at startup so a restart never forgets resting orders (orphan guard).
     order_db: Option<crate::order_db::OrderDb>,
@@ -880,6 +889,7 @@ mod tests {
     mod ghost_cash_move_tests;
     mod ghost_fill_tests;
     mod halt_scope_tests;
+    mod idempotency_tests;
     mod journal_cursor_tests;
     mod maker_rebate_tests;
     mod mode_snapshot_tests;

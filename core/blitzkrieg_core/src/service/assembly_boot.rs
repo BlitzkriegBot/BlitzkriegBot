@@ -819,7 +819,23 @@ impl Core {
                 }
             }
         });
+        // Issue #185: the intent ledger rides the SAME database as the rest of
+        // the durable state (one file, one single-writer discipline). With no
+        // store wired (backtester / in-process tests) it is `None` and the
+        // live-key dedup stays the only guard — that boundary is documented on
+        // the field and on `Core::intent_gate`.
+        //
+        // #226 conflict resolution: the incoming hunk also re-added
+        // `accounts.install_store(store.clone())`. That call predates
+        // #217/#219 — `AccountLedgers` no longer carries a `store` field (the
+        // solver-only `test_support::install_store` writes `Core::store`), and
+        // main assigns `store` directly in the struct literal below. Keeping
+        // it would not compile.
+        let intent_ledger = sqlite
+            .as_ref()
+            .map(|s| crate::db::intents::IntentLedger::new(s.risk_db().db().clone()));
         let mut core = Self {
+            intent_ledger,
             risk: RiskGate::new(config.risk.clone()),
             account_risk_db: None,
             store,

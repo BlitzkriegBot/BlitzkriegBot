@@ -572,28 +572,17 @@ impl MarketHost for CoreHost {
         let plugin = plugin.to_string();
         Box::pin(async move {
             let c = self.core.lock().await;
-            // #182: every publish below is a SYNCHRONOUS `try_send` control.
-            // Nothing in this guard scope may suspend — a suspend point here
-            // would hold the process-wide Core lock across a feed's channel
-            // write, serialising every account's reads behind it.
-            let configured = {
-                let plane = c.family_feed();
-                plane.venue_is_configured(&plugin)
-            };
-            let any_account = {
-                let plane = c.family_feed();
-                !plane.inspect().venues_with_accounts.is_empty()
-            };
-            if configured {
-                c.publish_family_feed_subscriptions(&plugin);
-            } else if any_account {
-                // A venue with no configured account must not keep a connection.
-                c.subscribe_feed_tokens(&plugin, Vec::new());
-                c.subscribe_placeholder_tokens(&plugin, Vec::new());
-            } else {
-                // Tests / hosts without the account plane: pass through.
-                c.subscribe_feed_tokens(&plugin, tokens);
-            }
+            // #182: every publish the entry makes is a SYNCHRONOUS `try_send`
+            // control. Nothing in this guard scope may suspend — a suspend
+            // point here would hold the process-wide Core lock across a
+            // feed's channel write, serialising every account's reads behind
+            // it.
+            //
+            // #183: the three-state routing (configured → union, other venue
+            // has an account → empty, no accounts anywhere → pass through) is
+            // `Core::republish_venue_subscription`'s — the ONE spelling. This
+            // host facade only adds the guard and the plugin-name ownership.
+            c.republish_venue_subscription(&plugin, tokens);
         })
     }
 

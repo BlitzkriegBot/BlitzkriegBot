@@ -155,7 +155,11 @@ async fn ensure_round_family_mounted(
         // publish is a pair of `try_send`s onto the feeds' control channels —
         // no suspend point may sit between acquiring the Core lock and
         // dropping it, or one venue's subscription write parks every account.
-        c.publish_family_feed_subscriptions(&venue);
+        //
+        // #183: the ONE write entry. The freshly mounted family may not be
+        // the venue's live one yet, so the empty batch is never the published
+        // set for a configured venue — the plane's union is.
+        c.republish_venue_subscription(&venue, Vec::new());
     }
 }
 

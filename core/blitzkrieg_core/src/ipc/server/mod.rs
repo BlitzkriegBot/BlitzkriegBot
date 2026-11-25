@@ -809,5 +809,19 @@ fn client_err(e: crate::model::CoreError) -> (i32, String, Option<ErrorData>) {
 /// ones, and the READONLY / version gates stay in [`handle_line`].
 mod handlers;
 
+/// Test seam (#183): the engine family handler, reachable from a theme test
+/// module outside `ipc::server` WITHOUT widening `handlers` itself. Widening
+/// the module would re-export every arm (and its private parameter types) at
+/// `pub(crate)`; this single function names only public types.
+#[cfg(test)]
+pub(crate) async fn engine_handler_for_tests(
+    method: &str,
+    core: &Arc<AsyncMutex<Core>>,
+    registry: &crate::market::registry::MarketPluginRegistry,
+    params: Value,
+) -> Result<Value, (i32, String, Option<ErrorData>)> {
+    handlers::engine::handle_engine(method, core, registry, params).await
+}
+
 #[cfg(test)]
 mod tests;

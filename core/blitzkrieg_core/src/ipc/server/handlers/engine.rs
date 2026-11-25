@@ -198,6 +198,19 @@ pub(crate) async fn handle_engine(
                 let core = core.clone();
                 async move {
                     let now = now_ms();
+                    // #183: the batch's tokens are NOT the subscription.
+                    // `set_tokens` is REPLACE, so subscribing this batch alone
+                    // evicts every sibling family on the same venue — the 5m
+                    // family's poll displaced the 15m family's and the next
+                    // 15m poll displaced it back. The batch's real job is to
+                    // land on the (venue, family) plane; the venue's ONE write
+                    // entry then publishes that plane's union (configured
+                    // venue) or the shared-account routing below — the exact
+                    // three shapes `CoreHost::subscribe_tokens` uses.
+                    //
+                    // Untagged rows (legacy corpus / Node bridge) keep
+                    // routing to the registry's active plugin — the
+                    // single-plugin shape.
                     let venue = p
                         .markets
                         .first()
@@ -210,6 +223,10 @@ pub(crate) async fn handle_engine(
                         .collect();
                     let mut c = core.lock().await;
                     if c.has_engine() {
+                        // The `RoundMarkets` arm calls
+                        // `note_family_feed_markets` on these same markets, so
+                        // the plane already holds this batch when the write
+                        // entry below reads the union.
                         c.engine_on_data(
                             crate::engine::DataEvent::RoundMarkets {
                                 markets: p.markets,
@@ -217,19 +234,24 @@ pub(crate) async fn handle_engine(
                             },
                             now,
                         );
+                    } else {
+                        // Hostless replay / a core that never enabled the
+                        // engine: nothing above touches the plane, so record
+                        // the batch here — the entry would otherwise publish
+                        // an EMPTY union for a configured venue. Same plane
+                        // write the engine path performs (venue-tagged rows
+                        // only; untagged legacy batches stay untracked).
+                        c.note_family_feed_markets(&p.markets, now);
                     }
-                    // P4: if Rust-native feeds are on, subscribe the round's tokens so
-                    // Node no longer pushes books for them. Multi-plugin data
-                    // plane: tokens route to the FEEDING venue's own control —
-                    // the tokens carry the venue tag, and untagged (legacy
-                    // corpus / Node bridge) lists fall back to the registry's
-                    // active plugin, the single-plugin behaviour.
                     let plugin = if venue.is_empty() {
                         registry.active().unwrap_or_default()
                     } else {
                         venue
                     };
-                    c.subscribe_feed_tokens(&plugin, tokens);
+                    // No `.await` from the lock to the end of this scope
+                    // (#182): the entry and every publisher it calls are
+                    // synchronous `try_send`s.
+                    c.republish_venue_subscription(&plugin, tokens);
                     Ok::<_, CoreError>(serde_json::json!({ "ok": true }))
                 }
             })

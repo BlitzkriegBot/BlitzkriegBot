@@ -653,6 +653,9 @@ fn manual_venue_close_reconciles_the_position() {
             ts_ms: 2_000,
             tx_hash: None,
             maker: Some(false),
+            // #175: the venue row states the account whose cash moved; this
+            // fixture's book is the default one.
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: 3_000,
     };
@@ -688,6 +691,8 @@ fn manual_venue_close_reconciles_the_position() {
             ts_ms: 2_000,
             tx_hash: None,
             maker: Some(false),
+            // #175: replay of the same venue row, same account.
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: 4_000,
     };

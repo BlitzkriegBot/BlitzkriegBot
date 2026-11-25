@@ -481,6 +481,10 @@ async fn sweep(
                     ts_ms: o.timestamp.unwrap_or_else(now_ms),
                     tx_hash: None,
                     maker: None,
+                    // #175: this snapshot is per-executor (one account's
+                    // credentials) but the wire row does not name it; the
+                    // kernel binds it via the venue's cash owner or parks it.
+                    account: None,
                 });
             }
         }

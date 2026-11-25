@@ -139,6 +139,10 @@ pub(crate) async fn handle_order(
                                 ts_ms: t.ts_ms,
                                 tx_hash: None,
                                 maker: t.maker,
+                                // #175: passed through verbatim. `None` (the
+                                // caller could not prove the owner) parks the
+                                // trade — the core never fills this blank in.
+                                account: t.account,
                             })
                             .collect(),
                         now_ms: now_ms(),

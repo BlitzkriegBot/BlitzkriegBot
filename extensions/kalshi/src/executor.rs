@@ -150,6 +150,9 @@ fn to_venue_trade(fill: &crate::rest::KalshiFill) -> Option<VenueTradeInfo> {
         ts_ms: created_to_ms(&fill.created_time),
         tx_hash: None,
         maker: None,
+        // #175: the fill row cannot name an account; the kernel attributes it
+        // by the venue's cash owner or parks it for reconciliation.
+        account: None,
     })
 }
 

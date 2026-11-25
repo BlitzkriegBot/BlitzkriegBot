@@ -1038,6 +1038,19 @@ pub struct PositionManager {
     /// registration beat as `trailing_overrides` — a declaration is a policy
     /// fact, not per-position state.
     holder_stop_overrides: std::collections::HashMap<String, Decimal>,
+    /// #175: venue fills the core REFUSED to attribute (no account, or an
+    /// ambiguous/unmatched position). These are not positions and not realized
+    /// PnL — they are the honest "we do not know whose money this was" ledger.
+    /// They surface through [`Self::unverified_exposure_report`] as their own
+    /// section, never merged into the closed-position entries: an unbooked
+    /// fill must stay visible, not quietly disappear into a default book.
+    ///
+    /// Process-lifetime: the durable record is the `unattributed_fill` audit
+    /// row written when the row is first parked (see
+    /// `service::accounts::reconcile::report_parked_fills`). Dedupe is by
+    /// (venue, trade id), so a re-delivered trade neither duplicates the row
+    /// nor re-alerts.
+    parked_fills: Vec<crate::reconcile::UnattributedFill>,
 }
 
 fn cooldown_key(asset: &str, direction: SignalDirection) -> String {
@@ -1114,6 +1127,7 @@ impl PositionManager {
             ladder_stop_floor: Default::default(),
             trailing_overrides: Default::default(),
             holder_stop_overrides: Default::default(),
+            parked_fills: Vec::new(),
         }
     }
 
@@ -1299,13 +1313,59 @@ impl PositionManager {
         } else {
             Decimal::ZERO
         };
+        // #175: unattributed venue fills ride the same report under their own
+        // key. They are NOT positions (nothing was booked), so they get no
+        // entry in `entries` and no share of the positions' percentages — a
+        // parked fill is unknown cash, not inventory. `notional_usd` is the
+        // venue's own size × price (the amount whose owner is unknown).
+        let parked: Vec<UnattributedExposureEntry> = self
+            .parked_fills
+            .iter()
+            .map(|p| UnattributedExposureEntry {
+                venue: p.venue.clone(),
+                venue_order_id: p.venue_order_id.clone(),
+                trade_id: p.trade_id.clone(),
+                token_id: p.token_id.clone(),
+                account_id: p.account.clone(),
+                side: p.side,
+                shares: p.size,
+                price: p.price,
+                notional_usd: p.price * p.size,
+                ts_ms: p.ts_ms,
+                reason: p.reason.as_str().to_string(),
+            })
+            .collect();
+        let parked_total_notional_usd = parked.iter().map(|p| p.notional_usd).sum();
         UnverifiedExposureReport {
             entries,
             total_positions,
             total_shares,
             total_cost_usd,
             total_percentage_of_closed_cost,
+            parked,
+            parked_total_notional_usd,
         }
+    }
+
+    /// #175: record a venue fill the fold REFUSED to attribute. Deduped by
+    /// (venue, trade id) so the same trade re-delivered by a later sweep does
+    /// not duplicate the row (the fold's watermark already stops re-alerting;
+    /// this keeps the report a set, not a log). Returns `true` when the row was
+    /// new.
+    pub fn park_unattributed_fill(&mut self, fill: crate::reconcile::UnattributedFill) -> bool {
+        let duplicate = self.parked_fills.iter().any(|p| {
+            p.venue == fill.venue && !p.trade_id.is_empty() && p.trade_id == fill.trade_id
+        });
+        if duplicate {
+            return false;
+        }
+        self.parked_fills.push(fill);
+        true
+    }
+
+    /// #175: the parked (unattributed) venue fills, in arrival order.
+    pub fn parked_fills(&self) -> &[crate::reconcile::UnattributedFill] {
+        &self.parked_fills
     }
 
     /// #987, issue 991: reconcile backfill — mark a fallback-closed position's
@@ -1440,6 +1500,47 @@ pub struct UnverifiedExposureReport {
     /// Sum of all entries' `cost_usd` as a percentage of the SUM of `cost_usd`
     /// across ALL closed positions — how much of the book sits unverified.
     pub total_percentage_of_closed_cost: rust_decimal::Decimal,
+    /// #175: venue fills the fold REFUSED to attribute (missing account, or an
+    /// ambiguous/unmatched position). Separate from `entries` on purpose: a
+    /// parked fill is not a position and books nothing — it is cash whose owner
+    /// is unknown. Additive field, `serde(default)` so pre-#175 payloads and
+    /// older panels keep loading.
+    #[serde(default)]
+    pub parked: Vec<UnattributedExposureEntry>,
+    /// #175: `Σ (size × price)` over `parked` — the venue notional whose owner
+    /// is unknown. Never part of `total_cost_usd`; summing them would present
+    /// unknown money as book exposure. Aggregates keep Decimal's default
+    /// (string) serde, exactly like the pre-existing totals above.
+    #[serde(default)]
+    pub parked_total_notional_usd: rust_decimal::Decimal,
+}
+
+/// #175: one unattributed venue fill in the unverified exposure report. Every
+/// field is the venue's own claim, carried unchanged: nothing here is derived
+/// from a position, because no position could be proven to own it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnattributedExposureEntry {
+    pub venue: String,
+    pub venue_order_id: String,
+    pub trade_id: String,
+    pub token_id: String,
+    /// `None` = the venue row carried no account at all (`missing_account`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<crate::model::AccountId>,
+    pub side: crate::model::Side,
+    /// Venue-reported size and price, unclamped: the partial-fill clamp only
+    /// applies to fills the fold ATTRIBUTED.
+    #[serde(with = "crate::decimal")]
+    pub shares: rust_decimal::Decimal,
+    #[serde(with = "crate::decimal")]
+    pub price: rust_decimal::Decimal,
+    /// `shares × price` — the venue notional whose owner is unknown.
+    #[serde(with = "crate::decimal")]
+    pub notional_usd: rust_decimal::Decimal,
+    pub ts_ms: i64,
+    /// `missing_account` | `ambiguous_position` | `unknown_position`.
+    pub reason: String,
 }
 
 // SignalDirection::as_str lives on the shared type (strategy_logic::model) —

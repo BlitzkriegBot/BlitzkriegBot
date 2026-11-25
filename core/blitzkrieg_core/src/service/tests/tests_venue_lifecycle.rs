@@ -290,6 +290,8 @@ fn a_fill_absent_from_the_open_list_is_persisted_as_filled() {
             ts_ms: 1_761_500_000_000,
             tx_hash: None,
             maker: Some(false),
+            // #175: the trade names the book it moved (the order's own).
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: 3,
     };

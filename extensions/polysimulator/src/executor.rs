@@ -733,6 +733,9 @@ fn to_venue_trade(
         },
         tx_hash: row.transaction_hash.clone(),
         maker: Some(maker),
+        // #175: the row cannot name an account; attribution comes from the
+        // kernel's venue-cash-owner binding or the fill is parked.
+        account: None,
     })
 }
 
@@ -924,6 +927,9 @@ async fn sweep(
                 ts_ms,
                 tx_hash: None,
                 maker: fill_role(crossed),
+                // #175: the FILLED row does not name an account; the kernel
+                // attributes by the venue's cash owner or parks the fill.
+                account: None,
             });
         }
     }

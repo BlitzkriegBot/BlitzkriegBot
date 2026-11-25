@@ -408,6 +408,10 @@ fn reconcile_and_self_check_golden() {
             ts_ms: TS,
             tx_hash: None,
             maker: Some(true),
+            // #175: `None` (the row cannot name an account) is OMITTED from
+            // the wire — the golden bytes below stay untouched for plugins
+            // that cannot prove attribution.
+            account: None,
         }],
         now_ms: TS,
     };
@@ -418,6 +422,20 @@ fn reconcile_and_self_check_golden() {
             r#"{"openOrderIds":["ord-1"],"trades":[{"venueOrderId":"v-1","tradeId":"t-1","#,
             r#""tokenId":"tok-up","side":"buy","size":10.5,"price":0.55,"#,
             r#""tsMs":1000000000000,"txHash":null,"maker":true}],"nowMs":1000000000000}"#
+        ),
+    );
+
+    // #175: a row that CAN name its account carries it as a plain string, and
+    // the key is skipped (not nulled) when it cannot.
+    let mut attributed = snap.clone();
+    attributed.trades[0].account = Some(AccountId::from("paper"));
+    assert_round_trip(
+        &attributed,
+        concat!(
+            r#"{"openOrderIds":["ord-1"],"trades":[{"venueOrderId":"v-1","tradeId":"t-1","#,
+            r#""tokenId":"tok-up","side":"buy","size":10.5,"price":0.55,"#,
+            r#""tsMs":1000000000000,"txHash":null,"maker":true,"account":"paper"}],"#,
+            r#""nowMs":1000000000000}"#
         ),
     );
 

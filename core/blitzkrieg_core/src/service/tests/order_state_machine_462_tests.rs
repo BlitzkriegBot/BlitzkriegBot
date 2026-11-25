@@ -334,6 +334,10 @@ fn an_external_buy_from_a_timed_out_place_rebuilds_the_position() {
             ts_ms: now + 1,
             tx_hash: None,
             maker: Some(false),
+            // #175: a position is rebuilt in the ACCOUNT the venue names. The
+            // fixture drives the default book, so that is the account here —
+            // and it is now stated rather than assumed by the core.
+            account: Some(crate::model::default_account_id()),
         }],
         now_ms: now + 2,
     })

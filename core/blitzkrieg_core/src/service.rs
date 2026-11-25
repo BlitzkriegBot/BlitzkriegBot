@@ -878,6 +878,9 @@ mod tests {
     mod strategy_dispatch_tests;
     mod strategy_family_binding_tests;
     mod strategy_params_tests;
+    // #183: the subscription-union falsification suite (declared after
+    // `tests_subscription`, whose module doc carries the harness background).
+    mod subscription_union_tests;
     mod tests_account_reset;
     mod tests_place_fill;
     mod tests_reset_trading;

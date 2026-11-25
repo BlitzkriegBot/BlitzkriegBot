@@ -197,12 +197,15 @@ async fn concurrent_order_list_and_place_never_deadlock() {
     );
 }
 
-/// The half of #182 this branch closes: the feed-subscription publishers run
-/// inside the Core guard scope (`handlers/engine.rs`, `handlers/round.rs`,
-/// `market/host.rs::subscribe_tokens`), so they must not need a suspend point.
+/// The half of #182 this branch closes: the feed-subscription write entry
+/// runs inside the Core guard scope (`handlers/engine.rs`,
+/// `handlers/round.rs`, `market/host.rs::subscribe_tokens`), so it must not
+/// need a suspend point.
 ///
-/// They are invoked WITHOUT `.await` while the guard is alive: making any of
-/// them `async fn` again breaks this file at COMPILE time, which is the point.
+/// It is invoked WITHOUT `.await` while the guard is alive: making it
+/// `async fn` again breaks this file at COMPILE time, which is the point.
+/// #183 narrowed the surface this file can reach — the raw publishers are
+/// `pub(crate)` (one venue, one write entry), so the pin names that entry.
 #[tokio::test]
 async fn feed_subscription_publishes_are_synchronous_under_the_guard() {
     let core = two_account_core();
@@ -210,9 +213,7 @@ async fn feed_subscription_publishes_are_synchronous_under_the_guard() {
     {
         let guard = core.lock().await;
         // No `.await` from here to the end of the block — that is the pin.
-        guard.subscribe_feed_tokens("unknown-venue", vec!["t1".into()]);
-        guard.subscribe_placeholder_tokens("unknown-venue", Vec::new());
-        guard.publish_family_feed_subscriptions("unknown-venue");
+        guard.republish_venue_subscription("unknown-venue", vec!["t1".into()]);
     }
 
     // The guard they ran under is still healthy (no poison, no lost write).

@@ -158,11 +158,11 @@ impl Core {
                 .unwrap_or(Decimal::ZERO),
         };
 
-        // 1) 停用目标账户 scopes 里的已启用策略（复用 strategy.enable 的
-        //    停用路径）。账户维裁决：只动该账户的 scopes —— 全局
-        //    `enabled_strategy_names` 会连其他账户的同名 scope 一起停。
-        //    store 的 `strategy_assignments` 启用集（持久真相）不写回：重置是运行时清洗
-        //    （会话级 OFF），不是授权变更，重启后启用集原样生效。
+        // 1) 撤销目标账户的策略授权（Gitea #285 方案 B 裁决）：重置 = 彻底归零停手，
+        //    同步停用该账户的引擎 scopes、将 SQLite `account_settings.strategies`
+        //    写为 `Some("[]")` 并清空内存账户簿；重启后同样保持全关，直到操作员显式
+        //    重新启用。账户维隔离：只动目标账户，其他账户的策略原样保留。
+        //    持久化写入必须 fail-closed（R7.1 L4）：写失败则整次重置报错，绝不静默吞错。
         let account_scopes: Vec<String> = self
             .engine
             .as_ref()
@@ -187,24 +187,36 @@ impl Core {
             names.dedup();
             names
         };
-        for name in &disabled {
-            self.set_strategy_enabled(name, false);
-        }
-        // Keep SQLite `account_settings.strategies` and the in-memory account
-        // book in lockstep with the engine disable above: otherwise a trading
-        // reset turns the engine scopes OFF while SQLite (and therefore WebUI
-        // Strategies.vue) still reports the strategies as enabled, causing a
-        // silent "looks ON in UI, never executes in kernel" divergence.
         if let Some(db) = self.account_risk_db.clone() {
-            let _ = db.save_setting(
+            db.save_setting(
                 account_id.as_str(),
                 crate::risk::account_store::STRATEGIES_SETTING,
                 Some("[]"),
-            );
+            )
+            .map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!(
+                        "system.reset_trading: failed to persist revoked strategies for account \
+                         \"{account_id}\": {e}"
+                    ),
+                )
+            })?;
         }
-        let _ = self
-            .accounts
-            .set_strategies(&account_id, Vec::new(), now_ms);
+        for name in &disabled {
+            self.set_strategy_enabled(name, false);
+        }
+        self.accounts
+            .set_strategies(&account_id, Vec::new(), now_ms)
+            .map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!(
+                        "system.reset_trading: failed to clear in-memory strategies for account \
+                         \"{account_id}\": {e}"
+                    ),
+                )
+            })?;
 
         // 2) 撤销目标账户的 resting 挂单。逐单走 `cancel` 释放 BUY 预留
         //    （在订单自己的账簿里，E28）、清 engine 的 pending-token 闩、记

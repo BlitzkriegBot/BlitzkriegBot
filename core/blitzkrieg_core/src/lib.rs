@@ -143,7 +143,12 @@ pub mod strategy_engine;
 pub mod strategy_state;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
-pub mod trade_db;
+pub mod trade;
+
+// The JSONL CARRIER (`trade_db`) is retired. Schema v4 made the closed-trade
+// ledger a SQL domain: `db::trades` is the carrier, `contracts::trades` the
+// frozen seam, and `trade` the surviving ROW SHAPE plus the export path
+// spelling. Nothing reads a trade from a file on the boot/query path any more.
 
 // The one runtime spelling of the build provenance (VERSIONING.md §3.4):
 // stamped by build.rs into blitzkrieg-build-info, re-exported here so every

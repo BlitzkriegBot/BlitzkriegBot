@@ -320,7 +320,7 @@ pub trait StoreWrite: Send + Sync {
     ) -> Result<WriteOutcome, StoreError>;
 }
 
-/// The carrier transaction handle.
+/// The carrier transaction handle — **re-exported** from the carrier layer.
 ///
 /// **Abolishes:** writes that each opened their own connection/transaction,
 /// which is why a two-part write (limits + strategies) could half-land.
@@ -328,21 +328,12 @@ pub trait StoreWrite: Send + Sync {
 /// unit of work.
 /// **Issue:** P0-6.
 ///
-/// Opaque on purpose — a definition-only module cannot describe the carrier's
-/// internals, and T4 owns that. The lifetime ties the handle to the borrow that
-/// produced it so a transaction cannot outlive its carrier borrow.
-///
-/// The field is private and there is deliberately **no constructor here**: T0
-/// cannot know how a carrier opens a transaction, and inventing a `new()` would
-/// be inventing an implementation. T4 adds the constructor together with the
-/// first real implementor, at which point this struct stops being a placeholder.
-#[derive(Debug)]
-pub struct StoreTx<'a> {
-    /// Marker for the carrier borrow. Private: T4 replaces this with the real
-    /// handle when it lands; keeping it private means no caller can depend on
-    /// a shape that is about to change.
-    _carrier: std::marker::PhantomData<&'a mut ()>,
-}
+/// The concrete type lives in [`crate::db::tx`], next to the first real
+/// implementor (`db::trades`), because this module's own anti-goal forbids
+/// `rusqlite` outside the store implementation. The re-export keeps the seam's
+/// spelling stable: every signature above still names `StoreTx`, and the type
+/// is the same one, so call sites did not move when the fields landed.
+pub use crate::db::tx::StoreTx;
 
 /// The full store seam: everything readable plus everything writable.
 ///

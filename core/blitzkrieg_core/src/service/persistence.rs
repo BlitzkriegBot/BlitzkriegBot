@@ -192,7 +192,29 @@ impl Core {
         // issue #942: the counter also clears the closed-trade history's own
         // max tail — the open log goes flat while the history keeps every
         // id ever issued, so the history is the surviving full memory.
-        let history_max = self.trade_db.as_ref().map(|t| t.max_hft_tail());
+        //
+        // An unreadable trade ledger must NOT read as "no history": that would
+        // reset the id counter to 1 and re-issue ids that already belong to
+        // closed trades (a duplicate identity in the book). The failure is
+        // loud, and re-issuing is what the operator sees, so it is reported.
+        let history_max = match self.trade_log.as_ref() {
+            Some(log) => {
+                use crate::contracts::trades::TradeRead;
+                match log.max_trade_id_tail() {
+                    Ok(tail) => tail,
+                    Err(e) => {
+                        tracing::error!(
+                            error = ?e,
+                            "closed-trade id history unreadable at boot — the id counter \
+                             restarts from the open book and may re-issue ids already in \
+                             the trade ledger; reconcile before trusting new ids"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
         if loaded.is_empty() && history_max.unwrap_or(0) == 0 {
             return 0;
         }

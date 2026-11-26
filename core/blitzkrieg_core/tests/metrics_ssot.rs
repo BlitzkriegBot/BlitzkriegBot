@@ -3,30 +3,38 @@
 //! 缺陷：同一个「胜率」在三个出口各有实现，且单位分叉（wire 上同时是
 //! 0–100 的百分数与 0–1 的小数）：
 //!
-//! 1. `trade_db::fold_into` → `TradeSummary.winRate`：百分数，flat 不进分母；
+//! 1. 成交账本的折叠（当年是 `trade_db::fold_into` → `TradeSummary.winRate`）：
+//!    百分数，flat 不进分母；
 //! 2. `reports::trade_summary`（无 db / per-account 折叠路径）：百分数，
 //!    flat 不进分母——但这是**第二份**实现，没有任何东西保证两边同步；
 //! 3. `backtest` 的 `TradeStats.winRatePct`：百分数，**flat 进分母**
 //!    （`trades.len()`）——同一批成交在这里报出的胜率比成交口径低。
 //!
 //! 修法：`metrics::Tally` 是唯一公式载体，三个出口都从它取数。本文件的断言
-//! 之所以能「证伪」，是因为它对**同一组 100 笔（含 40 笔平手）**分别走三个
+//! 之所以能「证伪」，是因为它对**同一组 100 笔（含 30 笔平手）**分别走三个
 //! 出口，要求三个出口的胜率**逐位相等**（`to_bits()`）。任何一处回头自己
 //! 实现公式、或把 flat 重新算进分母，这里立刻红。
 //!
-//! 编译门：本文件只用公开 API（`TradeDb` / `Core::trade_summary` /
-//! `TradeStats::of_trades`），不需要 `test-support` 特性——它是「操作者部署
+//! 出口 1 的载体自 schema v4 起是 SQL（`db::trades::TradeLog` 的聚合），
+//! 不再是内存里折叠一个 JSONL 文件；被钉住的东西没变：那仍是「账本自己
+//! 报出的胜率」，而出口 2 必须与它逐位一致。
+//!
+//! 编译门：本文件只用公开 API（`db::trades::TradeLog` / `Core::trade_summary`
+//! / `TradeStats::of_trades`），不需要 `test-support` 特性——它是「操作者部署
 //! 面」的口径断言，不是内部接缝的测试。
 
 use blitzkrieg_core::backtest::{TradeLine, TradeStats};
+use blitzkrieg_core::contracts::trades::{TradeRead, TradeScope};
+use blitzkrieg_core::db::Database;
+use blitzkrieg_core::db::trades::TradeLog;
 use blitzkrieg_core::metrics::{Outcome, Tally};
-use blitzkrieg_core::model::{ExitReason, OrderRole, SignalDirection};
+use blitzkrieg_core::model::{ExitReason, Mode, OrderRole, SignalDirection};
 use blitzkrieg_core::position::ClosedPosition;
 use blitzkrieg_core::service::{Core, CoreConfig};
-use blitzkrieg_core::trade_db::{TradeDb, TradeRecord};
+use blitzkrieg_core::trade::TradeRecord;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 100 笔的固定形状：40 胜 / 30 平 / 30 负。
@@ -55,10 +63,6 @@ fn tmp_dir(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     dir
-}
-
-fn join(dir: &Path, name: &str) -> String {
-    dir.join(name).to_string_lossy().to_string()
 }
 
 /// One closed position with a chosen net PnL. Everything else is fixed so the
@@ -159,31 +163,35 @@ fn tally_win_rate_is_none_when_nothing_was_decided() {
 #[test]
 fn three_exits_report_the_same_win_rate_bit_for_bit() {
     let dir = tmp_dir("three-exits");
-    let trade_path = dir.join("trades.jsonl");
+    let db_path = dir.join("store.sqlite");
 
-    // 出口 1：trade_db 落盘 + 折叠（真实写 JSONL + summary.json 的路径）。
+    // 出口 1：账本落库 + SQL 聚合（schema v4 起的真实路径：`trades` 表，
+    // 一次 `trade_totals` 求全部腿）。载体从 JSONL 换成 SQL，被钉住的
+    // 东西没变——这仍是「账本自己报出的胜率」。
     let corpus = corpus();
-    let mut db = TradeDb::new(&trade_path);
-    for (i, c) in corpus.iter().enumerate() {
-        db.record(&TradeRecord::from_closed(c), 1_000 + i as i64);
+    let log = TradeLog::new(Database::open(&db_path).expect("store opens"), Mode::Dry);
+    for c in corpus.iter() {
+        log.append(&TradeRecord::from_closed(c)).expect("row lands");
     }
-    let db_summary = db.summary().clone();
+    let totals = log
+        .trade_totals(TradeScope::AllAccounts)
+        .expect("the book aggregates");
     assert_eq!(
-        db_summary.total_trades, 100,
+        totals.total_trades, 100,
         "100 笔全部进总数（每一笔都是已平仓成交）"
     );
     assert_eq!(
-        (db_summary.wins, db_summary.flat, db_summary.losses),
-        (WINS as u64, FLATS as u64, LOSSES as u64),
+        (totals.tally.wins, totals.tally.flats, totals.tally.losses),
+        (WINS as u32, FLATS as u32, LOSSES as u32),
         "胜负平三桶按净利符号划分"
     );
-    let from_trade_db = db_summary.win_rate;
+    let from_trade_db = totals.tally.win_rate().expect("70 笔已决");
 
-    // 出口 2：`Core::trade_summary(None)` —— 挂同一个 trade_log_path 的内核
-    // 应答的 `trades.summary` payload。它走 trade-db 分支（同一份 summary），
-    // 所以这一步同时钉住「wire 值与持久化值同源」。
+    // 出口 2：`Core::trade_summary(None)` —— 挂同一个 store 的内核应答的
+    // `trades.summary` payload。它走同一条 SQL 聚合，所以这一步同时钉住
+    // 「wire 值与持久化值同源」。
     let core = Core::new(CoreConfig {
-        trade_log_path: Some(join(&dir, "trades.jsonl")),
+        db_path: Some(db_path.clone()),
         order_log_path: None,
         position_log_path: None,
         ..CoreConfig::default()
@@ -193,7 +201,7 @@ fn three_exits_report_the_same_win_rate_bit_for_bit() {
     assert_eq!(
         wire["totalTrades"].as_u64(),
         Some(100),
-        "wire 的 totalTrades 与 db.summary 同源"
+        "wire 的 totalTrades 与账本聚合同源"
     );
 
     // 出口 2b：per-account 折叠路径（`recent_trades(0)` 全史重折）。这是
@@ -290,20 +298,44 @@ fn all_flat_corpus_is_unknown_zero_on_every_exit_not_a_loss_rate() {
     let dir = tmp_dir("all-flat");
     let corpus = vec![closed_with_net("flat-1", Decimal::ZERO)];
 
-    let mut db = TradeDb::new(dir.join("trades.jsonl"));
+    let log = TradeLog::new(
+        Database::open(dir.join("store.sqlite")).expect("store opens"),
+        Mode::Dry,
+    );
     for c in &corpus {
-        db.record(&TradeRecord::from_closed(c), 1);
+        log.append(&TradeRecord::from_closed(c)).expect("row lands");
     }
-    let s = db.summary().clone();
-    assert_eq!((s.wins, s.losses, s.flat), (0, 0, 1));
+    let totals = log
+        .trade_totals(TradeScope::AllAccounts)
+        .expect("the book aggregates");
     assert_eq!(
-        s.win_rate, 0.0,
-        "TradeSummary.win_rate 是非可选字段：无已决笔时用 0.0，且(0,0)可在旁区分"
+        (totals.tally.wins, totals.tally.losses, totals.tally.flats),
+        (0, 0, 1)
     );
     assert_eq!(
-        Tally::win_rate_of(s.wins, s.losses),
+        totals.tally.win_rate(),
         None,
-        "公式层保留「未知」——0.0 只是 wire 形状的拼写"
+        "公式层保留「未知」——wire 上的 0.0 只是形状的拼写"
+    );
+    // The wire spelling itself, through the same adapter the panel reads.
+    let core = Core::new(CoreConfig {
+        db_path: Some(dir.join("store.sqlite")),
+        order_log_path: None,
+        position_log_path: None,
+        ..CoreConfig::default()
+    });
+    let wire = core.trade_summary(None);
+    assert_eq!(
+        wire["winRate"].as_f64(),
+        Some(0.0),
+        "trades.summary 的 winRate 是非可选字段：无已决笔时用 0.0，且(0,0)可在旁区分"
+    );
+    assert_eq!(wire["totalTrades"].as_u64(), Some(1), "平手仍计入总数");
+    assert_eq!(wire["flat"].as_u64(), Some(1));
+    assert_eq!(
+        Tally::win_rate_of(totals.tally.wins.into(), totals.tally.losses.into()),
+        None,
+        "公式层保留「未知」"
     );
 
     let lines: Vec<TradeLine> = corpus
@@ -370,13 +402,15 @@ fn outcome_uses_decimal_exactness_not_float_rounding() {
 #[test]
 fn trades_summary_wire_carries_a_fraction_not_a_percentage() {
     let dir = tmp_dir("wire-unit");
-    let mut db = TradeDb::new(dir.join("trades.jsonl"));
+    let db_path = dir.join("store.sqlite");
+    let log = TradeLog::new(Database::open(&db_path).expect("store opens"), Mode::Dry);
     for c in corpus() {
-        db.record(&TradeRecord::from_closed(&c), 1);
+        log.append(&TradeRecord::from_closed(&c))
+            .expect("row lands");
     }
 
     let core = Core::new(CoreConfig {
-        trade_log_path: Some(join(&dir, "trades.jsonl")),
+        db_path: Some(db_path),
         order_log_path: None,
         position_log_path: None,
         ..CoreConfig::default()

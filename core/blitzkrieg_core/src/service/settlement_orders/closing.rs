@@ -20,9 +20,30 @@ impl Core {
         self.clear_exit_reason(&closed.token_id);
         // Persist first so the panel/analysis have the record even if a later
         // step fails (matches the Node behaviour of saving on close).
-        if let Some(db) = self.trade_db.as_mut() {
-            let rec = crate::trade_db::TradeRecord::from_closed(closed);
-            db.record(&rec, now_ms);
+        //
+        // The outcome is REPORTED, never swallowed (R7.1 L4). The JSONL carrier
+        // returned `()` from `record()`, so a failed append dropped the trade out
+        // of the ledger with nothing anywhere saying so. `Refused` here means the
+        // same (mode, account, id, exit_time) is already booked — a real
+        // collision an operator must see, not something to retry past.
+        if let Some(log) = self.trade_log.as_ref() {
+            let rec = crate::trade::TradeRecord::from_closed(closed);
+            match log.append(&rec) {
+                Ok(crate::contracts::store::WriteOutcome::Persisted { .. }) => {}
+                Ok(other) => tracing::error!(
+                    account = %closed.account_id,
+                    id = %closed.id,
+                    outcome = ?other,
+                    "closed trade was NOT durably recorded — the ledger is missing this close"
+                ),
+                Err(e) => tracing::error!(
+                    account = %closed.account_id,
+                    id = %closed.id,
+                    exit_time = closed.exited_at_ms,
+                    error = ?e,
+                    "closed trade append failed — the ledger is missing this close"
+                ),
+            }
         }
         // Per-strategy accounting (P-1.1): session realized PnL + fee totals,
         // keyed (strategy, account) so the panel's per-account slice sums ONLY
@@ -362,9 +383,35 @@ impl Core {
         if restored {
             self.persist_positions();
         }
-        if let Some(db) = self.trade_db.as_mut() {
-            let rec = crate::trade_db::TradeRecord::from_closed(closed);
-            db.retract(&rec, now_ms);
+        // The close is being withdrawn because its venue execution failed: a
+        // trade that never happened must not live in the books (not even as a
+        // compensating entry the win-rate maths would count).
+        //
+        // `NotFound` is NOT an error here — it means the append never landed (no
+        // store wired) or this close was already withdrawn. The JSONL carrier
+        // spelled that as a silent no-op; naming it is the only change.
+        if let Some(log) = self.trade_log.as_ref() {
+            let rec = crate::trade::TradeRecord::from_closed(closed);
+            match log.retract(&rec, now_ms) {
+                Ok(crate::contracts::store::WriteOutcome::Persisted { .. }) => {}
+                Ok(other) => tracing::warn!(
+                    account = %closed.account_id,
+                    id = %closed.id,
+                    outcome = ?other,
+                    "closed trade withdrawal did not persist — the ledger may still carry this close"
+                ),
+                Err(crate::contracts::store::StoreError::NotFound) => tracing::debug!(
+                    account = %closed.account_id,
+                    id = %closed.id,
+                    "closed trade to withdraw was never recorded (or is already withdrawn)"
+                ),
+                Err(e) => tracing::error!(
+                    account = %closed.account_id,
+                    id = %closed.id,
+                    error = ?e,
+                    "closed trade withdrawal FAILED — the ledger still carries a close that never happened"
+                ),
+            }
         }
         {
             let entry_fee =

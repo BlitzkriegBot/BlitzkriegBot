@@ -148,6 +148,20 @@ impl SqliteStore {
     pub fn path(&self) -> &std::path::Path {
         self.risk.path()
     }
+
+    /// The closed-trade log for `mode`, over THIS store's connection.
+    ///
+    /// The shared connection is load-bearing: a second handle on the same file
+    /// would be a second writer, and a transaction spanning a trade write and a
+    /// risk write would become two transactions — the half-landed unit
+    /// [`crate::contracts::StoreTx`] exists to prevent.
+    ///
+    /// `mode` comes from the boot configuration rather than the trade record,
+    /// because `TradeRecord` has no mode field to check it against, and the
+    /// kernel's own mode is the only authority on which book it is writing.
+    pub fn trade_log(&self, mode: crate::model::Mode) -> crate::db::trades::TradeLog {
+        crate::db::trades::TradeLog::new(self.risk.db().clone(), mode)
+    }
 }
 
 impl SqliteStore {

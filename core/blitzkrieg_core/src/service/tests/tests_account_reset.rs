@@ -48,6 +48,9 @@ fn two_account_reset_fixture(tag: &str) -> (Core, std::path::PathBuf) {
             manual_ops_audit_path: Some(
                 dir.join("manual-ops.jsonl").to_string_lossy().into_owned(),
             ),
+            // The closed-trade ledger is the SQLite store (schema v4); the
+            // fixture's own directory keeps each test's database private.
+            db_path: Some(dir.join("store.sqlite")),
             trade_log_path: log("trades.jsonl"),
             order_log_path: log("orders.jsonl"),
             position_log_path: log("positions.jsonl"),
@@ -297,13 +300,22 @@ fn audit_identity_scopes_to_the_active_account() {
         .switch(&crate::account::AccountId::from("paper"))
         .expect("switch");
     let input = c.build_audit_input(now_ms());
-    let expected_realized = f64_to_decimal(
-        c.trade_db
+    // The expected number is read from the SAME scoped aggregate the identity
+    // uses — not recomputed here. (The JSONL version had to round-trip the
+    // summary's f64 through `f64_to_decimal`; the SQL aggregate already speaks
+    // Decimal, so the test compares the identity against the carrier instead of
+    // against a lossy shadow of it.)
+    let expected_realized = {
+        use crate::contracts::trades::{TradeRead, TradeScope};
+        c.trade_log
             .as_ref()
-            .unwrap()
-            .summary_for("paper")
-            .attributed_net_pnl,
-    );
+            .expect("the fixture wires a store")
+            .trade_totals(TradeScope::Account(crate::contracts::store::AccountScope {
+                account: &crate::model::AccountId::from("paper"),
+            }))
+            .expect("paper's book reads")
+            .net_pnl
+    };
     assert!(expected_realized < Decimal::ZERO);
     assert_eq!(input.identity.realized, expected_realized);
     assert_eq!(input.seen_trades, 1);

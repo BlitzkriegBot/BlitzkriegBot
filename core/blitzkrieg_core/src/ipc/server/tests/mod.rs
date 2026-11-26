@@ -570,6 +570,32 @@ async fn hot_reload_fixture() -> (
     crate::market::registry::MarketPluginRegistry,
     PeerAuth,
 ) {
+    hot_reload_fixture_opts(None).await
+}
+
+/// [`hot_reload_fixture`] with a private SQLite store under `dir`.
+///
+/// A wire verb that READS the closed-trade book cannot be proven against a
+/// storeless core: with no `db_path` there is no ledger, and the read answers
+/// the in-memory fallback (empty in these fixtures) — which would make a page
+/// limit test pass for the wrong reason.
+async fn hot_reload_fixture_with_db(
+    dir: &std::path::Path,
+) -> (
+    Arc<AsyncMutex<Core>>,
+    crate::market::registry::MarketPluginRegistry,
+    PeerAuth,
+) {
+    hot_reload_fixture_opts(Some(dir.join("store.sqlite"))).await
+}
+
+async fn hot_reload_fixture_opts(
+    db_path: Option<std::path::PathBuf>,
+) -> (
+    Arc<AsyncMutex<Core>>,
+    crate::market::registry::MarketPluginRegistry,
+    PeerAuth,
+) {
     use rust_decimal_macros::dec;
     let cfg = CoreConfig {
         risk: crate::risk::RiskConfig {
@@ -577,6 +603,7 @@ async fn hot_reload_fixture() -> (
             ..Default::default()
         },
         dry_seed_balance: dec!(100),
+        db_path,
         trade_log_path: None,
         order_log_path: None,
         position_log_path: None,

@@ -104,11 +104,8 @@ fn failed_status_after_full_close_restores_inventory_and_reverses_profit() {
         assert_eq!(acc.wins, 1);
         assert_eq!(acc.net_pnl_usd, dec!(4));
     }
-    assert_eq!(c.trade_db.as_ref().unwrap().summary().total_trades, 1);
-    assert_eq!(
-        c.trade_db.as_ref().unwrap().summary().attributed_net_pnl,
-        4.0
-    );
+    assert_eq!(trade_totals(&c).total_trades, 1);
+    assert_eq!(trade_totals(&c).net_pnl, dec!(4));
 
     // FAILED arrives for the same trade → the rollback must unwind it all.
     c.ingest_fill(
@@ -152,18 +149,15 @@ fn failed_status_after_full_close_restores_inventory_and_reverses_profit() {
         assert_eq!(acc.fees_usd, Decimal::ZERO);
         assert_eq!(acc.net_pnl_usd, Decimal::ZERO);
     }
-    // TradeDb: record withdrawn, summary back to zero.
-    assert_eq!(c.trade_db.as_ref().unwrap().summary().total_trades, 0);
-    assert_eq!(
-        c.trade_db.as_ref().unwrap().summary().attributed_net_pnl,
-        0.0
-    );
+    // The carrier: record withdrawn, totals back to zero. The JSONL file is
+    // no longer written on the close path (it is an export format), so the
+    // absence is asserted against the BOOK — a read of the same rows the panel
+    // pages through — not against a file that might simply never have existed.
+    assert_eq!(trade_totals(&c).total_trades, 0);
+    assert_eq!(trade_totals(&c).net_pnl, Decimal::ZERO);
     assert!(
-        std::fs::read_to_string(&log)
-            .unwrap_or_default()
-            .trim()
-            .is_empty(),
-        "the retracted trade must not remain in the JSONL"
+        c.recent_trades(0).is_empty(),
+        "the retracted trade must not be readable as a closed trade"
     );
 
     // E17 cash identity over the whole round trip: cash + open basis
@@ -173,7 +167,9 @@ fn failed_status_after_full_close_restores_inventory_and_reverses_profit() {
         SEED
     );
 
-    let _ = std::fs::remove_file(&log);
+    if let Some(dir) = log.parent() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 /// F10, counterexample: the strategy booked an automatic close, then the
@@ -200,13 +196,11 @@ fn manual_venue_loss_reaches_the_trade_ledger() {
     assert_eq!(closed[0].exit_reason, ExitReason::Manual);
     assert_eq!(closed[0].net_pnl_usd, dec!(-2));
 
-    // TradeDb received the manual close (audit F10: it used to be missed).
-    assert_eq!(c.trade_db.as_ref().unwrap().summary().total_trades, 1);
-    assert_eq!(c.trade_db.as_ref().unwrap().summary().losses, 1);
-    assert_eq!(
-        c.trade_db.as_ref().unwrap().summary().attributed_net_pnl,
-        -2.0
-    );
+    // The ledger received the manual close (audit F10: it used to be missed).
+    let totals = trade_totals(&c);
+    assert_eq!(totals.total_trades, 1);
+    assert_eq!(totals.tally.losses, 1);
+    assert_eq!(totals.net_pnl, dec!(-2));
 
     // Strategy accounting: the loss IS in the strategy's net PnL.
     let acc = c
@@ -238,7 +232,9 @@ fn manual_venue_loss_reaches_the_trade_ledger() {
     // Cash identity: SEED + realized net.
     assert_eq!(c.ledger().balance(), SEED + dec!(-2));
 
-    let _ = std::fs::remove_file(&log);
+    if let Some(dir) = log.parent() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 // ── E28 (G5): a cross-account close is refused, never re-routed ─────────

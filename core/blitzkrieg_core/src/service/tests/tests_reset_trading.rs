@@ -3,21 +3,21 @@
 use super::*;
 use rust_decimal_macros::dec;
 
-// ── #trades-mode-split: live 与 dry 的成交账本分文件 ─────────────────────
+// ── #trades-mode-split: live 与 dry 的成交账本互不可见 ───────────────────
 
-/// The end-to-end isolation the bug report asked for: a LIVE core whose
-/// default ledger was derived the way the binary derives it
-/// (`default_trade_log_path(Mode::Live)`) must not see rows in the DRY
-/// ledger — the `recent_trades` panel verb reads exactly the one file, so
-/// the path split IS the isolation. Mirrors production: the dry file
-/// already holds 36 dry-era probe rows when live boots.
+/// The end-to-end isolation the bug report asked for: a LIVE core must not
+/// see rows in the DRY ledger. Since schema v4 the two books share ONE
+/// database file and are separated by `mode` in the row identity, so the
+/// isolation that used to be a path split is now an address split — every
+/// read predicate carries the mode, and the shared file makes the two books
+/// *harder* to leak between, not easier. Mirrors production: the dry book
+/// already holds a dry-era probe row when live boots.
 #[test]
 fn live_recent_trades_do_not_read_the_dry_ledger() {
     let dir = reset_audit_dir("trades-split");
-    let dry_path = dir.join(crate::trade_db::default_trade_log_path(Mode::Dry));
-    let live_path = dir.join(crate::trade_db::default_trade_log_path(Mode::Live));
+    let db_path = dir.join("store.sqlite");
 
-    // The dry era's leftover: one probe row in the historical ledger.
+    // The dry era's leftover: one probe row in the DRY book of the shared DB.
     let dry_closed = crate::position::ClosedPosition {
         id: "hft-probe-1".into(),
         strategy: "kline_probe".into(),
@@ -53,14 +53,28 @@ fn live_recent_trades_do_not_read_the_dry_ledger() {
         original_fallback_price: None,
         price_source: String::new(),
     };
-    crate::trade_db::TradeDb::new(&dry_path)
-        .record(&crate::trade_db::TradeRecord::from_closed(&dry_closed), 1);
+    // The dry book already carries its probe row — written through a dry-mode
+    // core onto the SAME database file live is about to open, which is the
+    // deployment shape the bug report describes (one store, two books).
+    let mut dry = Core::new(CoreConfig {
+        mode: Mode::Dry,
+        db_path: Some(db_path.clone()),
+        manual_ops_audit_path: Some(dir.join("manual-ops.jsonl").to_string_lossy().into_owned()),
+        dry_seed_balance: Decimal::from(1_000),
+        ..Default::default()
+    });
+    dry.set_balance(Decimal::from(1_000));
+    dry.trade_log
+        .as_ref()
+        .expect("a core with db_path carries a trade ledger")
+        .append(&crate::trade::TradeRecord::from_closed(&dry_closed))
+        .expect("the dry probe row lands");
 
-    // A live core, its trade log at the LIVE default — no explicit
-    // --trade-log, exactly the deployment shape from the bug report.
+    // A live core on the same DB — no explicit --trade-log, exactly the
+    // deployment shape from the bug report.
     let mut live = Core::new(CoreConfig {
         mode: Mode::Live,
-        trade_log_path: Some(live_path.to_string_lossy().into_owned()),
+        db_path: Some(db_path.clone()),
         manual_ops_audit_path: Some(dir.join("manual-ops.jsonl").to_string_lossy().into_owned()),
         dry_seed_balance: Decimal::from(1_000),
         ..Default::default()
@@ -71,26 +85,31 @@ fn live_recent_trades_do_not_read_the_dry_ledger() {
     // positions) is empty too — the panel shows nothing, not dry history.
     assert!(
         live.recent_trades(50).is_empty(),
-        "live core saw the dry ledger's probe row: {:?}",
+        "live core saw the dry book's probe row: {:?}",
         live.recent_trades(50)
     );
 
-    // One live trade books into the LIVE ledger only.
+    // One live trade books into the LIVE book only.
     let mut live_closed = dry_closed.clone();
     live_closed.id = "live-1".into();
     live_closed.strategy = "spread_arb".into();
-    live.trade_db
-        .as_mut()
-        .expect("trade_log_path set")
-        .record(&crate::trade_db::TradeRecord::from_closed(&live_closed), 2);
+    live.trade_log
+        .as_ref()
+        .expect("a core with db_path carries a trade ledger")
+        .append(&crate::trade::TradeRecord::from_closed(&live_closed))
+        .expect("the live row lands");
     let rows = live.recent_trades(50);
     assert_eq!(rows.len(), 1, "exactly the live row: {rows:?}");
     assert_eq!(rows[0]["id"], serde_json::json!("live-1"));
 
-    // The dry ledger on disk is untouched by the live run.
-    let dry_text = std::fs::read_to_string(&dry_path).unwrap();
-    assert_eq!(dry_text.lines().count(), 1, "dry file must stay one row");
-    assert!(dry_text.contains("hft-probe-1"));
+    // The dry book is untouched by the live run: same file, different address.
+    let dry_rows = dry.recent_trades(50);
+    assert_eq!(
+        dry_rows.len(),
+        1,
+        "dry book must stay one row: {dry_rows:?}"
+    );
+    assert_eq!(dry_rows[0]["id"], serde_json::json!("hft-probe-1"));
 }
 
 #[test]
@@ -133,11 +152,15 @@ fn reset_trading_refuses_without_an_audit_path_and_wipes_with_one() {
     // the log files and parallel tests trade on the default RELATIVE
     // data/ paths (in a cwd this test family used to hijack), so a
     // shared path would count a neighbour's lines as a failed reset.
+    // `db_path` is what makes the trade ledger exist at all now — the reset's
+    // own post-wipe verifier reads the SQL book, so a core without a store
+    // would skip that leg of the check entirely.
     let dir = reset_audit_dir("happy");
     let audit = dir.join("manual-ops.jsonl");
     let log = |name: &str| Some(dir.join(name).to_string_lossy().into_owned());
     let mut c = Core::new(CoreConfig {
         manual_ops_audit_path: Some(audit.to_string_lossy().into_owned()),
+        db_path: Some(dir.join("store.sqlite")),
         trade_log_path: log("trades.jsonl"),
         order_log_path: log("orders.jsonl"),
         position_log_path: log("positions.jsonl"),
@@ -157,7 +180,7 @@ fn reset_trading_refuses_without_an_audit_path_and_wipes_with_one() {
     assert_eq!(rec["pre"]["balance"], serde_json::json!("5000"));
 }
 
-/// 重置必须连记账审计的状态一起清：trade_db 归零后，带着旧 realized 的
+/// 重置必须连记账审计的状态一起清：账本归零后，带着旧 realized 的
 /// 锚点会让 trade_ledger_identity 永久假红（真实事故 2026-10-16：重置后
 /// 漂移 94.72，halt_entries 拦下之后每一笔意图——策略页看着在下单，
 /// 行情页一支挂单都没有）。重置后下一次审计必须在干净账目上重新取锚、
@@ -168,6 +191,7 @@ fn reset_trading_re_anchors_the_accounting_audit_instead_of_halting_forever() {
     let log = |name: &str| Some(dir.join(name).to_string_lossy().into_owned());
     let mut c = Core::new(CoreConfig {
         manual_ops_audit_path: Some(dir.join("manual-ops.jsonl").to_string_lossy().into_owned()),
+        db_path: Some(dir.join("store.sqlite")),
         trade_log_path: log("trades.jsonl"),
         order_log_path: log("orders.jsonl"),
         position_log_path: log("positions.jsonl"),
@@ -176,7 +200,7 @@ fn reset_trading_re_anchors_the_accounting_audit_instead_of_halting_forever() {
     });
     c.set_balance(Decimal::from(1_000));
 
-    // 一个已平仓的交易把 realized 写进 summary（重置前的事实）。
+    // 一个已平仓的交易把 realized 写进账本（重置前的事实）。
     let closed = crate::position::ClosedPosition {
         id: "hft-r1".into(),
         strategy: "spread_arb".into(),
@@ -212,10 +236,11 @@ fn reset_trading_re_anchors_the_accounting_audit_instead_of_halting_forever() {
         original_fallback_price: None,
         price_source: String::new(),
     };
-    c.trade_db
-        .as_mut()
-        .expect("trade_log_path set")
-        .record(&crate::trade_db::TradeRecord::from_closed(&closed), 1);
+    c.trade_log
+        .as_ref()
+        .expect("a core with db_path carries a trade ledger")
+        .append(&crate::trade::TradeRecord::from_closed(&closed))
+        .expect("the pre-reset close lands");
     // 锚点在旧账目上取下：realized=94 成为本轮基线。
     let anchored = c.run_accounting_audit(2);
     assert!(anchored.ok, "pre-reset audit on consistent books is clean");
@@ -239,7 +264,7 @@ fn reset_trading_re_anchors_the_accounting_audit_instead_of_halting_forever() {
     );
 }
 
-/// #537 重置漏清牙：reset_trading 清了 trade_db/positions/OME/账本，但
+/// #537 重置漏清牙：reset_trading 清了账本/positions/OME，但
 /// 策略页盈亏的源（`strategy_accounting` 的 per-(strategy,account) 切片
 /// —— closed_trades/wins/net_pnl_usd）留在了内存里。症状是总览的
 /// 「真实余额 = 本金 + 净利」继续按已抹掉的历史加减（操作者 2026-10-19
@@ -255,6 +280,7 @@ fn reset_trading_clears_the_strategy_pnl_counters() {
     let log = |name: &str| Some(dir.join(name).to_string_lossy().into_owned());
     let mut c = Core::new(CoreConfig {
         manual_ops_audit_path: Some(dir.join("manual-ops.jsonl").to_string_lossy().into_owned()),
+        db_path: Some(dir.join("store.sqlite")),
         trade_log_path: log("trades.jsonl"),
         order_log_path: log("orders.jsonl"),
         position_log_path: log("positions.jsonl"),
@@ -263,7 +289,7 @@ fn reset_trading_clears_the_strategy_pnl_counters() {
     });
     c.set_balance(Decimal::from(1_000));
 
-    // A closed trade folds into BOTH stores: trade_db (summary) and the
+    // A closed trade folds into BOTH stores: the trade ledger and the
     // strategy_accounting slice the strategy page reads.
     let closed = crate::position::ClosedPosition {
         id: "hft-r1".into(),
@@ -300,11 +326,11 @@ fn reset_trading_clears_the_strategy_pnl_counters() {
         original_fallback_price: None,
         price_source: String::new(),
     };
-    let rec = crate::trade_db::TradeRecord::from_closed(&closed);
-    c.trade_db
-        .as_mut()
-        .expect("trade_log_path set")
-        .record(&rec, 1);
+    c.trade_log
+        .as_ref()
+        .expect("a core with db_path carries a trade ledger")
+        .append(&crate::trade::TradeRecord::from_closed(&closed))
+        .expect("the close lands");
     c.on_position_closed(&closed, 1);
     let pre = c.strategy_stats();
     assert!(

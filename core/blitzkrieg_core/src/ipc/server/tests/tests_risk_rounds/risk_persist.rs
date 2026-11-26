@@ -176,7 +176,8 @@ async fn risk_set_systemic_persists_max_positions_and_share_band_on_boot() {
     };
     let mut c = Core::new(cfg.clone());
     c.set_balance(cfg.dry_seed_balance);
-    c.open_account_risk_db(&db_path).expect("temp risk db opens");
+    c.open_account_risk_db(&db_path)
+        .expect("temp risk db opens");
     c.store = Some(Arc::new(
         crate::store::SqliteStore::open(&db_path).expect("temp store opens"),
     ));
@@ -220,7 +221,10 @@ async fn risk_set_systemic_persists_max_positions_and_share_band_on_boot() {
         r#"{"jsonrpc":"2.0","id":3,"method":"risk.setSystemic","params":{"maxShares":"0","reason":"unlimited"}}"#.to_string(),
     )
     .await;
-    assert!(unlimited.get("error").is_none(), "maxShares=0 failed: {unlimited}");
+    assert!(
+        unlimited.get("error").is_none(),
+        "maxShares=0 failed: {unlimited}"
+    );
     let mut c3 = Core::new(cfg.clone());
     c3.open_account_risk_db(&db_path).expect("reopen risk db");
     assert_eq!(c3.config().min_shares, dec!(5));
@@ -244,7 +248,11 @@ async fn boot_reconciles_legacy_size_pct_and_policy_budget_ratio_fail_closed() {
     let default_id = crate::account::AccountId::from("default");
     let scope = crate::store::AccountScope::new(&default_id);
     store
-        .put_setting(scope, crate::risk::account_store::SIZE_PCT_SETTING, Some("10"))
+        .put_setting(
+            scope,
+            crate::risk::account_store::SIZE_PCT_SETTING,
+            Some("10"),
+        )
         .unwrap();
     store
         .put_setting(scope, "POLICY_BUDGET_RATIO", Some("0.04"))

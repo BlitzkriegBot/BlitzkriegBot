@@ -59,10 +59,16 @@ fn family(dir: &std::path::Path, trading: bool) -> (std::path::PathBuf, std::pat
 /// A core on one side of the mode boundary, pointed at THAT mode's file
 /// family inside `dir` — the same wiring `main` produces after #953 from
 /// the resolved `Mode`, with no explicit path flags.
+///
+/// The trade ledger is no longer a FILE: since schema v4 both books live in
+/// the one `store.sqlite` and are separated by `mode` in the row identity.
+/// `trade_log_path` is carried because production still sets it (it names the
+/// EXPORT destination), but it selects no carrier any more.
 fn book_mode_core(dir: &std::path::Path, trading: bool, balance: Decimal) -> Core {
     let (positions, trades) = family(dir, trading);
     let mut c = Core::new(CoreConfig {
         mode: if trading { Mode::Live } else { Mode::Dry },
+        db_path: Some(dir.join("store.sqlite")),
         trade_log_path: Some(trades.to_string_lossy().into_owned()),
         position_log_path: Some(positions.to_string_lossy().into_owned()),
         manual_ops_audit_path: Some(dir.join("manual-ops.jsonl").to_string_lossy().into_owned()),
@@ -73,10 +79,34 @@ fn book_mode_core(dir: &std::path::Path, trading: bool, balance: Decimal) -> Cor
     c
 }
 
-/// A closed-trade row, written the way `TradeDb::record` does, to seed
+/// Book one closed trade into the core's OWN mode's ledger.
+///
+/// This replaces the JSONL `TradeDb::record` seed: the carrier is the SQL
+/// store now, and the mode rides the `TradeLog` handle, so a "dry" core writes
+/// the dry book and a "live" core writes the live one — which is exactly the
+/// isolation these tests assert.
+fn book_trade(core: &Core, id: &str) {
+    core.trade_log
+        .as_ref()
+        .expect("a core with db_path carries a trade ledger")
+        .append(&closed_trade(id))
+        .expect("trade lands");
+}
+
+/// #942's surviving id memory for one core's mode.
+fn max_tail(core: &Core) -> Option<u64> {
+    use crate::contracts::trades::TradeRead;
+    core.trade_log
+        .as_ref()
+        .expect("a core with db_path carries a trade ledger")
+        .max_trade_id_tail()
+        .expect("the id scan must read")
+}
+
+/// A closed-trade row, written the way the close path does, to seed
 /// (or NOT seed) a book's id baseline.
-fn closed_trade(id: &str) -> crate::trade_db::TradeRecord {
-    crate::trade_db::TradeRecord::from_closed(&crate::position::ClosedPosition {
+fn closed_trade(id: &str) -> crate::trade::TradeRecord {
+    crate::trade::TradeRecord::from_closed(&crate::position::ClosedPosition {
         id: id.into(),
         strategy: "spread_arb".into(),
         asset: "BTC".into(),
@@ -158,11 +188,17 @@ fn held(id: &str) -> crate::position::OpenPosition {
 #[test]
 fn a_live_to_dry_does_not_inherit_live_positions_or_ids() {
     let dir = snap_dir("a-l2d");
-    let (live_book, live_trades) = family(&dir, true);
+    let (live_book, _live_trades) = family(&dir, true);
 
     // Live's era: one held position (hft-31) and a history reaching hft-40.
     crate::position_db::PositionDb::new(&live_book).save(&[held("hft-31")]);
-    crate::trade_db::TradeDb::new(&live_trades).record(&closed_trade("hft-40"), 1);
+    // The live book is seeded through a LIVE core: `mode` is part of the SQL
+    // row identity, so the seed must land in the live book or the dry boot
+    // below would be "isolated" for the wrong reason.
+    {
+        let live_writer = book_mode_core(&dir, true, Decimal::from(1_000));
+        book_trade(&live_writer, "hft-40");
+    }
 
     // The switch (process 1 stopped): the SAME directory, dry mode, no
     // explicit path flags — `main` hands the core exactly the paths
@@ -218,15 +254,12 @@ fn b_dry_to_live_does_not_inherit_dry_positions_or_ids() {
     );
     // Live's first mint starts live's OWN sequence (hft-1), not dry's hft-8.
     assert_eq!(live.positions.next_id_for_test(), 1);
-    // One live cycle books its history into the LIVE ledger only.
-    live.trade_db
-        .as_mut()
-        .expect("live ledger")
-        .record(&closed_trade("hft-40"), 1);
+    // One live cycle books its history into the LIVE book only.
+    book_trade(&live, "hft-40");
 
     // The next live boot picks up live's OWN id baseline only.
     let mut live2 = book_mode_core(&dir, true, Decimal::from(1_000));
-    assert_eq!(live2.trade_db.as_ref().map(|t| t.max_hft_tail()), Some(40));
+    assert_eq!(max_tail(&live2), Some(40));
     assert_eq!(live2.restore_positions(), 0, "still nothing held live-side");
 
     // The dry file survives the whole live round (acceptance E).
@@ -236,32 +269,34 @@ fn b_dry_to_live_does_not_inherit_dry_positions_or_ids() {
 }
 
 /// The A/B id half at the Core level, dry→live: live's boot scan
-/// (`max_hft_tail`) reads THE LIVE LEDGER ONLY. The dry era's closed-trade
-/// row sits in `trades.jsonl` and never seeds the live counter, so the
-/// first live position after the switch continues LIVE's sequence, not
-/// dry's (`hft-31` would have meant live minting ONTO the dry ids).
+/// (`max_trade_id_tail`) reads THE LIVE BOOK ONLY. The dry era's closed-trade
+/// row sits in the dry book (same database, different `mode` key) and never
+/// seeds the live counter, so the first live position after the switch
+/// continues LIVE's sequence, not dry's (`hft-31` would have meant live
+/// minting ONTO the dry ids).
 #[test]
 fn live_id_counter_seeds_from_the_live_history_only() {
     let dir = snap_dir("b-ids");
 
-    // The dry era: a closed trade with id hft-30 in the DRY ledger.
-    let (_, dry_trades) = family(&dir, false);
-    crate::trade_db::TradeDb::new(&dry_trades).record(&closed_trade("hft-30"), 1);
+    // The dry era: a closed trade with id hft-30 in the DRY book.
+    {
+        let dry_writer = book_mode_core(&dir, false, Decimal::from(10_000));
+        book_trade(&dry_writer, "hft-30");
+    }
 
-    // The switch: live boots. Its ledger path is the LIVE spelling, so the
+    // The switch: live boots. Its ledger handle carries `Mode::Live`, so the
     // boot scan finds NO hft ids in live's own history.
     let live = book_mode_core(&dir, true, Decimal::from(1_000));
     assert_eq!(
-        live.trade_db.as_ref().expect("live ledger").max_hft_tail(),
-        0,
-        "live's boot scan reads live's ledger, not the dry one"
+        max_tail(&live),
+        None,
+        "live's boot scan reads live's book, not the dry one"
     );
-    // And the dry era's own book still restores under the dry spellings
-    // (the row sits behind the dry ledger's name, waiting for the dry
-    // book's return).
+    // And the dry era's own book still carries its row (same file, dry key),
+    // waiting for the dry book's return.
     let mut dry = book_mode_core(&dir, false, Decimal::from(10_000));
     dry.set_balance(Decimal::from(10_000));
-    assert_eq!(dry.trade_db.as_ref().map(|t| t.max_hft_tail()), Some(30));
+    assert_eq!(max_tail(&dry), Some(30));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -305,11 +340,11 @@ fn the_mode_split_matches_the_trade_log_convention() {
     // local splitting minute: live derives a new name, dry keeps the
     // historical one.
     assert_eq!(
-        crate::trade_db::default_trade_log_path(Mode::Dry),
+        crate::trade::default_trade_log_path(Mode::Dry),
         "data/trades/trades.jsonl"
     );
     assert_eq!(
-        crate::trade_db::default_trade_log_path(Mode::Live),
+        crate::trade::default_trade_log_path(Mode::Live),
         "data/trades/trades-live.jsonl"
     );
     assert_eq!(

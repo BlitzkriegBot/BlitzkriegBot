@@ -33,6 +33,11 @@ pub(super) fn settling_core(dir: &std::path::Path, balance: Decimal) -> Core {
             ..Default::default()
         },
         dry_seed_balance: balance,
+        // The closed-trade ledger is the SQLite store (schema v4); each
+        // fixture's directory keeps its book private. A restart re-opens the
+        // SAME file, which is what makes "the settle is recorded exactly once
+        // across boots" observable at all.
+        db_path: Some(dir.join("store.sqlite")),
         position_log_path: path("positions.jsonl"),
         trade_log_path: path("trades.jsonl"),
         settlement_log_path: path("settlements.jsonl"),
@@ -404,7 +409,7 @@ fn settlement_keeps_the_accounting_identity_true() {
         dec!(2.916),
         "payout 5 − cost 2 − entry fee 0.084"
     );
-    let record = serde_json::to_value(crate::trade_db::TradeRecord::from_closed(closed)).unwrap();
+    let record = serde_json::to_value(crate::trade::TradeRecord::from_closed(closed)).unwrap();
     assert_eq!(record["exitReason"], "settlement");
     assert_eq!(record["netPnlUsd"], serde_json::json!(2.916));
 

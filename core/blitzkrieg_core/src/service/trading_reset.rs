@@ -101,23 +101,32 @@ impl Core {
                 })
                 .unwrap_or(0),
             trade_log_lines: self
-                .trade_db
+                .trade_log
                 .as_ref()
-                .map(|db| {
-                    crate::trade_db::read_recent(db.jsonl_path(), 0)
-                        .iter()
-                        .filter(|r| {
-                            let rid = r
-                                .get("accountId")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default();
-                            if rid.is_empty() {
-                                account_id.as_str() == crate::account::default_account_id().as_str()
-                            } else {
-                                rid == account_id.as_str()
-                            }
-                        })
-                        .count() as u64
+                .map(|l| {
+                    // Count from the carrier, not from a file: this is the number
+                    // the reset's own pre/post self-check compares, so reading a
+                    // stale export would make a failed wipe look successful.
+                    use crate::contracts::trades::{TradeRead, TradeScope};
+                    match l.trade_totals(TradeScope::Account(
+                        crate::contracts::store::AccountScope {
+                            account: &account_id,
+                        },
+                    )) {
+                        Ok(t) => t.total_trades,
+                        Err(e) => {
+                            // The count is the check's whole evidence; a silent 0
+                            // would report "nothing was there" for an unreadable
+                            // ledger. Loud, and 0 is the conservative reading of a
+                            // number we could not obtain.
+                            tracing::error!(
+                                account = %account_id,
+                                error = ?e,
+                                "trade ledger count unavailable for the reset self-check"
+                            );
+                            0
+                        }
+                    }
                 })
                 .unwrap_or(0),
             position_log_lines: self
@@ -301,8 +310,25 @@ impl Core {
         if let Some(db) = &self.order_db {
             db.compact_account(account_id.as_str());
         }
-        if let Some(db) = &mut self.trade_db {
-            db.retract_account(account_id.as_str(), now_ms);
+        if let Some(log) = &self.trade_log {
+            // The receipt names WHERE the erased rows were preserved (issue
+            // #1253). The JSONL version returned a bare `usize`, so the archive
+            // location was dropped on the floor and a reset could not be told
+            // apart from an unarchived erasure.
+            match log.retract_account(&account_id) {
+                Ok(receipt) => tracing::info!(
+                    account = %account_id,
+                    removed = receipt.removed,
+                    archived_to = %receipt.archived_to,
+                    "account trade history erased, rows archived"
+                ),
+                Err(e) => tracing::error!(
+                    account = %account_id,
+                    error = ?e,
+                    "account trade history erase FAILED — the ledger still carries this \
+                     account's closes after a reset that reported success elsewhere"
+                ),
+            }
         }
         // #178/#175 的幂等簿与结算簿：重置后历史结算不再需要去重（记录文件
         // 已空，结算簿对着空文件重放会凭空恢复 claims）。全局维（清单 B）：
@@ -397,25 +423,22 @@ impl Core {
                 ));
             }
         }
-        if let Some(db) = &self.trade_db {
-            let n = crate::trade_db::read_recent(db.jsonl_path(), 0)
-                .iter()
-                .filter(|r| {
-                    let rid = r
-                        .get("accountId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default();
-                    if rid.is_empty() {
-                        account_id.as_str() == crate::account::default_account_id().as_str()
-                    } else {
-                        rid == account_id.as_str()
-                    }
-                })
-                .count();
-            if n != 0 {
-                problems.push(format!(
-                    "account {account_id} trade log still has {n} lines after reset"
-                ));
+        if let Some(l) = &self.trade_log {
+            use crate::contracts::trades::{TradeRead, TradeScope};
+            // A ledger we cannot read cannot be certified clean: "unreadable"
+            // is reported as a problem, never folded into "0 rows left".
+            match l.trade_totals(TradeScope::Account(crate::contracts::store::AccountScope {
+                account: &account_id,
+            })) {
+                Ok(t) if t.total_trades != 0 => problems.push(format!(
+                    "account {account_id} trade ledger still has {} rows after reset",
+                    t.total_trades
+                )),
+                Ok(_) => {}
+                Err(e) => problems.push(format!(
+                    "account {account_id} trade ledger could not be read after reset ({e:?}) — \
+                     the wipe cannot be certified"
+                )),
             }
         }
         if let Some(db) = &self.position_db {

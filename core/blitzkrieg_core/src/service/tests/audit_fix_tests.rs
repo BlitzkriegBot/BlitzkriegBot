@@ -31,7 +31,17 @@ fn core_with_trade_log(path: Option<std::path::PathBuf>) -> Core {
         auto_exits_enabled: false,
         ..Default::default()
     };
-    cfg.trade_log_path = path.map(|p| p.to_string_lossy().into_owned());
+    // The trade ledger is the SQLite store since schema v4; `trade_log_path`
+    // only names where an EXPORT lands. A fixture that wants a working ledger
+    // must therefore point at a store — the file's own directory keeps each
+    // test's database private, the same discipline the JSONL paths used.
+    if let Some(p) = path {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+            cfg.db_path = Some(dir.join("store.sqlite"));
+        }
+        cfg.trade_log_path = Some(p.to_string_lossy().into_owned());
+    }
     // Parallel tests share the process cwd, and SettlementBook replays
     // `settlements.jsonl` from beside the order log. The default
     // `data/orders/...` order_log_path is therefore a shared journal: another
@@ -68,11 +78,27 @@ fn tmp_trade_log(tag: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    // TradeDb keeps summary.json beside the log, so each fixture needs its
-    // own DIRECTORY — a bare file in the shared temp root would make every
-    // test load (and persist onto) the same summary.json.
+    // Each fixture needs its own DIRECTORY: the trade ledger is a table inside
+    // that directory's `store.sqlite` now, and the export destination sits
+    // beside it. A bare path in the shared temp root would put every test's
+    // rows in one book.
     let dir = std::env::temp_dir().join(format!("bk-audit-{tag}-{nanos}"));
     dir.join("trades.jsonl")
+}
+
+/// The closed-trade book's totals, read the way the panel reads them.
+///
+/// The `TradeDb::summary()` this replaces was an in-memory fold over a JSONL
+/// file; the numbers are the same numbers, aggregated by SQL. A core without a
+/// store has no ledger, and the call site must say so rather than treat the
+/// absence as a clean book.
+fn trade_totals(c: &Core) -> crate::contracts::trades::TradeTotals {
+    use crate::contracts::trades::TradeRead;
+    c.trade_log
+        .as_ref()
+        .expect("this fixture wires a store, so the ledger must exist")
+        .trade_totals(crate::contracts::trades::TradeScope::AllAccounts)
+        .expect("the ledger must be readable")
 }
 
 fn req(side: Side, mode: FillPolicy, price: Decimal, size: Decimal, key: &str) -> OrderRequest {

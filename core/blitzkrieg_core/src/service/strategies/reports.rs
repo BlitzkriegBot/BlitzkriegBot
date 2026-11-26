@@ -154,7 +154,12 @@ impl Core {
     /// Recent closed trades (for the UI). Reads the persisted log when present,
     /// else falls back to the in-memory closed positions.
     pub fn recent_trades(&self, limit: usize) -> Vec<serde_json::Value> {
-        self.recent_trades_page(limit, 0)
+        // `recent_trades_page` expresses "unreadable" as `None`; this convenience
+        // entry point collapses it to an empty page. It is only used by the
+        // in-memory fallback path (never fails) and by tests — the IPC
+        // trade-history handler calls `recent_trades_page` directly so it can
+        // emit `null` on the wire instead of a fabricated `[]` (L4).
+        self.recent_trades_page(limit, 0).unwrap_or_default()
     }
 
     /// One page of closed trades, counted back from the NEWEST end (#1282).
@@ -169,7 +174,11 @@ impl Core {
     /// unrepresentable. Here the page size is derived from the carrier's own
     /// count (`total − offset`), so an uncapped request is a bounded read of a
     /// known size — not an accidental whole-file load.
-    pub fn recent_trades_page(&self, limit: usize, offset: usize) -> Vec<serde_json::Value> {
+    pub fn recent_trades_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Option<Vec<serde_json::Value>> {
         if let Some(log) = self.trade_log.as_ref() {
             use crate::contracts::trades::{TradeRead, TradeScope};
             let total = match log.trade_totals(TradeScope::AllAccounts) {
@@ -178,15 +187,18 @@ impl Core {
                     // A ledger we cannot count is not an empty ledger. Returning
                     // an empty page would make a read failure look like "no
                     // trades", which is the silent-degradation pattern (L4).
+                    // Emit `None` so the IPC trade-history handler can render
+                    // `"trades": null` — "unreadable", distinguishable from an
+                    // honest empty page.
                     tracing::error!(error = ?e, "trade page count unavailable");
-                    return Vec::new();
+                    return None;
                 }
             };
             let end = total.saturating_sub(offset as u64);
             if end == 0 {
                 // Past the oldest row: an empty page is the paginator's
                 // end-of-log signal, not an error.
-                return Vec::new();
+                return Some(Vec::new());
             }
             let window = if limit == 0 {
                 end
@@ -195,16 +207,17 @@ impl Core {
             };
             let window = u32::try_from(window).unwrap_or(u32::MAX);
             let Some(window) = std::num::NonZeroU32::new(window) else {
-                return Vec::new();
+                return Some(Vec::new());
             };
             return match log.load_trades(TradeScope::AllAccounts, offset as u64, window) {
-                Ok(rows) => rows
-                    .iter()
-                    .map(|r| serde_json::to_value(r).unwrap_or(serde_json::Value::Null))
-                    .collect(),
+                Ok(rows) => Some(
+                    rows.iter()
+                        .map(|r| serde_json::to_value(r).unwrap_or(serde_json::Value::Null))
+                        .collect(),
+                ),
                 Err(e) => {
                     tracing::error!(error = ?e, "trade page read failed");
-                    Vec::new()
+                    None
                 }
             };
         }
@@ -224,7 +237,8 @@ impl Core {
                 serde_json::to_value(crate::trade::TradeRecord::from_closed(c))
                     .unwrap_or(serde_json::Value::Null)
             })
-            .collect()
+            .collect::<Vec<_>>()
+            .into()
     }
 }
 

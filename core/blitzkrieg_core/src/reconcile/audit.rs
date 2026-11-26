@@ -102,6 +102,25 @@ impl CashIdentity {
     }
 }
 
+/// Whether a trade log is present and, if so, whether it can be read.
+///
+/// Three states — not two — because "no log" and "unreadable log" have different
+/// audit semantics: an unconfigured log leaves the trade leg *not covered* (the
+/// backtester, logless replays), while an unreadable log leaves it *unverified*
+/// and must not PASS (R7.1 L4 — silent degradation).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TradeLogStatus {
+    /// No trade log configured. The trade-leg check is not covered rather than
+    /// reported as a failure.
+    #[default]
+    Unconfigured,
+    /// Trade log present and readable.
+    Readable,
+    /// Trade log present but unreadable — the trade leg is UNVERIFIED and the
+    /// check must not PASS.
+    Unreadable,
+}
+
 /// Everything the pure audit needs, assembled by `Core` from its own state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AuditInput {
@@ -147,11 +166,10 @@ pub struct AuditInput {
     pub realign_explained_at: Option<i64>,
     pub open_positions: usize,
     pub seen_trades: u64,
-    /// False when no trade log is configured (the backtester, most in-process
-    /// tests). The trade-leg check is then not covered rather than reported as a
-    /// failure: with no log there is no record of realized PnL, and a closed
-    /// position would look like cash that vanished.
-    pub has_trade_log: bool,
+    /// Whether a trade log is configured and readable — see [`TradeLogStatus`].
+    /// An unconfigured log leaves the trade leg *not covered*; an unreadable log
+    /// leaves it *unverified* and must not PASS.
+    pub trade_log: TradeLogStatus,
     /// The active venue is a SIMULATED-capability site (its plugin declared
     /// `MarketCapabilities::SIMULATED` — a paper venue that settles against its
     /// own model). The venue leg is skipped for it: a paper venue freezes its
@@ -371,112 +389,131 @@ pub fn audit_accounting(input: &AuditInput, anchor: Option<&CashIdentity>) -> Au
     //    It stays a failure — the trade record genuinely disagrees with the
     //    money — but it halts on a repeat like the venue leg instead of on the
     //    first audit, because the correcting party is external.
-    if !input.has_trade_log {
-        checks.push(AuditCheck::pass(
-            "trade_ledger_identity",
-            true,
-            "no trade log configured: not covered".into(),
-            id.balance,
-        ));
-    } else {
-        match anchor {
-            None => checks.push(AuditCheck::pass(
+    match input.trade_log {
+        TradeLogStatus::Unconfigured => {
+            checks.push(AuditCheck::pass(
                 "trade_ledger_identity",
                 true,
-                "anchor pending (first clean audit establishes the baseline)".into(),
+                "no trade log configured: not covered".into(),
                 id.balance,
-            )),
-            Some(a) => {
-                let expected = id.expected_after(a);
-                // Issue #921: the venue's own correction explains a residual
-                // ONCE, within a freshness window. The slot is never cleared by
-                // its writer, so without the two brackets below any later
-                // residual that happens to equal the standing delta would keep
-                // borrowing it as an excuse — forever, and once per audit —
-                // and the cross-source "repeat to halt" would never strike.
-                // Two brackets:
-                //  - one-shot: the attribution mark (`realign_explained_at`,
-                //    set by the caller after a previous audit that used this
-                //    correction) declines a second use;
-                //  - fresh: a correction older than REALIGN_EXPLAIN_TTL_MS is
-                //    declined too (the venue reports every sweep, so the
-                //    standing truth is always reapplied in practice).
-                //
-                // A DECLINED matcher is still a failure and now STRUCTURAL:
-                // the residual is no longer believed to be the venue's number,
-                // so there is "no fetch race to forgive" and entries halt at
-                // once instead of on a repeat that explained-away would never
-                // let arrive. Either way the detail states the offered
-                // correction and the refusal reason — loud, not silent.
-                let matcher = input
-                    .ledger_realigned
-                    .filter(|(_, d)| (id.total() - expected - d).abs() <= AUDIT_TOL_USD);
-                let declined: Option<&str> = matcher.as_ref().and_then(|(at_ms, _)| {
-                    if input
-                        .realign_explained_at
-                        .map(|t| t >= *at_ms)
-                        .unwrap_or(false)
-                    {
-                        Some("already spent on an earlier residual (not overwritten since)")
-                    } else if input.now_ms - *at_ms > REALIGN_EXPLAIN_TTL_MS {
-                        Some("stale: older than the fresh window")
-                    } else {
-                        None
-                    }
-                });
-                let explained = matcher.is_some() && declined.is_none();
-                let mut c = AuditCheck::new(
+            ));
+        }
+        TradeLogStatus::Unreadable => {
+            // An unreadable ledger is not an empty one — returning PASS here
+            // would silently satisfy the cash identity. Fail-closed: the trade
+            // leg is UNVERIFIED, so the check fails and (structural) halts new
+            // entries until the operator reconciles (R7.1 L4).
+            checks.push(AuditCheck {
+                name: "trade_ledger_identity".into(),
+                ok: false,
+                structural: true,
+                expected: id.balance,
+                actual: id.balance,
+                drift: Decimal::ZERO,
+                detail: "trade ledger unreadable: trade leg UNVERIFIED — not covered".into(),
+                offenders: Vec::new(),
+            });
+        }
+        TradeLogStatus::Readable => {
+            match anchor {
+                None => checks.push(AuditCheck::pass(
                     "trade_ledger_identity",
-                    // Structural = NO acceptable explanation: the books are
-                    // local and same-source, halting at once is right. The
-                    // ONLY thing that downgrades to cross-source is an
-                    // accepted (one-shot, fresh) venue correction.
-                    !explained,
-                    expected,
-                    id.total(),
-                    format!(
-                        "balance+receivable ({}) since anchor vs trade records: realized {} → {} ({:+}), \
-                         open cash paid {} → {} ({:+}), returned {} → {} ({:+}), receivable {} → {} ({:+})",
+                    true,
+                    "anchor pending (first clean audit establishes the baseline)".into(),
+                    id.balance,
+                )),
+                Some(a) => {
+                    let expected = id.expected_after(a);
+                    // Issue #921: the venue's own correction explains a residual
+                    // ONCE, within a freshness window. The slot is never cleared by
+                    // its writer, so without the two brackets below any later
+                    // residual that happens to equal the standing delta would keep
+                    // borrowing it as an excuse — forever, and once per audit —
+                    // and the cross-source "repeat to halt" would never strike.
+                    // Two brackets:
+                    //  - one-shot: the attribution mark (`realign_explained_at`,
+                    //    set by the caller after a previous audit that used this
+                    //    correction) declines a second use;
+                    //  - fresh: a correction older than REALIGN_EXPLAIN_TTL_MS is
+                    //    declined too (the venue reports every sweep, so the
+                    //    standing truth is always reapplied in practice).
+                    //
+                    // A DECLINED matcher is still a failure and now STRUCTURAL:
+                    // the residual is no longer believed to be the venue's number,
+                    // so there is "no fetch race to forgive" and entries halt at
+                    // once instead of on a repeat that explained-away would never
+                    // let arrive. Either way the detail states the offered
+                    // correction and the refusal reason — loud, not silent.
+                    let matcher = input
+                        .ledger_realigned
+                        .filter(|(_, d)| (id.total() - expected - d).abs() <= AUDIT_TOL_USD);
+                    let declined: Option<&str> = matcher.as_ref().and_then(|(at_ms, _)| {
+                        if input
+                            .realign_explained_at
+                            .map(|t| t >= *at_ms)
+                            .unwrap_or(false)
+                        {
+                            Some("already spent on an earlier residual (not overwritten since)")
+                        } else if input.now_ms - *at_ms > REALIGN_EXPLAIN_TTL_MS {
+                            Some("stale: older than the fresh window")
+                        } else {
+                            None
+                        }
+                    });
+                    let explained = matcher.is_some() && declined.is_none();
+                    let mut c = AuditCheck::new(
+                        "trade_ledger_identity",
+                        // Structural = NO acceptable explanation: the books are
+                        // local and same-source, halting at once is right. The
+                        // ONLY thing that downgrades to cross-source is an
+                        // accepted (one-shot, fresh) venue correction.
+                        !explained,
+                        expected,
                         id.total(),
-                        a.realized,
-                        id.realized,
-                        id.realized - a.realized,
-                        a.spent,
-                        id.spent,
-                        id.spent - a.spent,
-                        a.received,
-                        id.received,
-                        id.received - a.received,
-                        a.receivable,
-                        id.receivable,
-                        id.receivable - a.receivable,
-                    ),
-                );
-                if let Some((at_ms, d)) = matcher {
-                    if explained {
-                        c.detail.push_str(&format!(
+                        format!(
+                            "balance+receivable ({}) since anchor vs trade records: realized {} → {} ({:+}), \
+                         open cash paid {} → {} ({:+}), returned {} → {} ({:+}), receivable {} → {} ({:+})",
+                            id.total(),
+                            a.realized,
+                            id.realized,
+                            id.realized - a.realized,
+                            a.spent,
+                            id.spent,
+                            id.spent - a.spent,
+                            a.received,
+                            id.received,
+                            id.received - a.received,
+                            a.receivable,
+                            id.receivable,
+                            id.receivable - a.receivable,
+                        ),
+                    );
+                    if let Some((at_ms, d)) = matcher {
+                        if explained {
+                            c.detail.push_str(&format!(
                             "; residual is the venue's own ledger correction ({d:+} at {at_ms}): \
                              cash was set from the venue, the trade record has not caught up — \
                              ONE-SHOT excuse: it is claimed for this audit (issue #921), \
                              the slot is marked spent and a lingering residual next audit \
                              comes back unexplained"
                         ));
-                        realign_spent = Some(at_ms);
-                    } else {
-                        c.detail.push_str(&format!(
+                            realign_spent = Some(at_ms);
+                        } else {
+                            c.detail.push_str(&format!(
                             "; residual matches the venue's ledger correction (Δ{d:+} at {at_ms}) \
                              but the excuse is REFUSED: {} — downgraded back to STRUCTURAL (issue #921)",
                             declined.unwrap_or_default()
                         ));
+                        }
                     }
+                    if input.seen_trades == 0 {
+                        // Nothing has been closed yet, so the trade record says nothing
+                        // about the cash beyond "no realized PnL" — still a real check
+                        // (an unexplained cash move shows up immediately), but say so.
+                        c.detail.push_str("; no closed trades yet");
+                    }
+                    checks.push(c);
                 }
-                if input.seen_trades == 0 {
-                    // Nothing has been closed yet, so the trade record says nothing
-                    // about the cash beyond "no realized PnL" — still a real check
-                    // (an unexplained cash move shows up immediately), but say so.
-                    c.detail.push_str("; no closed trades yet");
-                }
-                checks.push(c);
             }
         }
     }

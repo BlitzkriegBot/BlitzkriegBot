@@ -1397,7 +1397,7 @@ fn an_interrupted_settlement_recovers_once_on_restart() {
 
     // Restart: the position log still holds it, and the settlement stands.
     let mut c = settling_core(&dir, balance - dec!(2.084));
-    assert_eq!(c.restore_positions(), 1);
+    assert_eq!(c.restore_positions().unwrap(), 1);
     assert!(
         c.positions().open_positions().is_empty(),
         "closed by recovery"
@@ -1418,7 +1418,11 @@ fn an_interrupted_settlement_recovers_once_on_restart() {
 
     // A second restart must not close or record it again.
     let mut c = settling_core(&dir, balance - dec!(2.084));
-    assert_eq!(c.restore_positions(), 0, "the position log is empty now");
+    assert_eq!(
+        c.restore_positions().unwrap(),
+        0,
+        "the position log is empty now"
+    );
     assert_eq!(c.trade_summary(None)["totalTrades"], serde_json::json!(1));
     assert_eq!(settlement_json(&c)["receivableUsd"], serde_json::json!(5.0));
     c.on_market_resolution(winning_resolution(), 3_002);

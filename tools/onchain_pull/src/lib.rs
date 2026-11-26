@@ -47,12 +47,14 @@ mod convert;
 mod dataset;
 mod fetch;
 mod pull;
+pub mod radar;
 mod request;
 pub mod reverse;
 
 pub use dataset::*;
 pub use fetch::*;
 pub use pull::*;
+pub use radar::*;
 pub use request::*;
 pub use reverse::*;
 

@@ -215,6 +215,8 @@ pub const METHODS: &[MethodSpec] = &[
     read(method::BLUEPRINT_LOAD),
     read(method::BLUEPRINT_LOAD_SOURCE),
     read(method::ARB_CONFIG_GET),
+    read(method::SMART_MONEY_SCAN),
+    read(method::SMART_MONEY_ANALYZE),
     // ── Action: live execution / gate / dispatch state ─────────────────────
     // These are the verbs #177 found penetrating: the old whitelist was a
     // configuration-verb list, so nothing here was ever registered.

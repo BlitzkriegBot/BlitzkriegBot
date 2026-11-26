@@ -1,13 +1,19 @@
 <script setup lang="ts">
 /**
- * 智能交易 · 聪明钱逆向策略引擎（RFC #249 · 骨架 + WebUI）。
+ * 智能交易 · 聪明钱逆向策略引擎（RFC #249 · Stage 2 雷达 + 单钱包逆向接入）。
  *
  * 原则：不跟单（避免 5m 轮次 200ms–2s 链上延迟与二手盘口滑点），而是
  * 「聪明钱雷达 → 拉取成交与行为指纹 → 逆向合成 Blueprint/Lua → 样本外回测打分」
  * 四步闭环，经真实延迟回测验真后才由人工确认上架。
  */
 import { computed, ref } from 'vue'
-import { ArrowRight, Compass, Cpu, FlaskConical, Radar, Search, ShieldAlert } from 'lucide-vue-next'
+import { ArrowRight, Compass, Cpu, FlaskConical, Radar, Save, Search, ShieldAlert } from 'lucide-vue-next'
+import {
+  api,
+  type RadarCandidateDoc,
+  type SmartMoneyAnalyzeDoc,
+  type StrategyArchetype,
+} from '@/api/client'
 import { usePanelStore } from '@/stores/panel'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
@@ -16,48 +22,29 @@ import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
 import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
 
-interface RadarCandidate {
-  wallet: string
-  label: string
-  market: '5m' | '15m'
-  buyFills: number
-  winRatePct: number
-  netPnlUsd: number
-  profitFactor: number | null
-  archetype: 'late_favorite' | 'pair_arb' | 'mid_round_momentum' | 'cheap_option_hunter' | 'unclassifiable'
-}
-
-interface FingerprintView {
-  wallet: string
-  buyFills: number
-  assets: string[]
-  entryPxBand: string
-  timeLeftBand: string
-  pairRatioPct: number
-  holdRatioPct: number
-  archetype: RadarCandidate['archetype']
-  reason: string
-  blueprintJson: string | null
-}
-
 const store = usePanelStore()
 
-// ── 雷达筛选状态（Stage 2 接入 Polymarket Leaderboard / Data API） ──
+// ── 雷达筛选状态（Polymarket Leaderboard / Data API） ──
 const radarMarket = ref<'5m' | '15m'>('5m')
-const radarMinFills = ref('200')
-const radarCandidates = ref<RadarCandidate[]>([])
+const radarPeriod = ref<'DAY' | 'WEEK' | 'MONTH'>('WEEK')
+const radarMinFills = ref('20')
+const radarBusy = ref(false)
+const radarErr = ref<string | null>(null)
+const radarScannedCount = ref<number | null>(null)
+const radarCandidates = ref<RadarCandidateDoc[]>([])
 
-// ── 单钱包逆向输入与状态（Stage 3 接通内核 smart_money.analyze + OOS 回测） ──
+// ── 单钱包逆向分析台 ──
 const walletInput = ref('')
-const lookbackDays = ref('7')
+const analyzeBusy = ref(false)
 const analyzeErr = ref<string | null>(null)
-const analyzeNotice = ref<string | null>(null)
-const activeFingerprint = ref<FingerprintView | null>(null)
+const analyzeResult = ref<SmartMoneyAnalyzeDoc | null>(null)
+const saveBusy = ref(false)
+const saveNotice = ref<string | null>(null)
 
 const WALLET_RE = /^0x[a-fA-F0-9]{40}$/
 const walletValid = computed(() => WALLET_RE.test(walletInput.value.trim()))
 
-function archetypeLabel(a: RadarCandidate['archetype']): string {
+function archetypeLabel(a: StrategyArchetype): string {
   switch (a) {
     case 'late_favorite': return '尾盘顺势持有'
     case 'pair_arb': return '双边折价配对'
@@ -67,20 +54,131 @@ function archetypeLabel(a: RadarCandidate['archetype']): string {
   }
 }
 
-function submitWalletAnalysis(): void {
+function archetypeVariant(a: StrategyArchetype): 'gold' | 'up' | 'default' {
+  if (a === 'unclassifiable') return 'default'
+  if (a === 'pair_arb') return 'up'
+  return 'gold'
+}
+
+const blueprintText = computed(() => {
+  const bp = analyzeResult.value?.blueprint
+  return bp ? JSON.stringify(bp, null, 2) : null
+})
+
+async function runRadarScan(): Promise<void> {
+  if (radarBusy.value) return
+  radarErr.value = null
+  const minFills = Math.max(1, Number(radarMinFills.value) || 20)
+  radarBusy.value = true
+  try {
+    const res = await api.smartMoneyScan({
+      market: radarMarket.value,
+      minBuyFills: minFills,
+      limit: 15,
+      timePeriod: radarPeriod.value,
+    })
+    if (res.error) {
+      radarErr.value = res.error
+      return
+    }
+    radarScannedCount.value = res.scannedWallets
+    radarCandidates.value = res.candidates ?? []
+  } catch (e) {
+    radarErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    radarBusy.value = false
+  }
+}
+
+async function submitWalletAnalysis(): Promise<void> {
+  if (analyzeBusy.value) return
   analyzeErr.value = null
-  analyzeNotice.value = null
+  saveNotice.value = null
   const addr = walletInput.value.trim()
   if (!WALLET_RE.test(addr)) {
     analyzeErr.value = '请输入合法的 Polymarket 钱包地址（0x 开头的 40 位十六进制地址）。'
     return
   }
-  const days = Number(lookbackDays.value)
-  if (!Number.isFinite(days) || days < 1 || days > 90) {
-    analyzeErr.value = '回看天数需在 1–90 天之间。'
+  analyzeBusy.value = true
+  try {
+    const res = await api.smartMoneyAnalyze(addr, radarMarket.value)
+    if (res.error) {
+      analyzeErr.value = res.error
+      return
+    }
+    analyzeResult.value = res
+  } catch (e) {
+    analyzeErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    analyzeBusy.value = false
+  }
+}
+
+function inspectCandidate(c: RadarCandidateDoc): void {
+  walletInput.value = c.wallet
+  saveNotice.value = null
+  analyzeErr.value = null
+  analyzeResult.value = {
+    fingerprint: {
+      wallet: c.wallet,
+      totalFills: c.buyFills,
+      buyFills: c.buyFills,
+      sellFills: 0,
+      uniqueConditions: c.uniqueConditions,
+      assets: c.assets,
+      durationsSec: c.durationsSec,
+      entryPxMin: c.entryPxP25,
+      entryPxP10: c.entryPxP25,
+      entryPxP25: c.entryPxP25,
+      entryPxP50: c.entryPxP50,
+      entryPxP75: c.entryPxP90,
+      entryPxP90: c.entryPxP90,
+      entryPxMax: c.entryPxP90,
+      timeLeftP10: c.timeLeftP10,
+      timeLeftP50: c.timeLeftP50,
+      timeLeftP90: c.timeLeftP90,
+      pairRatio: c.pairRatio,
+      holdToSettlementRatio: c.holdToSettlementRatio,
+      avgNotionalUsd: c.avgNotionalUsd,
+      resolvedRounds: 0,
+      wins: 0,
+      winRatePct: 0,
+      netPnlUsd: c.leaderboardPnlUsd,
+      profitFactor: null,
+    },
+    archetype: c.archetype,
+    reason: c.reason,
+    blueprint: c.blueprint ?? null,
+  }
+}
+
+async function saveSynthesizedBlueprint(): Promise<void> {
+  const bp = analyzeResult.value?.blueprint
+  if (!bp || saveBusy.value) return
+  const name = typeof bp.name === 'string' ? bp.name.trim() : ''
+  if (!name) {
+    analyzeErr.value = '合成的 Blueprint 缺少策略名。'
     return
   }
-  analyzeNotice.value = `地址 ${addr.slice(0, 8)}…${addr.slice(-6)}（${radarMarket.value} · 近 ${days} 天）已通过格式校验；Stage 2/3 接通链上拉取与 smart_money.analyze IPC 后将在此直接输出行为指纹、逆向 Blueprint 与样本外回测评分。`
+  saveBusy.value = true
+  saveNotice.value = null
+  analyzeErr.value = null
+  try {
+    const res = await api.blueprintSave({
+      name,
+      json: JSON.stringify(bp),
+      overwrite: true,
+    })
+    if (res.error) {
+      analyzeErr.value = res.error
+      return
+    }
+    saveNotice.value = `已保存策略包 ${res.name}（默认 disabled，含 ${res.tunables.length} 个可进化参数），可前往「回测」页验真后在「策略」页启用。`
+  } catch (e) {
+    analyzeErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    saveBusy.value = false
+  }
 }
 
 function openBlueprintPage(): void {
@@ -101,7 +199,7 @@ function openBacktestPage(): void {
           <Radar class="size-4 text-primary" />
         </template>
         <template #action>
-          <Badge variant="gold" dot>骨架就绪 · 不跟单零延迟逆向</Badge>
+          <Badge variant="gold" dot>Stage 2 · 雷达扫描与逆向就绪</Badge>
         </template>
       </CardHeader>
 
@@ -114,30 +212,30 @@ function openBacktestPage(): void {
         <div class="rounded-lg border border-line bg-panel-2/40 p-2.5">
           <div class="flex items-center justify-between text-[11px] font-semibold text-fg">
             <span>① 聪明钱雷达</span>
-            <Badge variant="default">Stage 2</Badge>
+            <Badge variant="up">已接通</Badge>
           </div>
-          <p class="mt-1 text-[11px] text-faint-fg">扫描 5m/15m Crypto 榜单，过滤低样本与赌狗地址</p>
+          <p class="mt-1 text-[11px] text-faint-fg">扫描 Polymarket Crypto 榜单，过滤 5m/15m 优质地址</p>
         </div>
         <div class="rounded-lg border border-line bg-panel-2/40 p-2.5">
           <div class="flex items-center justify-between text-[11px] font-semibold text-fg">
             <span>② 行为指纹</span>
-            <Badge variant="up">已建模</Badge>
+            <Badge variant="up">已接通</Badge>
           </div>
           <p class="mt-1 text-[11px] text-faint-fg">入场价分位数、剩余时间窗口、配对率与持有到期率</p>
         </div>
         <div class="rounded-lg border border-line bg-panel-2/40 p-2.5">
           <div class="flex items-center justify-between text-[11px] font-semibold text-fg">
             <span>③ 逆向蓝图</span>
-            <Badge variant="up">已建模</Badge>
+            <Badge variant="up">已接通</Badge>
           </div>
-          <p class="mt-1 text-[11px] text-faint-fg">合成合规 v1 Blueprint JSON，编译沙箱 Lua + 可进化旋钮</p>
+          <p class="mt-1 text-[11px] text-faint-fg">合成合规 v1 Blueprint，一键保存沙箱 Lua + 可进化旋钮</p>
         </div>
         <div class="rounded-lg border border-line bg-panel-2/40 p-2.5">
           <div class="flex items-center justify-between text-[11px] font-semibold text-fg">
             <span>④ 样本外验真</span>
             <Badge variant="default">Stage 3</Badge>
           </div>
-          <p class="mt-1 text-[11px] text-faint-fg">真实延迟 + 官方费率回测打分，正期望才允许上架</p>
+          <p class="mt-1 text-[11px] text-faint-fg">在「回测」页用真实延迟 + 官方费率打分，正期望再上架</p>
         </div>
       </div>
     </Card>
@@ -149,7 +247,10 @@ function openBacktestPage(): void {
           <Compass class="size-4 text-faint-fg" />
         </template>
         <template #action>
-          <span class="num text-[11px] text-faint-fg">已收录 {{ radarCandidates.length }} 个地址</span>
+          <span class="num text-[11px] text-faint-fg">
+            <template v-if="radarScannedCount !== null">已扫描 {{ radarScannedCount }} 位榜首 · </template>
+            命中 {{ radarCandidates.length }} 个
+          </span>
         </template>
       </CardHeader>
 
@@ -168,16 +269,69 @@ function openBacktestPage(): void {
             @click="radarMarket = '15m'"
           >15m 轮次</button>
         </div>
+        <div class="flex items-center gap-1 rounded-md border border-line bg-panel-2 p-0.5 text-[11px]">
+          <button
+            v-for="p in (['DAY', 'WEEK', 'MONTH'] as const)"
+            :key="p"
+            type="button"
+            class="rounded px-2 py-1 font-medium transition-colors"
+            :class="radarPeriod === p ? 'bg-primary/15 text-fg' : 'text-muted-fg hover:text-fg'"
+            @click="radarPeriod = p"
+          >{{ p === 'DAY' ? '日榜' : p === 'WEEK' ? '周榜' : '月榜' }}</button>
+        </div>
         <label class="flex items-center gap-1.5 text-[11.5px] text-muted-fg">
           <span>最小买入笔数</span>
           <Input v-model="radarMinFills" class="num h-7 w-20 text-right text-[12px]" type="number" min="20" step="10" />
         </label>
-        <Badge variant="default">自动扫榜将在 Stage 2 接入</Badge>
+        <Button size="sm" :disabled="radarBusy" @click="runRadarScan">
+          <Radar class="size-3.5" />{{ radarBusy ? '扫榜中…' : '扫描雷达' }}
+        </Button>
       </div>
 
+      <AlertBanner v-if="radarErr" class="mt-3" tone="warn" dismissible @dismiss="radarErr = null">
+        {{ radarErr }}
+      </AlertBanner>
+
       <div v-if="radarCandidates.length === 0" class="mt-3 rounded-lg border border-dashed border-line bg-panel-2/20 p-4 text-center">
-        <p class="text-[12px] text-muted-fg">雷达候选池为空——Stage 2 接入 Polymarket Leaderboard / Data API 后将自动筛选 5m/15m Crypto 优质地址。</p>
-        <p class="mt-1 text-[11px] text-faint-fg">现在可直接在下方输入任意已知聪明钱地址，提前验证地址与逆向工作流。</p>
+        <p class="text-[12px] text-muted-fg">
+          {{ radarBusy ? '正在向 Polymarket Data API 拉取 Crypto 榜首与 5m/15m 成交指纹…' : '点击「扫描雷达」拉取 Polymarket Crypto 榜首，自动筛出可逆向的 5m/15m 候选地址。' }}
+        </p>
+      </div>
+
+      <div v-else class="mt-3 overflow-x-auto">
+        <table class="w-full text-left text-[12px]">
+          <thead class="border-b border-line text-[11px] text-faint-fg">
+            <tr>
+              <th class="py-1.5 pr-3">交易员 / 地址</th>
+              <th class="py-1.5 pr-3">骨架分类</th>
+              <th class="py-1.5 pr-3 text-right">买入笔数</th>
+              <th class="py-1.5 pr-3 text-right">入场价 (p25–p90)</th>
+              <th class="py-1.5 pr-3 text-right">剩余窗 (p10–p90)</th>
+              <th class="py-1.5 pr-3 text-right">榜单 PnL</th>
+              <th class="py-1.5 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="c in radarCandidates" :key="c.wallet" class="border-t border-line">
+              <td class="py-2 pr-3">
+                <div class="font-medium text-fg">{{ c.label }}</div>
+                <div class="font-mono text-[10.5px] text-faint-fg">{{ c.wallet.slice(0, 8) }}…{{ c.wallet.slice(-6) }}</div>
+              </td>
+              <td class="py-2 pr-3">
+                <Badge :variant="archetypeVariant(c.archetype)">{{ archetypeLabel(c.archetype) }}</Badge>
+              </td>
+              <td class="num py-2 pr-3 text-right">{{ c.buyFills }}</td>
+              <td class="num py-2 pr-3 text-right">{{ c.entryPxP25.toFixed(2) }}–{{ c.entryPxP90.toFixed(2) }}</td>
+              <td class="num py-2 pr-3 text-right">{{ c.timeLeftP10 }}s–{{ c.timeLeftP90 }}s</td>
+              <td class="num py-2 pr-3 text-right" :class="c.leaderboardPnlUsd >= 0 ? 'text-up' : 'text-down'">
+                {{ c.leaderboardPnlUsd >= 0 ? '+' : '' }}${{ c.leaderboardPnlUsd.toFixed(0) }}
+              </td>
+              <td class="py-2 text-right">
+                <Button variant="outline" size="sm" @click="inspectCandidate(c)">载入逆向</Button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </Card>
 
@@ -210,39 +364,49 @@ function openBacktestPage(): void {
             aria-label="目标聪明钱地址"
           />
         </label>
-        <label class="w-28">
-          <span class="label-micro">回看天数</span>
-          <Input v-model="lookbackDays" class="num mt-1 text-right text-[12px]" type="number" min="1" max="90" />
-        </label>
-        <Button size="sm" :disabled="!walletInput.trim()" @click="submitWalletAnalysis">
-          <Search class="size-3.5" /> 分析与逆向
+        <Button size="sm" :disabled="!walletInput.trim() || analyzeBusy" @click="submitWalletAnalysis">
+          <Search class="size-3.5" />{{ analyzeBusy ? '分析中…' : '分析与逆向' }}
         </Button>
       </div>
 
       <AlertBanner v-if="analyzeErr" class="mt-3" tone="warn" dismissible @dismiss="analyzeErr = null">
         {{ analyzeErr }}
       </AlertBanner>
-      <AlertBanner v-if="analyzeNotice" class="mt-3" tone="info" dismissible @dismiss="analyzeNotice = null">
-        {{ analyzeNotice }}
+      <AlertBanner v-if="saveNotice" class="mt-3" tone="info" dismissible @dismiss="saveNotice = null">
+        {{ saveNotice }}
       </AlertBanner>
 
-      <div v-if="activeFingerprint" class="mt-3 grid gap-3 sm:grid-cols-2">
+      <div v-if="analyzeResult" class="mt-3 grid gap-3 sm:grid-cols-2">
         <div class="rounded-lg border border-line bg-panel-2/30 p-3 text-[12px]">
           <div class="flex items-center justify-between">
             <span class="label-micro">行为指纹</span>
-            <Badge variant="gold">{{ archetypeLabel(activeFingerprint.archetype) }}</Badge>
+            <Badge :variant="archetypeVariant(analyzeResult.archetype)">{{ archetypeLabel(analyzeResult.archetype) }}</Badge>
           </div>
-          <dl class="mt-2 space-y-1 text-[11.5px]">
-            <div class="flex justify-between"><dt class="text-faint-fg">买入样本</dt><dd class="num">{{ activeFingerprint.buyFills }} 笔</dd></div>
-            <div class="flex justify-between"><dt class="text-faint-fg">入场价分位 (p25–p90)</dt><dd class="num">{{ activeFingerprint.entryPxBand }}</dd></div>
-            <div class="flex justify-between"><dt class="text-faint-fg">剩余时间窗口 (p10–p90)</dt><dd class="num">{{ activeFingerprint.timeLeftBand }}</dd></div>
-            <div class="flex justify-between"><dt class="text-faint-fg">双边配对率 / 持有到期率</dt><dd class="num">{{ activeFingerprint.pairRatioPct }}% / {{ activeFingerprint.holdRatioPct }}%</dd></div>
+          <p class="mt-1.5 text-[11.5px] text-muted-fg">{{ analyzeResult.reason }}</p>
+          <dl class="mt-2.5 space-y-1 text-[11.5px]">
+            <div class="flex justify-between"><dt class="text-faint-fg">买入样本 / 唯一市场</dt><dd class="num">{{ analyzeResult.fingerprint.buyFills }} 笔 / {{ analyzeResult.fingerprint.uniqueConditions }} 场</dd></div>
+            <div class="flex justify-between"><dt class="text-faint-fg">交易标的</dt><dd class="num">{{ analyzeResult.fingerprint.assets.join(', ') || '—' }}</dd></div>
+            <div class="flex justify-between"><dt class="text-faint-fg">入场价分位 (p25 / p50 / p90)</dt><dd class="num">{{ analyzeResult.fingerprint.entryPxP25.toFixed(2) }} / {{ analyzeResult.fingerprint.entryPxP50.toFixed(2) }} / {{ analyzeResult.fingerprint.entryPxP90.toFixed(2) }}</dd></div>
+            <div class="flex justify-between"><dt class="text-faint-fg">剩余时间窗 (p10 / p50 / p90)</dt><dd class="num">{{ analyzeResult.fingerprint.timeLeftP10 }}s / {{ analyzeResult.fingerprint.timeLeftP50 }}s / {{ analyzeResult.fingerprint.timeLeftP90 }}s</dd></div>
+            <div class="flex justify-between"><dt class="text-faint-fg">双边配对率 / 持有到期率</dt><dd class="num">{{ (analyzeResult.fingerprint.pairRatio * 100).toFixed(1) }}% / {{ (analyzeResult.fingerprint.holdToSettlementRatio * 100).toFixed(1) }}%</dd></div>
+            <div class="flex justify-between"><dt class="text-faint-fg">单笔均额</dt><dd class="num">${{ analyzeResult.fingerprint.avgNotionalUsd.toFixed(2) }}</dd></div>
           </dl>
         </div>
+
         <div class="rounded-lg border border-line bg-panel-2/30 p-3 text-[12px]">
-          <div class="label-micro">逆向 Blueprint 产物</div>
-          <pre v-if="activeFingerprint.blueprintJson" class="mt-2 max-h-40 overflow-auto rounded bg-panel p-2 text-[11px]">{{ activeFingerprint.blueprintJson }}</pre>
-          <p v-else class="mt-2 text-[11.5px] text-muted-fg">{{ activeFingerprint.reason }}</p>
+          <div class="flex items-center justify-between">
+            <span class="label-micro">逆向 Blueprint 产物</span>
+            <Button
+              v-if="blueprintText"
+              size="sm"
+              :disabled="saveBusy"
+              @click="saveSynthesizedBlueprint"
+            >
+              <Save class="size-3.5" />{{ saveBusy ? '保存中…' : '保存为策略包' }}
+            </Button>
+          </div>
+          <pre v-if="blueprintText" class="mt-2 max-h-48 overflow-auto rounded bg-panel p-2 text-[11px]">{{ blueprintText }}</pre>
+          <p v-else class="mt-2 text-[11.5px] text-muted-fg">{{ analyzeResult.reason }}</p>
         </div>
       </div>
 

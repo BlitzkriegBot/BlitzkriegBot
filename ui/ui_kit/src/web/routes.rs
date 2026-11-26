@@ -213,6 +213,12 @@ impl WebServer {
                 // touches the filesystem (repo iron rule).
                 self.proxy_backtest_body("blueprint.saveSource", &req.body)
             }
+            ("POST", "/api/smart-money/scan") => {
+                self.proxy_backtest_body("smart_money.scan", &req.body)
+            }
+            ("POST", "/api/smart-money/analyze") => {
+                self.proxy_backtest_body("smart_money.analyze", &req.body)
+            }
             ("GET", "/api/risk-limits") => {
                 // E26 (§4.4): the settings page's risk card reads the EFFECTIVE
                 // systemic limits through the SAME core client the snapshot

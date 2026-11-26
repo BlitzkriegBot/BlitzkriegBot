@@ -3,9 +3,11 @@
 #
 # Full pipeline, aborts on the first failure — never deploys a red tree, and
 # never leaves the stack stopped:
-#   0. fetch ceer and resolve the source (default: ceer/main — the deploy line
-#      moved to main with v0.3.0; it used to be the feat/trading-safety-selfcheck
-#      branch, which stalled at Wave 0 and left every upgrade a no-op at 0.2.1),
+#   0. fetch the upgrade remote and resolve the source (default: origin/main on
+#      BLITZKRIEG_UPGRADE_REMOTE_URL, which defaults to the GitHub mirror — the
+#      deploy line moved to main with v0.3.0; it used to be the
+#      feat/trading-safety-selfcheck branch, which stalled at Wave 0 and left
+#      every upgrade a no-op at 0.2.1).
 #      override with BLITZKRIEG_UPGRADE_SOURCE
 #   1. put the production build worktree target/bk-main-build on the source,
 #      creating it if it is gone (detached checkout — the branch refs and the
@@ -73,9 +75,25 @@ set -eu
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 build_wt="$repo_root/target/bk-main-build"
 release="$repo_root/target/release"
-SOURCE_REF="${BLITZKRIEG_UPGRADE_SOURCE:-ceer/main}"
+# The upgrade SOURCE is two knobs, because a local Gitea runs ahead of the
+# GitHub mirror during development: point UPGRADE_REMOTE_URL at the Gitea
+# clone to upgrade production from local main, or leave it at the GitHub
+# mirror for a release upgrade. The remote is a URL so the build worktree does
+# not depend on whatever remotes the operator's checkout happens to have.
+UPGRADE_REMOTE_URL="${BLITZKRIEG_UPGRADE_REMOTE_URL:-https://github.com/BlitzkriegBot/BlitzkriegBot.git}"
+SOURCE_REF="${BLITZKRIEG_UPGRADE_SOURCE:-main}"
+UPGRADE_REMOTE_NAME="upgrade"
 RUN_LOG="/tmp/blitzkrieg-run.log"
 READY_DEADLINE="${BLITZKRIEG_UPGRADE_DEADLINE:-120}"   # seconds to reach identity
+
+# .env 是运行时配置，不进版本库（见 R2）。只把它当作升级远端的额外来源，
+# 不把任何凭证导入环境：只提取两个升级专用键。
+if [ -f "$repo_root/.env" ]; then
+  ENV_URL=$(grep -E '^BLITZKRIEG_UPGRADE_REMOTE_URL=' "$repo_root/.env" 2>/dev/null | head -1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//') || true
+  ENV_REF=$(grep -E '^BLITZKRIEG_UPGRADE_SOURCE=' "$repo_root/.env" 2>/dev/null | head -1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//') || true
+  [ -n "$ENV_URL" ] && UPGRADE_REMOTE_URL="$ENV_URL"
+  [ -n "$ENV_REF" ] && SOURCE_REF="$ENV_REF"
+fi
 
 # The launcher, the kernel, the venue extension the kernel dlopens, and the
 # terminal panel binary this checkout ships. All four are built by the workspace.
@@ -97,6 +115,26 @@ die() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
 # fatal paths dies as "ua_die: command not found" and the real diagnosis
 # is lost.
 ua_die() { die "$1"; }
+
+# Fetch <url> into the remote named <name> of checkout <dir>, replacing whatever
+# that name pointed at before. Upgrading from a URL rather than a pre-existing
+# remote name is deliberate: during development the local Gitea runs ahead of
+# the GitHub mirror, and an operator should not have to hand-edit `git remote`
+# in two checkouts (the main one and the build worktree) to switch between them.
+# A URL also means the build worktree cannot silently keep fetching the remote it
+# was created with while the main checkout moved on.
+ua_remote_fetch() {
+  dir=$1; name=$2; url=$3
+
+  [ -n "$dir" ] && [ -n "$name" ] && [ -n "$url" ] ||
+    die "ua_remote_fetch needs <dir> <remote_name> <url>"
+
+  git -C "$dir" remote get-url "$name" >/dev/null 2>&1 &&
+    git -C "$dir" remote set-url "$name" "$url" ||
+    git -C "$dir" remote add "$name" "$url"
+  git -C "$dir" fetch "$name" --quiet ||
+    die "cannot fetch $url — check the URL and that the credential helper can reach it"
+}
 
 # Rotate the run log aside instead of truncating it in place (issue 690). Both
 # start points below used to `: > "$RUN_LOG"`, so every upgrade — and every
@@ -132,16 +170,16 @@ wtlib="$repo_root/scripts/lib/upgrade-worktree.sh"
 [ -f "$wtlib" ] || die "$wtlib is missing — this checkout is incomplete"
 . "$wtlib"
 
-step "0. fetch ceer, resolve source"
-git fetch ceer --quiet
-SRC_SHA=$(git rev-parse "$SOURCE_REF")
+step "0. fetch $UPGRADE_REMOTE_NAME ($UPGRADE_REMOTE_URL), resolve source"
+ua_remote_fetch "$repo_root" "$UPGRADE_REMOTE_NAME" "$UPGRADE_REMOTE_URL"
+SRC_SHA=$(git -C "$repo_root" rev-parse "$UPGRADE_REMOTE_NAME/$SOURCE_REF")
 # --short=12 because that is what the build stamps into the binary: build.rs
 # (the core/build_info crate's) runs `git rev-parse --short=12 HEAD`. A plain
 # `--short` (7) can never equal the
 # `g<sha>` in `.core-lock`, which would turn the identity check in step 7 into a
 # guaranteed failure — every upgrade would build, install, then roll itself back.
 SRC_SHORT=$(git rev-parse --short=12 "$SRC_SHA")
-echo "source: $SOURCE_REF @ $SRC_SHORT"
+echo "source: $UPGRADE_REMOTE_NAME/$SOURCE_REF @ $SRC_SHORT"
 
 step "1. production build worktree → source"
 # Create it when it is gone (or recreate a broken one) before touching it: the
@@ -149,7 +187,7 @@ step "1. production build worktree → source"
 # build, not the deploy. A worktree belonging to a different repository is
 # refused rather than built from.
 ua_wt_ensure "$repo_root" "$build_wt" "$SRC_SHA"
-git -C "$build_wt" fetch ceer --quiet
+ua_remote_fetch "$build_wt" "$UPGRADE_REMOTE_NAME" "$UPGRADE_REMOTE_URL"
 git -C "$build_wt" checkout --detach "$SRC_SHA"
 # #1199 eleventh audit: a clean tree builds a clean version stamp. The detached
 # checkout resets tracked files, but leftover untracked files from a previous

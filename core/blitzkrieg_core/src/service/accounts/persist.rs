@@ -985,12 +985,44 @@ impl Core {
             .filter(|a| !a.strategies.is_empty())
             .map(|a| (a.id.as_str().to_string(), a.strategies.clone()))
             .collect();
-        for (account, strategies) in assignments {
+        for (account, strategies) in &assignments {
             // A set member's scope is built ENABLED — being in the account's
             // enablement set IS the operator's intent to run it there.
             // Unknown names are skipped with a warning by the rebuild (the
             // registered set is what the strategy dir loaded this boot).
-            self.set_account_scopes_at_boot(&account, &strategies);
+            self.set_account_scopes_at_boot(account, strategies);
+        }
+        let armed = self.enabled_strategy_names();
+        // Refresh the legacy strategy-state mirror after SQLite assignments
+        // are armed so `strategy-state.dry.json` never stays stale at `[]`.
+        if let Some(state_path) = self.config.strategy_state_path.as_deref()
+            && let Err(e) = crate::strategy_state::save(std::path::Path::new(state_path), &armed)
+        {
+            tracing::error!(
+                path = %state_path,
+                error = %e,
+                "strategy state mirror NOT synced after boot account assignments"
+            );
+        }
+        if !assignments.is_empty() {
+            eprintln!(
+                "blitzkrieg-core: account strategy assignments armed: enabled=[{}]",
+                armed.join(", ")
+            );
+            for (account, strategies) in &assignments {
+                for name in strategies {
+                    if !armed.iter().any(|a| a == name) {
+                        tracing::error!(
+                            account = %account,
+                            strategy = %name,
+                            "account_settings.strategies requests strategy that is NOT armed in engine after boot"
+                        );
+                        eprintln!(
+                            "blitzkrieg-core: ERROR account `{account}` expects strategy `{name}` (SQLite), but it is NOT armed in engine"
+                        );
+                    }
+                }
+            }
         }
         Ok(Vec::new())
     }

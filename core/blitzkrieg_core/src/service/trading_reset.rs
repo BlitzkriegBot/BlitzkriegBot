@@ -190,6 +190,21 @@ impl Core {
         for name in &disabled {
             self.set_strategy_enabled(name, false);
         }
+        // Keep SQLite `account_settings.strategies` and the in-memory account
+        // book in lockstep with the engine disable above: otherwise a trading
+        // reset turns the engine scopes OFF while SQLite (and therefore WebUI
+        // Strategies.vue) still reports the strategies as enabled, causing a
+        // silent "looks ON in UI, never executes in kernel" divergence.
+        if let Some(db) = self.account_risk_db.clone() {
+            let _ = db.save_setting(
+                account_id.as_str(),
+                crate::risk::account_store::STRATEGIES_SETTING,
+                Some("[]"),
+            );
+        }
+        let _ = self
+            .accounts
+            .set_strategies(&account_id, Vec::new(), now_ms);
 
         // 2) 撤销目标账户的 resting 挂单。逐单走 `cancel` 释放 BUY 预留
         //    （在订单自己的账簿里，E28）、清 engine 的 pending-token 闩、记

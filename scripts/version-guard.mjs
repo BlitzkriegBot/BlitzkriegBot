@@ -87,19 +87,82 @@ check('src-tauri/Cargo.toml and tauri.conf.json versions are equal', () => {
   }
 });
 
+// The workspace members named in the root manifest. Trailing TOML comments after
+// the comma are tolerated; a member entry is a quoted path ending in a comma,
+// and nothing else in the root manifest has that shape on its own line (the
+// `exclude = [...]` line starts with a key).
+const members = [
+  ...rootManifest.matchAll(/^\s*"((?:core|ui|extensions|user_layer)\/[\w\-/]+)",\s*(?:#.*)?$/gm),
+].map((m) => m[1]);
+
+// ── 1c. The nested workspaces' locks must track the root version ────────────
+// The root manifest's `exclude` list carves out the stand-alone workspaces that
+// each carry their own Cargo.lock (mirroring a real third-party author's
+// checkout). A version bump edits the root manifest and the root lock; nothing
+// reminds you that these locks pin the *same* path crates to the old version.
+// The failure is not cosmetic: every `cargo build --release --locked` in them
+// then refuses to run — `--locked was passed to prevent this` — and the release
+// upgrade dies on its build step with an otherwise green tree. Reads manifests
+// and locks only, so it also runs under --manifest-only.
+check('nested workspace locks track the root version', () => {
+  const excluded =
+    rootManifest.match(/^\s*exclude\s*=\s*\[([^\]]*)\]/m)?.[1].match(/"([^"]+)"/g)?.map((s) => s.slice(1, -1)) ?? [];
+  // A silent scan failure must not turn this into a check that can never fail:
+  // with no excluded dirs or no known member names there is nothing to compare.
+  if (excluded.length === 0) {
+    throw new Error('no `exclude` list found in the root manifest — the scan is broken, not the tree');
+  }
+  // Only the crates that inherit the root version are ours to pin: a nested
+  // workspace's own crates (parity_strategy, momentum_alpha, …) carry literal
+  // versions of their own and must be left alone.
+  const ours = new Set();
+  for (const m of members) {
+    try {
+      const name = read(m, 'Cargo.toml').match(/^name\s*=\s*"([^"]+)"/m)?.[1];
+      if (name) ours.add(name);
+    } catch {
+      // A member whose manifest cannot be read is check #2's problem, not ours.
+    }
+  }
+  if (ours.size === 0) {
+    throw new Error('no workspace member names resolved — the member scan is broken, not the tree');
+  }
+  const stale = [];
+  let inspected = 0;
+  for (const dir of excluded) {
+    let lock;
+    try {
+      lock = read(dir, 'Cargo.lock');
+    } catch {
+      continue; // not every excluded workspace keeps a lock in the repo (src-tauri's is ignored)
+    }
+    for (const block of lock.split('[[package]]').slice(1)) {
+      if (/^\s*source\s*=/m.test(block)) continue; // registry/git dep, not a path crate
+      const name = block.match(/^\s*name\s*=\s*"([^"]+)"/m)?.[1];
+      const ver = block.match(/^\s*version\s*=\s*"([^"]+)"/m)?.[1];
+      if (!name || !ver || !ours.has(name)) continue;
+      inspected++;
+      if (ver !== version) stale.push(`${dir}: ${name} = ${ver}`);
+    }
+  }
+  // Same reasoning as above: comparing zero packages is not a pass.
+  if (inspected === 0) {
+    throw new Error('no root-versioned path crates found in any nested lock — the lock scan is broken');
+  }
+  if (stale.length) {
+    throw new Error(
+      `${stale.join(', ')}\n       expected ${version} — refresh the lock from its own directory ` +
+        `(\`cargo build --release\` or \`cargo update --workspace\`) and commit it`,
+    );
+  }
+});
+
 if (manifestOnly) {
   console.log(failures ? `\nversion-guard: ${failures} failure(s)` : '\nversion-guard: ok');
   process.exit(failures ? 1 : 0);
 }
 
 // ── 2. Member manifests: inherit, or be on the allowlist ─────────────────────
-// Trailing TOML comments after the comma are tolerated; a member entry is a
-// quoted path ending in a comma, and nothing else in the root manifest has
-// that shape on its own line (the `exclude = [...]` line starts with a key).
-const members = [
-  ...rootManifest.matchAll(/^\s*"((?:core|ui|extensions|user_layer)\/[\w\-/]+)",\s*(?:#.*)?$/gm),
-].map((m) => m[1]);
-
 check('the member scan finds the workspace members', () => {
   if (members.length === 0) {
     throw new Error('no workspace members matched — the member scan regex is broken');

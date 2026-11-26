@@ -176,6 +176,7 @@ impl WebServer {
                 // nothing.
                 self.proxy_backtest_body("backtest.run", &req.body)
             }
+            ("GET", "/api/blueprint/schema") => self.proxy_backtest_body("blueprint.schema", "{}"),
             ("POST", "/api/blueprint/compile") => {
                 // #362: the blueprint editor's preview pane — the body IS the
                 // `blueprint.compile` params object (`{json}`), forwarded

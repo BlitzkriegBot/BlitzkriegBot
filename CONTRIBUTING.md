@@ -93,6 +93,17 @@ runtime. See
 - Rust: `cargo fmt` / `clippy` clean; match the surrounding idiom.
 - Gate scripts (`scripts/*.mjs`): bare Node stdlib only — no npm dependencies.
 
+## Blueprint-First Strategy Development
+
+- **Blueprint First**: New strategies MUST start as Blueprint v2 documents
+  (`blueprint.json`), using `late_favorite` (the WebUI Blueprint editor's
+  default starter template) as the reference starting point.
+- **Single Source of Truth**: Strategy input fields, operators, and action
+  nodes live once in `core/blitzkrieg_core/src/blueprint/runtime.rs`
+  (`schema()` + `UnifiedTickView`). Extend the strategy API there so Rust,
+  Lua, native `BlueprintStrategy`, and the WebUI Blueprint canvas (via
+  `blueprint.schema`) stay in lockstep automatically.
+
 ## Security Guidelines
 
 1. Never commit credentials, private keys or API keys — secrets go through

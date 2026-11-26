@@ -1,0 +1,88 @@
+{
+  "version": 2,
+  "name": "whale_follow",
+  "meta": {
+    "description": "Whale-follow for 5m binary rounds: past open, strong positive OBI >= 0.45, price in [0.55, 0.88].",
+    "holds_to_settlement": true,
+    "entry_maker": false,
+    "once_per_round": true,
+    "thesis_death": false
+  },
+  "nodes": [
+    {
+      "id": "c_el_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.elapsed_pct",
+        "op": ">=",
+        "value": 0.25
+      }
+    },
+    {
+      "id": "c_obi",
+      "type": "condition",
+      "params": {
+        "field": "tick.obi",
+        "op": ">=",
+        "value": 0.45
+      }
+    },
+    {
+      "id": "c_px_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": ">=",
+        "value": 0.55
+      }
+    },
+    {
+      "id": "c_px_max",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": "<=",
+        "value": 0.88
+      }
+    },
+    {
+      "id": "act_buy",
+      "type": "action_buy",
+      "params": {
+        "budget_ratio": 0.1
+      }
+    },
+    {
+      "id": "gate_and",
+      "type": "logic_and",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "c_el_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_obi",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_max",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "gate_and",
+      "to": "act_buy",
+      "when": true
+    }
+  ]
+}

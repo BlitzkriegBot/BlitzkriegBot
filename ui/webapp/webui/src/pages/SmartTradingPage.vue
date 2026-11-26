@@ -1,15 +1,17 @@
 <script setup lang="ts">
 /**
- * 智能交易 · 聪明钱逆向策略引擎（RFC #249 · Stage 2 雷达 + 单钱包逆向接入）。
+ * 智能交易 · 聪明钱逆向策略引擎（RFC #249 · 完整最小可用闭环）。
  *
  * 原则：不跟单（避免 5m 轮次 200ms–2s 链上延迟与二手盘口滑点），而是
  * 「聪明钱雷达 → 拉取成交与行为指纹 → 逆向合成 Blueprint/Lua → 样本外回测打分」
- * 四步闭环，经真实延迟回测验真后才由人工确认上架。
+ * 四步闭环，经真实延迟回测（--backtest-mode verify）验真后才由人工确认上架。
  */
-import { computed, ref } from 'vue'
-import { ArrowRight, Compass, Cpu, FlaskConical, Radar, Save, Search, ShieldAlert } from 'lucide-vue-next'
+import { computed, onMounted, ref } from 'vue'
+import { ArrowRight, Compass, Cpu, FlaskConical, Play, Radar, Save, Search, ShieldAlert } from 'lucide-vue-next'
 import {
   api,
+  type BacktestDataset,
+  type BacktestResultDoc,
   type RadarCandidateDoc,
   type SmartMoneyAnalyzeDoc,
   type StrategyArchetype,
@@ -41,8 +43,30 @@ const analyzeResult = ref<SmartMoneyAnalyzeDoc | null>(null)
 const saveBusy = ref(false)
 const saveNotice = ref<string | null>(null)
 
+// ── 样本外回测验真状态（Stage 3） ──
+const datasets = ref<BacktestDataset[]>([])
+const selectedArchive = ref('')
+const verifyBusy = ref(false)
+const verifyStatusText = ref<string | null>(null)
+const verifyResult = ref<BacktestResultDoc | null>(null)
+
 const WALLET_RE = /^0x[a-fA-F0-9]{40}$/
 const walletValid = computed(() => WALLET_RE.test(walletInput.value.trim()))
+
+async function loadDatasets(): Promise<void> {
+  try {
+    const res = await api.backtestOnchainList()
+    if (!res.error && Array.isArray(res.datasets)) {
+      datasets.value = res.datasets
+      if (!selectedArchive.value && res.datasets.length > 0) {
+        selectedArchive.value = res.datasets[0].eventsPath
+      }
+    }
+  } catch {
+    // 无本地数据集时允许用户手动输入归档路径
+  }
+}
+onMounted(() => void loadDatasets())
 
 function archetypeLabel(a: StrategyArchetype): string {
   switch (a) {
@@ -63,6 +87,14 @@ function archetypeVariant(a: StrategyArchetype): 'gold' | 'up' | 'default' {
 const blueprintText = computed(() => {
   const bp = analyzeResult.value?.blueprint
   return bp ? JSON.stringify(bp, null, 2) : null
+})
+
+const verifyTrades = computed(() => verifyResult.value?.report?.trades ?? null)
+
+const verifyPassed = computed(() => {
+  const t = verifyTrades.value
+  if (!t) return false
+  return t.closed >= 5 && t.netPnlUsd > 0 && (t.profitFactor ?? 0) >= 1.1
 })
 
 async function runRadarScan(): Promise<void> {
@@ -94,6 +126,7 @@ async function submitWalletAnalysis(): Promise<void> {
   if (analyzeBusy.value) return
   analyzeErr.value = null
   saveNotice.value = null
+  verifyResult.value = null
   const addr = walletInput.value.trim()
   if (!WALLET_RE.test(addr)) {
     analyzeErr.value = '请输入合法的 Polymarket 钱包地址（0x 开头的 40 位十六进制地址）。'
@@ -118,6 +151,7 @@ function inspectCandidate(c: RadarCandidateDoc): void {
   walletInput.value = c.wallet
   saveNotice.value = null
   analyzeErr.value = null
+  verifyResult.value = null
   analyzeResult.value = {
     fingerprint: {
       wallet: c.wallet,
@@ -152,13 +186,13 @@ function inspectCandidate(c: RadarCandidateDoc): void {
   }
 }
 
-async function saveSynthesizedBlueprint(): Promise<void> {
+async function saveSynthesizedBlueprint(): Promise<string | null> {
   const bp = analyzeResult.value?.blueprint
-  if (!bp || saveBusy.value) return
+  if (!bp || saveBusy.value) return null
   const name = typeof bp.name === 'string' ? bp.name.trim() : ''
   if (!name) {
     analyzeErr.value = '合成的 Blueprint 缺少策略名。'
-    return
+    return null
   }
   saveBusy.value = true
   saveNotice.value = null
@@ -171,13 +205,63 @@ async function saveSynthesizedBlueprint(): Promise<void> {
     })
     if (res.error) {
       analyzeErr.value = res.error
+      return null
+    }
+    saveNotice.value = `已保存策略包 ${res.name}（默认 disabled，含 ${res.tunables.length} 个可进化参数）。`
+    return res.name
+  } catch (e) {
+    analyzeErr.value = e instanceof Error ? e.message : String(e)
+    return null
+  } finally {
+    saveBusy.value = false
+  }
+}
+
+async function saveAndVerifyOutOfSample(): Promise<void> {
+  if (verifyBusy.value) return
+  const archive = selectedArchive.value.trim()
+  if (!archive) {
+    analyzeErr.value = '请先选择或填写回测语料路径（events.jsonl / data/onchain/*.jsonl）。'
+    return
+  }
+  verifyBusy.value = true
+  verifyResult.value = null
+  verifyStatusText.value = '正在保存 Blueprint 并编译沙箱 Lua…'
+  try {
+    const name = await saveSynthesizedBlueprint()
+    if (!name) return
+    verifyStatusText.value = '正在执行样本外真实延迟回测（verify · slippage=1 tick）…'
+    const runRes = await api.backtestRun({
+      archive,
+      mode: 'verify',
+      slippageTicks: 1,
+      strategies: [name],
+    })
+    if (!runRes.jobId) {
+      analyzeErr.value = '回测任务启动失败'
       return
     }
-    saveNotice.value = `已保存策略包 ${res.name}（默认 disabled，含 ${res.tunables.length} 个可进化参数），可前往「回测」页验真后在「策略」页启用。`
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 1000))
+      const st = await api.backtestStatus(runRes.jobId)
+      if (st.state === 'done' && st.result) {
+        verifyResult.value = st.result
+        verifyStatusText.value = null
+        return
+      }
+      if (st.state === 'failed') {
+        analyzeErr.value = st.error || st.detail || '样本外回测失败'
+        verifyStatusText.value = null
+        return
+      }
+      verifyStatusText.value = `样本外回测运行中（${st.detail || st.state}）…`
+    }
+    analyzeErr.value = '回测超时，请前往「回测」页查看进度。'
   } catch (e) {
     analyzeErr.value = e instanceof Error ? e.message : String(e)
   } finally {
-    saveBusy.value = false
+    verifyBusy.value = false
+    verifyStatusText.value = null
   }
 }
 
@@ -199,7 +283,7 @@ function openBacktestPage(): void {
           <Radar class="size-4 text-primary" />
         </template>
         <template #action>
-          <Badge variant="gold" dot>Stage 2 · 雷达扫描与逆向就绪</Badge>
+          <Badge variant="gold" dot>全链路闭环就绪 · 不跟单零延迟</Badge>
         </template>
       </CardHeader>
 
@@ -233,9 +317,9 @@ function openBacktestPage(): void {
         <div class="rounded-lg border border-line bg-panel-2/40 p-2.5">
           <div class="flex items-center justify-between text-[11px] font-semibold text-fg">
             <span>④ 样本外验真</span>
-            <Badge variant="default">Stage 3</Badge>
+            <Badge variant="up">已接通</Badge>
           </div>
-          <p class="mt-1 text-[11px] text-faint-fg">在「回测」页用真实延迟 + 官方费率打分，正期望再上架</p>
+          <p class="mt-1 text-[11px] text-faint-fg">真实延迟 + 官方费率回测打分，正期望才建议上架</p>
         </div>
       </div>
     </Card>
@@ -335,9 +419,9 @@ function openBacktestPage(): void {
       </div>
     </Card>
 
-    <!-- 区块 B：单钱包逆向分析台 -->
+    <!-- 区块 B：单钱包逆向分析台 + 样本外回测打分 -->
     <Card>
-      <CardHeader label="单钱包逆向分析台">
+      <CardHeader label="单钱包逆向与样本外验真">
         <template #title>
           <Cpu class="size-4 text-faint-fg" />
         </template>
@@ -347,7 +431,7 @@ function openBacktestPage(): void {
               蓝图画布 <ArrowRight class="size-3" />
             </Button>
             <Button variant="outline" size="sm" @click="openBacktestPage">
-              <FlaskConical class="size-3.5" /> 回测验真
+              <FlaskConical class="size-3.5" /> 回测页
             </Button>
           </div>
         </template>
@@ -375,38 +459,66 @@ function openBacktestPage(): void {
       <AlertBanner v-if="saveNotice" class="mt-3" tone="info" dismissible @dismiss="saveNotice = null">
         {{ saveNotice }}
       </AlertBanner>
+      <AlertBanner v-if="verifyStatusText" class="mt-3" tone="info">
+        {{ verifyStatusText }}
+      </AlertBanner>
 
-      <div v-if="analyzeResult" class="mt-3 grid gap-3 sm:grid-cols-2">
-        <div class="rounded-lg border border-line bg-panel-2/30 p-3 text-[12px]">
-          <div class="flex items-center justify-between">
-            <span class="label-micro">行为指纹</span>
-            <Badge :variant="archetypeVariant(analyzeResult.archetype)">{{ archetypeLabel(analyzeResult.archetype) }}</Badge>
+      <div v-if="analyzeResult" class="mt-3 space-y-3">
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="rounded-lg border border-line bg-panel-2/30 p-3 text-[12px]">
+            <div class="flex items-center justify-between">
+              <span class="label-micro">行为指纹</span>
+              <Badge :variant="archetypeVariant(analyzeResult.archetype)">{{ archetypeLabel(analyzeResult.archetype) }}</Badge>
+            </div>
+            <p class="mt-1.5 text-[11.5px] text-muted-fg">{{ analyzeResult.reason }}</p>
+            <dl class="mt-2.5 space-y-1 text-[11.5px]">
+              <div class="flex justify-between"><dt class="text-faint-fg">买入样本 / 唯一市场</dt><dd class="num">{{ analyzeResult.fingerprint.buyFills }} 笔 / {{ analyzeResult.fingerprint.uniqueConditions }} 场</dd></div>
+              <div class="flex justify-between"><dt class="text-faint-fg">交易标的</dt><dd class="num">{{ analyzeResult.fingerprint.assets.join(', ') || '—' }}</dd></div>
+              <div class="flex justify-between"><dt class="text-faint-fg">入场价分位 (p25 / p50 / p90)</dt><dd class="num">{{ analyzeResult.fingerprint.entryPxP25.toFixed(2) }} / {{ analyzeResult.fingerprint.entryPxP50.toFixed(2) }} / {{ analyzeResult.fingerprint.entryPxP90.toFixed(2) }}</dd></div>
+              <div class="flex justify-between"><dt class="text-faint-fg">剩余时间窗 (p10 / p50 / p90)</dt><dd class="num">{{ analyzeResult.fingerprint.timeLeftP10 }}s / {{ analyzeResult.fingerprint.timeLeftP50 }}s / {{ analyzeResult.fingerprint.timeLeftP90 }}s</dd></div>
+              <div class="flex justify-between"><dt class="text-faint-fg">双边配对率 / 持有到期率</dt><dd class="num">{{ (analyzeResult.fingerprint.pairRatio * 100).toFixed(1) }}% / {{ (analyzeResult.fingerprint.holdToSettlementRatio * 100).toFixed(1) }}%</dd></div>
+              <div class="flex justify-between"><dt class="text-faint-fg">单笔均额</dt><dd class="num">${{ analyzeResult.fingerprint.avgNotionalUsd.toFixed(2) }}</dd></div>
+            </dl>
           </div>
-          <p class="mt-1.5 text-[11.5px] text-muted-fg">{{ analyzeResult.reason }}</p>
-          <dl class="mt-2.5 space-y-1 text-[11.5px]">
-            <div class="flex justify-between"><dt class="text-faint-fg">买入样本 / 唯一市场</dt><dd class="num">{{ analyzeResult.fingerprint.buyFills }} 笔 / {{ analyzeResult.fingerprint.uniqueConditions }} 场</dd></div>
-            <div class="flex justify-between"><dt class="text-faint-fg">交易标的</dt><dd class="num">{{ analyzeResult.fingerprint.assets.join(', ') || '—' }}</dd></div>
-            <div class="flex justify-between"><dt class="text-faint-fg">入场价分位 (p25 / p50 / p90)</dt><dd class="num">{{ analyzeResult.fingerprint.entryPxP25.toFixed(2) }} / {{ analyzeResult.fingerprint.entryPxP50.toFixed(2) }} / {{ analyzeResult.fingerprint.entryPxP90.toFixed(2) }}</dd></div>
-            <div class="flex justify-between"><dt class="text-faint-fg">剩余时间窗 (p10 / p50 / p90)</dt><dd class="num">{{ analyzeResult.fingerprint.timeLeftP10 }}s / {{ analyzeResult.fingerprint.timeLeftP50 }}s / {{ analyzeResult.fingerprint.timeLeftP90 }}s</dd></div>
-            <div class="flex justify-between"><dt class="text-faint-fg">双边配对率 / 持有到期率</dt><dd class="num">{{ (analyzeResult.fingerprint.pairRatio * 100).toFixed(1) }}% / {{ (analyzeResult.fingerprint.holdToSettlementRatio * 100).toFixed(1) }}%</dd></div>
-            <div class="flex justify-between"><dt class="text-faint-fg">单笔均额</dt><dd class="num">${{ analyzeResult.fingerprint.avgNotionalUsd.toFixed(2) }}</dd></div>
-          </dl>
+
+          <div class="rounded-lg border border-line bg-panel-2/30 p-3 text-[12px]">
+            <div class="flex flex-wrap items-center justify-between gap-1.5">
+              <span class="label-micro">逆向 Blueprint 产物</span>
+              <div v-if="blueprintText" class="flex items-center gap-1.5">
+                <Button variant="outline" size="sm" :disabled="saveBusy || verifyBusy" @click="saveSynthesizedBlueprint">
+                  <Save class="size-3.5" />{{ saveBusy ? '保存中…' : '保存策略包' }}
+                </Button>
+                <Button size="sm" :disabled="saveBusy || verifyBusy || !selectedArchive.trim()" @click="saveAndVerifyOutOfSample">
+                  <Play class="size-3.5" />{{ verifyBusy ? '回测中…' : '保存并回测打分' }}
+                </Button>
+              </div>
+            </div>
+            <div v-if="blueprintText" class="mt-2">
+              <label class="block text-[10.5px] text-faint-fg">
+                样本外回测语料路径（<code>--backtest-mode verify</code>）
+                <Input v-model="selectedArchive" class="mt-1 h-7 font-mono text-[11px]" type="text" placeholder="data/archive/events.jsonl" />
+              </label>
+            </div>
+            <pre v-if="blueprintText" class="mt-2 max-h-40 overflow-auto rounded bg-panel p-2 text-[11px]">{{ blueprintText }}</pre>
+            <p v-else class="mt-2 text-[11.5px] text-muted-fg">{{ analyzeResult.reason }}</p>
+          </div>
         </div>
 
-        <div class="rounded-lg border border-line bg-panel-2/30 p-3 text-[12px]">
+        <!-- 样本外回测打分结果 -->
+        <div v-if="verifyTrades" class="rounded-lg border border-line bg-panel-2/40 p-3">
           <div class="flex items-center justify-between">
-            <span class="label-micro">逆向 Blueprint 产物</span>
-            <Button
-              v-if="blueprintText"
-              size="sm"
-              :disabled="saveBusy"
-              @click="saveSynthesizedBlueprint"
-            >
-              <Save class="size-3.5" />{{ saveBusy ? '保存中…' : '保存为策略包' }}
-            </Button>
+            <span class="label-micro">样本外真实延迟回测打分（verify · slippage=1 tick）</span>
+            <Badge :variant="verifyPassed ? 'up' : 'default'" dot>
+              {{ verifyPassed ? '正期望通过 · 可去策略页启用' : '未达正期望门槛 · 建议继续进化或淘汰' }}
+            </Badge>
           </div>
-          <pre v-if="blueprintText" class="mt-2 max-h-48 overflow-auto rounded bg-panel p-2 text-[11px]">{{ blueprintText }}</pre>
-          <p v-else class="mt-2 text-[11.5px] text-muted-fg">{{ analyzeResult.reason }}</p>
+          <div class="mt-2 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-5">
+            <div><span class="text-[10.5px] text-faint-fg">成交笔数</span><div class="num font-semibold">{{ verifyTrades.closed }}</div></div>
+            <div><span class="text-[10.5px] text-faint-fg">胜率 (W/L)</span><div class="num font-semibold">{{ verifyTrades.winRatePct.toFixed(1) }}% ({{ verifyTrades.wins }}/{{ verifyTrades.losses }})</div></div>
+            <div><span class="text-[10.5px] text-faint-fg">净收益</span><div class="num font-semibold" :class="verifyTrades.netPnlUsd >= 0 ? 'text-up' : 'text-down'">{{ verifyTrades.netPnlUsd >= 0 ? '+' : '' }}${{ verifyTrades.netPnlUsd.toFixed(2) }}</div></div>
+            <div><span class="text-[10.5px] text-faint-fg">最大回撤</span><div class="num font-semibold">${{ verifyTrades.maxDrawdownUsd.toFixed(2) }}</div></div>
+            <div><span class="text-[10.5px] text-faint-fg">盈亏比 (PF)</span><div class="num font-semibold">{{ verifyTrades.profitFactor?.toFixed(2) ?? '∞' }}</div></div>
+          </div>
         </div>
       </div>
 

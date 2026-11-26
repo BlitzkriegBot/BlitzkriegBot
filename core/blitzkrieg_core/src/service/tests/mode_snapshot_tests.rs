@@ -210,7 +210,7 @@ fn a_live_to_dry_does_not_inherit_live_positions_or_ids() {
     // never in the dry snapshot file, so the same-directory dry boot starts
     // with its own (empty) book.
     assert_eq!(
-        dry.restore_positions(),
+        dry.restore_positions().unwrap(),
         0,
         "the dry boot must not restore live's held positions"
     );
@@ -243,12 +243,16 @@ fn b_dry_to_live_does_not_inherit_dry_positions_or_ids() {
     // The dry era: one held dry position, restorable by the dry book.
     crate::position_db::PositionDb::new(&dry_book).save(&[held("hft-7")]);
     let mut dry = book_mode_core(&dir, false, Decimal::from(10_000));
-    assert_eq!(dry.restore_positions(), 1, "the dry era's own book");
+    assert_eq!(
+        dry.restore_positions().unwrap(),
+        1,
+        "the dry era's own book"
+    );
 
     // The switch back: live boots. The dry snapshot is never read.
     let mut live = book_mode_core(&dir, true, Decimal::from(1_000));
     assert_eq!(
-        live.restore_positions(),
+        live.restore_positions().unwrap(),
         0,
         "dry's hft-7 is not live's book"
     );
@@ -260,7 +264,11 @@ fn b_dry_to_live_does_not_inherit_dry_positions_or_ids() {
     // The next live boot picks up live's OWN id baseline only.
     let mut live2 = book_mode_core(&dir, true, Decimal::from(1_000));
     assert_eq!(max_tail(&live2), Some(40));
-    assert_eq!(live2.restore_positions(), 0, "still nothing held live-side");
+    assert_eq!(
+        live2.restore_positions().unwrap(),
+        0,
+        "still nothing held live-side"
+    );
 
     // The dry file survives the whole live round (acceptance E).
     let dry_text = std::fs::read_to_string(&dry_book).unwrap();

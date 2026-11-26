@@ -53,7 +53,8 @@ const sources = [];
   }
   for (const [rel, kind] of [
     ['data/shadow/near-miss.jsonl', 'shadow-near-miss'],
-    ['data/trades/trades.jsonl', 'trade-log'],
+    // Trades moved to SQLite v4 (data/trades/trades.jsonl is obsolete); trade-log
+    // events are now read from the kernel / SQLite, not this JSONL file.
     ['data/orders/orders.jsonl', 'order-log'],
     ['data/positions/positions.jsonl', 'position-log'],
   ]) {

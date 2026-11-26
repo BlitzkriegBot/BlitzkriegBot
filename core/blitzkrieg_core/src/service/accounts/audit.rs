@@ -1,7 +1,7 @@
 //! The in-kernel accounting audit and its journal (#780).
 
 use crate::model::*;
-use crate::reconcile::{AuditInput, AuditReport, CashIdentity};
+use crate::reconcile::{AuditInput, AuditReport, CashIdentity, TradeLogStatus};
 use crate::schema::Event;
 use rust_decimal::Decimal;
 
@@ -56,7 +56,7 @@ impl Core {
         // did: the global summary/global receivable/all-books positions fold
         // made `trade_ledger_identity` drift by exactly what the sibling
         // account traded).
-        let (realized, seen_trades, has_trade_log) = match self.trade_log.as_ref() {
+        let (realized, seen_trades, trade_log) = match self.trade_log.as_ref() {
             Some(log) => {
                 use crate::contracts::trades::{TradeRead, TradeScope};
                 // One scoped SQL aggregate over the ACTIVE account's book — the
@@ -66,23 +66,24 @@ impl Core {
                 match log.trade_totals(TradeScope::Account(crate::contracts::store::AccountScope {
                     account: &active_id,
                 })) {
-                    Ok(t) => (t.net_pnl, t.total_trades, true),
+                    Ok(t) => (t.net_pnl, t.total_trades, TradeLogStatus::Readable),
                     Err(e) => {
                         // An unreadable ledger is not a flat one. Reporting zero
                         // here would silently satisfy the cash identity, so the
                         // failure is loud and the trade leg is left unverified
-                        // (`has_trade_log = false` makes the audit say so).
+                        // (`TradeLogStatus::Unreadable` makes the audit fail
+                        // instead of PASSing — R7.1 L4).
                         tracing::error!(
                             account = %active_id,
                             error = ?e,
                             "accounting audit cannot read the trade ledger — \
                              the trade leg of the cash identity is UNVERIFIED"
                         );
-                        (Decimal::ZERO, 0, false)
+                        (Decimal::ZERO, 0, TradeLogStatus::Unreadable)
                     }
                 }
             }
-            None => (Decimal::ZERO, 0, false),
+            None => (Decimal::ZERO, 0, TradeLogStatus::Unconfigured),
         };
         let mut spent = Decimal::ZERO;
         let mut received = Decimal::ZERO;
@@ -175,7 +176,7 @@ impl Core {
                 .copied(),
             open_positions,
             seen_trades,
-            has_trade_log,
+            trade_log,
             venue_simulated,
         }
     }

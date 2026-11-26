@@ -48,11 +48,13 @@ mod dataset;
 mod fetch;
 mod pull;
 mod request;
+pub mod reverse;
 
 pub use dataset::*;
 pub use fetch::*;
 pub use pull::*;
 pub use request::*;
+pub use reverse::*;
 
 // Shared helpers: the domain modules reach each other and the externalized
 // test module through the crate root (`use super::*;`). These re-exports are

@@ -858,7 +858,11 @@ fn a_gate_exemption_never_bypasses_a_safety_boundary() {
         now,
     );
     feed_dip_on(&mut c2, now + 1_000, &["BTC"]);
-    assert_eq!(c2.engine_evaluate(now + 1_000), 1, "first entry fits capacity 1");
+    assert_eq!(
+        c2.engine_evaluate(now + 1_000),
+        1,
+        "first entry fits capacity 1"
+    );
     fill(&mut c2, "BTC", now + 2_000);
     feed_dip_on(&mut c2, now + 3_000, &["ETH"]);
     assert_eq!(

@@ -221,7 +221,12 @@ pub(crate) async fn handle_risk(
                             let changes: Vec<(&str, String)> = update
                                 .applied
                                 .iter()
-                                .filter(|c| !matches!(c.field, "sizePct" | "maxPositions" | "minShares" | "maxShares"))
+                                .filter(|c| {
+                                    !matches!(
+                                        c.field,
+                                        "sizePct" | "maxPositions" | "minShares" | "maxShares"
+                                    )
+                                })
                                 .map(|c| (c.field, c.to.clone()))
                                 .collect();
                             let persisted = if update.persisted {

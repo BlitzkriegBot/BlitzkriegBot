@@ -117,11 +117,8 @@ impl SupervisorConfig {
     /// `HFT_ROUND_SEC`, `HFT_MIN_SHARES`, `HFT_MAX_SHARES`) — those variable
     /// names survive the runner's deletion and are read here directly.
     pub fn from_env(socket_path: String) -> Self {
-        let env_opt = |k: &str| -> Option<u64> {
-            std::env::var(k)
-                .ok()
-                .and_then(|v| v.trim().parse().ok())
-        };
+        let env_opt =
+            |k: &str| -> Option<u64> { std::env::var(k).ok().and_then(|v| v.trim().parse().ok()) };
         let assets = std::env::var("HFT_ASSETS")
             .ok()
             .filter(|s| !s.trim().is_empty())
@@ -212,7 +209,6 @@ impl SupervisorConfig {
             self.min_round_age.to_string(),
             "--min-time-left".into(),
             self.min_time_left.to_string(),
-
         ]);
         a.extend(self.extra_args.iter().cloned());
         a
@@ -861,9 +857,18 @@ fn silent_max_positions_and_shares_leave_risk_panel_in_charge() {
     explicit.min_shares = Some(5);
     explicit.max_shares = Some(200);
     let args = explicit.to_args();
-    assert_eq!(args[args.iter().position(|a| a == "--max-positions").unwrap() + 1], "20");
-    assert_eq!(args[args.iter().position(|a| a == "--min-shares").unwrap() + 1], "5");
-    assert_eq!(args[args.iter().position(|a| a == "--max-shares").unwrap() + 1], "200");
+    assert_eq!(
+        args[args.iter().position(|a| a == "--max-positions").unwrap() + 1],
+        "20"
+    );
+    assert_eq!(
+        args[args.iter().position(|a| a == "--min-shares").unwrap() + 1],
+        "5"
+    );
+    assert_eq!(
+        args[args.iter().position(|a| a == "--max-shares").unwrap() + 1],
+        "200"
+    );
 }
 
 #[test]

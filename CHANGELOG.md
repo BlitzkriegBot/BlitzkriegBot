@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com); versioning: semver.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-27
+
+0.4.2 → 0.4.3 的核心升级主线：
+
+- **智能交易完整闭环（Smart Money Reverse-to-Strategy）**：
+  - 落地 `tools/onchain_pull/src/radar.rs`、`smart_money.scan` / `smart_money.analyze` 只读 IPC、网关 `/api/smart-money/scan` & `/api/smart-money/analyze`、前端 `SmartTradingPage.vue` 完整四步量化研究流（全网雷达扫榜 → 单地址行为指纹逆向 → Blueprint JSON 合成落盘 → 样本外 `mode=verify, slippageTicks=1` 回测验真）。
+  - 全面迁移至 Polymarket Data API v2（`/v2/leaderboard`、`/v2/trades`、`data` 信封与 `snake_case` 字段），钱包成交拉取升级为 6 并发，并为网关配置 45s/30s IPC 读取超时预算。
+- **蓝图策略 v2 与全仓迁移**：
+  - 统一 `BlueprintSchema`（`blueprint.schema` IPC + `GET /api/blueprint/schema`）、`UnifiedTickView` 与原生 Rust `BlueprintStrategy`，将仓库内 20 个策略迁移为等效 v2 蓝图，以 `late_favorite` 作为默认新手模板，并修复画布预载拒绝 v2 文档的问题。
+- **核心稳定性与资金口径修复**：
+  - **账户权益 SSOT 全链路修复**：内核 `AccountView.equity`（现金 + 在途持仓市值）经网关与 `stores/panel.ts` 原样透传至总览/行情页，消除账户权益渲染为「—」的问题。
+  - **多交易所跨周期行情修复**：修复 `engine/evaluate.rs` 跨周期换轮清理误用轮次结束时间导致 `polymarket` 1h/daily 到达时清空 `kalshi`、`polysimulator` 等非 `polymarket` 活跃行情的缺陷。
+  - **策略启动权威与回测隔离**：`EventBacktester::new` 彻底剥离所有生产写盘路径；`system.reset_trading` 与 SQLite 策略表同步并刷新启动镜像，WebUI 显式标识未运行策略。
+- **WebUI 组件系统化与移动端体验修复**：
+  - 统一 `Button`、`Input`、`Select`、`SegmentedControl`、`FormField` 高度阶梯（`h-8 / h-9 / h-10`），保留经典大圆角胶囊导航。
+  - 修复策略页 `CardHeader` 移动端标题挤压与工具栏溢出、重构行情页倒计时卡片桌面/移动端对称布局、修复设置页 Token 卡片宽度与移动端排版、移除表单弹窗灰色遮罩误触关闭。
+
 ## [0.4.2] - 2026-11-08
 
 > **延迟发布说明（2026-11-13 重打 tag）**：首版 `v0.4.2` tag（`32ab6dde` →

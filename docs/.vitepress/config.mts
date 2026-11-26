@@ -88,6 +88,7 @@ export default defineConfig(async () => {
     outline: { level: [2, 3], label: '本页目录' },
     nav: [
       { text: '开始', link: '/getting-started' },
+      { text: '智能交易', link: '/smart-trading' },
       { text: '文档', link: '/FEATURES' },
       { text: '术语表', link: '/glossary' },
     ],
@@ -97,6 +98,9 @@ export default defineConfig(async () => {
         text: '开始',
         items: [
           { text: '文档首页', link: '/' },
+          { text: '快速开始', link: '/getting-started' },
+          { text: '智能交易', link: '/smart-trading' },
+          { text: '功能清单', link: '/FEATURES' },
           { text: '术语表', link: '/glossary' },
         ],
       },

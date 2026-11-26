@@ -28,6 +28,16 @@ pub struct RiskLimitsResult {
     /// golden byte-identical; old panels ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_pct: Option<Decimal>,
+    /// Concurrent open-position cap (`0` = off / unlimited). Additive optional
+    /// field — omitted when `None` to keep the frozen wire golden byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_positions: Option<usize>,
+    /// Per-entry share band (`min_shares` / `max_shares`). Additive optional
+    /// fields — omitted when `None` to keep the frozen wire golden byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_shares: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_shares: Option<Decimal>,
 }
 
 impl RiskLimitsResult {
@@ -49,6 +59,9 @@ impl RiskLimitsResult {
                 strategy_exit_maker_first: exit.strategy_exit_maker_first,
             },
             size_pct: None,
+            max_positions: None,
+            min_shares: None,
+            max_shares: None,
         }
     }
 }
@@ -219,6 +232,15 @@ pub struct SetSystemicLimitsParams {
     /// 热写入立即生效，持久化至 SQLite `account_settings` 键 `BK_SIZE_PCT`。
     #[serde(default, with = "crate::decimal::opt")]
     pub size_pct: Option<Decimal>,
+    /// 最大并发持仓数（`0` = 关闭/不限）。热写入立即生效，持久化至 SQLite
+    /// `account_settings` 键 `positions.max_positions`。
+    #[serde(default)]
+    pub max_positions: Option<usize>,
+    /// 单笔最小/最大份额。热写入立即生效，持久化至 SQLite `account_settings`。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub min_shares: Option<Decimal>,
+    #[serde(default, with = "crate::decimal::opt")]
+    pub max_shares: Option<Decimal>,
     /// Free-text note from the caller, echoed into the audit line.
     #[serde(default)]
     pub reason: Option<String>,
@@ -235,6 +257,9 @@ impl SetSystemicLimitsParams {
             && self.cooldown_minutes.is_none()
             && self.max_order_notional_usd.is_none()
             && self.size_pct.is_none()
+            && self.max_positions.is_none()
+            && self.min_shares.is_none()
+            && self.max_shares.is_none()
     }
 }
 

@@ -473,7 +473,7 @@ impl Dispatcher {
         if let Some(s) = size_usd {
             // Keep the safety notional cap >= the requested size (worst-case
             // binary share price is $1.00, not $0.60).
-            let max_shares = cfg.max_shares as f64;
+            let max_shares = cfg.max_shares.unwrap_or(10) as f64;
             cfg.max_order_notional = Some(format!(
                 "{:.2}",
                 s.parse::<f64>().unwrap_or(0.0).max(max_shares)

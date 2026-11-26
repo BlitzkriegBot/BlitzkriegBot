@@ -397,7 +397,7 @@ impl PositionManager {
             .iter()
             .filter(|p| p.expires_at_ms > now_ms && p.account_id.as_str() == account)
             .count();
-        if live >= self.config.max_positions {
+        if self.config.max_positions > 0 && live >= self.config.max_positions {
             return Err(format!("Max positions ({})", self.config.max_positions));
         }
         // NOTE: the daily-loss breaker no longer blocks entries here. Entry

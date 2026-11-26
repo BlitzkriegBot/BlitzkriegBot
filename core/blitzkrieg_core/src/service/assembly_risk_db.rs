@@ -80,7 +80,8 @@ impl Core {
         db: &crate::risk::account_store::AccountRiskDb,
     ) -> Result<(), String> {
         use crate::risk::account_store::{
-            ROUND_DURATION_SETTING, SIZE_PCT_SETTING, STRATEGIES_SETTING,
+            MAX_POSITIONS_SETTING, MAX_SHARES_SETTING, MIN_SHARES_SETTING, ROUND_DURATION_SETTING,
+            SIZE_PCT_SETTING, STRATEGIES_SETTING,
         };
         let settings = db
             .load_settings()
@@ -104,6 +105,58 @@ impl Core {
                         value = %raw,
                         "account_settings BK_SIZE_PCT is out of [0, 100] or unparseable — boot value stands"
                     ),
+                }
+            }
+            if account_id.as_str() == default_id.as_str()
+                && let Some(raw) = keys.get(MAX_POSITIONS_SETTING)
+            {
+                match raw.trim().parse::<usize>() {
+                    Ok(n) => {
+                        self.config.positions.max_positions = n;
+                        self.positions.set_config(self.config.positions.clone());
+                    }
+                    Err(_) => tracing::warn!(
+                        account = %account_id,
+                        value = %raw,
+                        "account_settings positions.max_positions is unparseable — boot value stands"
+                    ),
+                }
+            }
+            if account_id.as_str() == default_id.as_str() {
+                let mut band_changed = false;
+                if let Some(raw) = keys.get(MIN_SHARES_SETTING) {
+                    match raw.trim().parse::<Decimal>() {
+                        Ok(v) if v >= Decimal::ZERO => {
+                            self.config.min_shares = v;
+                            band_changed = true;
+                        }
+                        _ => tracing::warn!(
+                            account = %account_id,
+                            value = %raw,
+                            "account_settings engine.min_shares is unparseable — boot value stands"
+                        ),
+                    }
+                }
+                if let Some(raw) = keys.get(MAX_SHARES_SETTING) {
+                    match raw.trim().parse::<Decimal>() {
+                        Ok(v) if v > Decimal::ZERO => {
+                            self.config.max_shares = v;
+                            band_changed = true;
+                        }
+                        _ => tracing::warn!(
+                            account = %account_id,
+                            value = %raw,
+                            "account_settings engine.max_shares is unparseable — boot value stands"
+                        ),
+                    }
+                }
+                if band_changed {
+                    if self.config.min_shares > self.config.max_shares {
+                        self.config.min_shares = self.config.max_shares;
+                    }
+                    if let Some(engine) = self.engine.as_mut() {
+                        engine.set_share_band(self.config.min_shares, self.config.max_shares);
+                    }
                 }
             }
             // Round anchor: only applied to accounts that exist in the book.

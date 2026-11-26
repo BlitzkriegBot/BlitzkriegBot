@@ -26,6 +26,14 @@ pub const MAX_ORDER_NOTIONAL_SETTING: &str = "risk.max_order_notional_usd";
 /// percentage (`BK_SIZE_PCT`, 0 = off). Matches `db_import.rs`'s `SETTING_KEYS`.
 pub const SIZE_PCT_SETTING: &str = "BK_SIZE_PCT";
 
+/// The `account_settings` key carrying the concurrent open-position cap
+/// (`0` = off / unlimited).
+pub const MAX_POSITIONS_SETTING: &str = "positions.max_positions";
+
+/// The `account_settings` keys carrying the per-entry share band.
+pub const MIN_SHARES_SETTING: &str = "engine.min_shares";
+pub const MAX_SHARES_SETTING: &str = "engine.max_shares";
+
 /// The `account_settings` key carrying an account's round-duration anchor in
 /// seconds — the `ACCOUNT_<ID>_ROUND_DURATION_SEC` key's DB twin (same
 /// spelling the SQLite store backend uses, one name for one fact).

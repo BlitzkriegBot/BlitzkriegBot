@@ -40,9 +40,8 @@ const SIZE_CLASSES: Record<'sm' | 'default' | 'lg', string> = {
       :aria-label="props.ariaLabel"
       :class="cn(
         'w-full appearance-none rounded-md border border-line bg-panel-2 text-fg',
-        'shadow-[inset_0_1px_2px_oklch(0_0_0_/_0.22),0_1px_0_var(--sheen)]',
         'transition-[border-color,box-shadow] duration-150 outline-none',
-        'hover:border-line-strong focus:border-primary/60 focus:shadow-[0_0_0_3px_oklch(0.76_0.17_62_/_0.18)]',
+        'hover:border-line-strong focus:border-primary/55 focus:shadow-[0_0_0_3px_oklch(0.78_0.16_68_/_0.14)]',
         'disabled:cursor-not-allowed disabled:opacity-45',
         SIZE_CLASSES[props.size],
       )"

@@ -208,7 +208,13 @@ pub async fn run(
     }
     // Then rebuild the OPEN position book, so a restart keeps valuing and
     // exit-managing positions that were already filled before the restart.
-    let recovered_pos = core.restore_positions();
+    // Fail-closed: if the closed-trade id tail cannot be read, we refuse to
+    // restore positions (and reset the id counter) — the operator must
+    // reconcile before new ids are issued.
+    let recovered_pos = match core.restore_positions() {
+        Ok(n) => n,
+        Err(e) => anyhow::bail!("failed to read closed-trade id history at boot: {e:?}"),
+    };
     if recovered_pos > 0 {
         eprintln!(
             "blitzkrieg-core: restored {recovered_pos} open position(s) from the position log"

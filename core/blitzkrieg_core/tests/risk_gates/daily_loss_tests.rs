@@ -1032,7 +1032,7 @@ fn a_dry_to_live_rebase_trips_the_day_and_still_lets_the_position_out() {
     //     base, which is the window the issue is about.
     let mut c = live_core(positions, dec!(50), &log_path);
     assert_eq!(
-        c.restore_positions(),
+        c.restore_positions().unwrap(),
         1,
         "the open position survives the restart"
     );

@@ -1,5 +1,5 @@
 use super::audit::{
-    AuditInput, AuditReport, CashIdentity, REALIGN_EXPLAIN_TTL_MS, audit_accounting,
+    AuditInput, AuditReport, CashIdentity, REALIGN_EXPLAIN_TTL_MS, TradeLogStatus, audit_accounting,
 };
 use super::reconcile;
 use super::types::{ReconcileAction, VenueSnapshot, VenueTrade};
@@ -405,7 +405,7 @@ fn clean_input() -> AuditInput {
         realign_explained_at: None,
         open_positions: 0,
         seen_trades: 0,
-        has_trade_log: true,
+        trade_log: TradeLogStatus::Readable,
         venue_simulated: false,
     }
 }
@@ -533,7 +533,7 @@ fn trade_leg_is_skipped_without_a_trade_log() {
         receivable: Decimal::ZERO,
     };
     let mut input = clean_input();
-    input.has_trade_log = false;
+    input.trade_log = TradeLogStatus::Unconfigured;
     // A close that moved cash but could never have been recorded.
     input.identity = CashIdentity {
         balance: dec!(104),

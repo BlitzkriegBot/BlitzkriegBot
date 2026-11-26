@@ -112,6 +112,7 @@ blitzkrieg-onchain-pull :: futures-util
 blitzkrieg-onchain-pull :: reqwest
 blitzkrieg-onchain-pull :: rust_decimal
 blitzkrieg-onchain-pull :: rust_decimal_macros
+blitzkrieg-onchain-pull :: serde
 blitzkrieg-onchain-pull :: serde_json
 blitzkrieg-onchain-pull :: sha2
 blitzkrieg-onchain-pull :: tokio

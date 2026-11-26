@@ -16,6 +16,7 @@ export type TabId =
   | 'hft'
   | 'backtest'
   | 'blueprint'
+  | 'smart_trading'
   | 'strategies'
   | 'decisions'
   | 'evolution'
@@ -50,6 +51,7 @@ export const NAV: NavEntry[] = [
     children: [
       { kind: 'page', id: 'strategies', label: '策略' },
       { kind: 'page', id: 'blueprint', label: '蓝图' },
+      { kind: 'page', id: 'smart_trading', label: '智能交易' },
       { kind: 'page', id: 'decisions', label: '裁决流' },
       { kind: 'page', id: 'evolution', label: '进化' },
     ],

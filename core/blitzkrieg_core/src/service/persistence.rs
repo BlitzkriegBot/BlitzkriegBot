@@ -2,6 +2,7 @@
 //! `service.rs` (no logic edits).
 
 use super::{CloseCredential, CloseCredentialLine};
+use crate::contracts::store::StoreError;
 use crate::jsonl;
 #[cfg(test)]
 use crate::model::AccountId;
@@ -181,9 +182,9 @@ impl Core {
     /// once at startup, BEFORE trading begins. Without this a restart forgets
     /// every open position: it is no longer valued or exit-managed, so the trade
     /// drifts to expiry unmanaged. Mirrors `restore_orders`.
-    pub fn restore_positions(&mut self) -> usize {
+    pub fn restore_positions(&mut self) -> Result<usize, StoreError> {
         let Some(db) = self.position_db.as_ref() else {
-            return 0;
+            return Ok(0);
         };
         // The watermark outlives the position set: a flat book must still
         // remember which external fills were already accounted for.
@@ -195,28 +196,19 @@ impl Core {
         //
         // An unreadable trade ledger must NOT read as "no history": that would
         // reset the id counter to 1 and re-issue ids that already belong to
-        // closed trades (a duplicate identity in the book). The failure is
-        // loud, and re-issuing is what the operator sees, so it is reported.
+        // closed trades (a duplicate identity in the book). Fail-closed: a boot
+        // that cannot read the closed-trade id tail does not restore positions
+        // and does not reset the counter, so the operator must reconcile before
+        // new ids are issued.
         let history_max = match self.trade_log.as_ref() {
             Some(log) => {
                 use crate::contracts::trades::TradeRead;
-                match log.max_trade_id_tail() {
-                    Ok(tail) => tail,
-                    Err(e) => {
-                        tracing::error!(
-                            error = ?e,
-                            "closed-trade id history unreadable at boot — the id counter \
-                             restarts from the open book and may re-issue ids already in \
-                             the trade ledger; reconcile before trusting new ids"
-                        );
-                        None
-                    }
-                }
+                log.max_trade_id_tail()?
             }
             None => None,
         };
         if loaded.is_empty() && history_max.unwrap_or(0) == 0 {
-            return 0;
+            return Ok(0);
         }
         let n = loaded.len();
         self.positions.restore_open(loaded, history_max);
@@ -231,7 +223,7 @@ impl Core {
         // A settlement whose close never landed is a position that looks open but
         // is already paid: finish it before anything trades (issue #175).
         self.recover_settlements();
-        n
+        Ok(n)
     }
 
     /// #987: the unverified exposure report — positions closed via the fallback

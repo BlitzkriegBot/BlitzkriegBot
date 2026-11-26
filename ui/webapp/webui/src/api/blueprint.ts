@@ -131,4 +131,18 @@ export const blueprintApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  /**
+   * 蓝图单一真源 Schema（`blueprint.schema`）：动态拉取内核白名单字段、
+   * 运算符和节点定义，避免前端硬编码漂移。
+   */
+  blueprintSchema: () => request<BlueprintSchemaDoc>('/blueprint/schema'),
+}
+
+export interface BlueprintSchemaDoc {
+  supportedVersions: number[]
+  defaultVersion: number
+  fields: Array<{ name: string; valueType: string; label: string; group: string }>
+  operators: string[]
+  nodes: Array<{ nodeType: string; label: string; family: string; hint: string }>
+  error?: string
 }

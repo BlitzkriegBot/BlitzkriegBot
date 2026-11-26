@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "name": "coin_flip_exit_lab",
+  "meta": {
+    "description": "Exit-First research lab blueprint (replay only): unconditional mid-band entry.",
+    "holds_to_settlement": true,
+    "entry_maker": false,
+    "once_per_round": true,
+    "thesis_death": false
+  },
+  "nodes": [
+    {
+      "id": "c_px_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": ">=",
+        "value": 0.45
+      }
+    },
+    {
+      "id": "c_px_max",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": "<=",
+        "value": 0.55
+      }
+    },
+    {
+      "id": "c_tl_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.time_left_sec",
+        "op": ">=",
+        "value": 120
+      }
+    },
+    {
+      "id": "act_buy",
+      "type": "action_buy",
+      "params": {
+        "budget_ratio": 0.05
+      }
+    },
+    {
+      "id": "gate_and",
+      "type": "logic_and",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "c_px_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_max",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_tl_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "gate_and",
+      "to": "act_buy",
+      "when": true
+    }
+  ]
+}

@@ -701,6 +701,9 @@ async fn handle_line(
         method::BLUEPRINT_SAVE_SOURCE => {
             handlers::blueprint::handle_blueprint(method, core, params).await
         }
+        method::BLUEPRINT_SCHEMA => {
+            handlers::blueprint::handle_blueprint(method, core, params).await
+        }
         other => Err((
             Failure::METHOD_NOT_FOUND,
             format!("unknown method: {other}"),

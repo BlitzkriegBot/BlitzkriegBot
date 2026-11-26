@@ -1,24 +1,18 @@
 /**
- * The blueprint editor's data model — the eight node types, the whitelist
- * vocabularies, and the JSON document the kernel's `blueprint.compile`
- * (core/blitzkrieg_core/src/blueprint.rs, issue 361) accepts.
- *
- * Everything here MIRRORS the Rust compiler; nothing invents a field. The two
- * edge families are the compiler's own distinction, read straight off its
- * operand/guard split: an edge FROM a value producer (data_source / constant)
- INTO a condition is its OPERAND; an edge between guard producers
- * (condition / logic gate) is the GUARD CHAIN the codegen nests as `if`s.
- * The canvas colours them differently so the shape an author draws is the
- * shape the compiler reads — it adds no new concept and never gates anything.
+ * The blueprint editor's data model — mirrors core/blitzkrieg_core/src/blueprint.rs
+ * and core/blitzkrieg_core/src/blueprint/runtime.rs (SSOT schema served via
+ * `blueprint.schema`). Local lists act as offline/initial fallbacks before
+ * `api.blueprintSchema()` resolves.
  */
 
 import { clonePlain } from './clone-plain'
 
-/** The eight node types the v1 compiler accepts (blueprint.rs NodeKind). */
+/** The nine node types the v1/v2 compiler accepts (blueprint.rs NodeKind). */
 export type BlueprintNodeType =
   | 'data_source'
   | 'condition'
   | 'action_buy'
+  | 'action_buy_pair'
   | 'action_sell'
   | 'action_hold'
   | 'constant'
@@ -28,13 +22,25 @@ export type BlueprintNodeType =
 /** Node families for palette grouping + edge semantics. */
 export type NodeFamily = 'source' | 'condition' | 'action' | 'gate'
 
-/** The six whitelisted fields (FIELD_WHITELIST) — the data_source dropdown. */
+/** Whitelisted fields (fallback matching kernel blueprint.schema SSOT). */
 export const FIELD_WHITELIST = [
   'tick.price',
   'tick.mid_price',
-  'tick.time_left_sec',
-  'tick.trend_confirmed',
+  'tick.best_bid',
+  'tick.best_ask',
+  'tick.spread',
   'tick.obi',
+  'tick.time_left_sec',
+  'tick.elapsed_pct',
+  'tick.asset',
+  'tick.side_label',
+  'tick.pair_ask_sum',
+  'tick.pair_bid_sum',
+  'tick.round_min_price',
+  'tick.round_max_price',
+  'tick.consensus_aligned',
+  'tick.trend_confirmed',
+  'tick.spot_return_bps',
   'account.available_balance',
 ] as const
 export type WhitelistedField = (typeof FIELD_WHITELIST)[number]
@@ -43,7 +49,21 @@ export type WhitelistedField = (typeof FIELD_WHITELIST)[number]
 export const CONDITION_OPS = ['<', '<=', '>', '>=', '==', '!=', 'in'] as const
 export type WhitelistedOp = (typeof CONDITION_OPS)[number]
 
-/** One node in the editor graph. `label` is the node's kind + its edit state. */
+/** Optional v2 strategy metadata carried onto manifest.json & native runner. */
+export interface BlueprintMeta {
+  description?: string
+  holds_to_settlement?: boolean
+  entry_maker?: boolean
+  once_per_round?: boolean
+  thesis_death?: boolean
+  gate_exemptions?: {
+    timing?: boolean
+    momentum?: boolean
+    timing_min_time_left_sec?: number
+  }
+}
+
+/** One node in the editor graph. */
 export interface BpNode {
   id: string
   type: BlueprintNodeType
@@ -57,10 +77,11 @@ export interface BpEdge {
   when: boolean
 }
 
-/** The version-1 blueprint document — exactly the wire shape the kernel parses. */
+/** The v1/v2 blueprint document — exact wire shape the kernel parses. */
 export interface BlueprintDoc {
-  version: 1
+  version: 1 | 2
   name: string
+  meta?: BlueprintMeta
   nodes: BpNode[]
   edges: BpEdge[]
 }
@@ -75,9 +96,10 @@ export interface NodeSpec {
 }
 
 export const NODE_SPECS: NodeSpec[] = [
-  { type: 'data_source', label: '数据源', family: 'source', hint: '白名单字段（下拉可选，共 6 个）' },
+  { type: 'data_source', label: '数据源', family: 'source', hint: '白名单字段（内核动态同步）' },
   { type: 'condition', label: '条件', family: 'condition', hint: 'op + value；左操作数 = field 或入边' },
-  { type: 'action_buy', label: '买入', family: 'action', hint: 'price + budget_ratio；有 price 即限价单' },
+  { type: 'action_buy', label: '买入', family: 'action', hint: '单腿买入；缺省 price 按实时盘口成交' },
+  { type: 'action_buy_pair', label: '双腿买入', family: 'action', hint: '同时买入 UP+DOWN 配对腿' },
   { type: 'action_sell', label: '卖出', family: 'action', hint: 'price + budget_ratio；有 price 即限价单' },
   { type: 'action_hold', label: '持有', family: 'action', hint: '只输出守卫，不下单' },
   { type: 'constant', label: '常量', family: 'source', hint: '数字 / 字符串 / 布尔' },
@@ -99,28 +121,22 @@ export function edgeFamily(fromType: string): 'operand' | 'guard' {
   return isValueProducer(fromType) ? 'operand' : 'guard'
 }
 
-/**
- * The empty params a dropped node starts with — every required param present
- * with a legal default, so a fresh node is never one typo from refusing.
- *
- * Actions carry NO `order_type`: the kernel's stage-2 validation allows only
- * `price`/`budget_ratio` on an action (blueprint.rs "allowed: `price`,
- * `budget_ratio`") and derives limit-vs-market from whether a price exists —
- * sending `order_type` would make every fresh action refuse to compile.
- */
 export function defaultParams(type: BlueprintNodeType): Record<string, unknown> {
   switch (type) {
     case 'data_source':
       return { field: 'tick.price' }
     case 'condition':
-      return { op: '<', value: 0.25 }
+      return { op: '>=', value: 0.85 }
     case 'action_buy':
+      return { budget_ratio: 0.1 }
+    case 'action_buy_pair':
+      return { maker: false, budget_ratio: 0.1 }
     case 'action_sell':
-      return { price: 0.25, budget_ratio: 0.1 }
+      return { price: 0.95, budget_ratio: 0.1 }
     case 'action_hold':
       return {}
     case 'constant':
-      return { value: 0.5 }
+      return { value: 0.85 }
     case 'logic_and':
     case 'logic_or':
       return {}
@@ -128,48 +144,58 @@ export function defaultParams(type: BlueprintNodeType): Record<string, unknown> 
 }
 
 /**
- * The 4-node template the spec demands: price ≤ 0.25 → trend_confirmed → buy.
- * Fresh canvases open HERE — the first compile already runs, so the operator
- * starts from a runnable state and a visible Lua preview, not a blank grid.
+ * Default starter blueprint template: Blueprint v2 `late_favorite` (BTC only).
+ * 45–60s left, price in [0.85, 0.97], once per round, hold to settlement.
  */
 export function starterBlueprint(): BlueprintDoc {
   return {
-    version: 1,
-    name: 'starter_dog',
+    version: 2,
+    name: 'late_favorite',
+    meta: {
+      description: 'Near-settlement favorite (BTC only): 45-60s left, buy BTC side in [0.85, 0.97] and hold to settlement.',
+      holds_to_settlement: true,
+      entry_maker: false,
+      once_per_round: true,
+      thesis_death: false,
+      gate_exemptions: {
+        timing: true,
+        momentum: false,
+        timing_min_time_left_sec: 45,
+      },
+    },
     nodes: [
-      { id: 'src_price', type: 'data_source', params: { field: 'tick.price' } },
-      { id: 'cond_cheap', type: 'condition', params: { op: '<=', value: 0.25 } },
-      {
-        id: 'cond_trend',
-        type: 'condition',
-        params: { field: 'tick.trend_confirmed', op: '==', value: true },
-      },
-      {
-        id: 'act_buy',
-        type: 'action_buy',
-        params: { price: 0.25, budget_ratio: 0.1 },
-      },
+      { id: 'c_asset', type: 'condition', params: { field: 'tick.asset', op: '==', value: 'BTC' } },
+      { id: 'c_tl_min', type: 'condition', params: { field: 'tick.time_left_sec', op: '>=', value: 45 } },
+      { id: 'c_tl_max', type: 'condition', params: { field: 'tick.time_left_sec', op: '<=', value: 60 } },
+      { id: 'c_px_min', type: 'condition', params: { field: 'tick.price', op: '>=', value: 0.85 } },
+      { id: 'c_px_max', type: 'condition', params: { field: 'tick.price', op: '<=', value: 0.97 } },
+      { id: 'gate_and', type: 'logic_and', params: {} },
+      { id: 'act_buy', type: 'action_buy', params: { budget_ratio: 0.1 } },
     ],
     edges: [
-      { from: 'src_price', to: 'cond_cheap', when: true },
-      { from: 'cond_cheap', to: 'cond_trend', when: true },
-      { from: 'cond_trend', to: 'act_buy', when: true },
+      { from: 'c_asset', to: 'gate_and', when: true },
+      { from: 'c_tl_min', to: 'gate_and', when: true },
+      { from: 'c_tl_max', to: 'gate_and', when: true },
+      { from: 'c_px_min', to: 'gate_and', when: true },
+      { from: 'c_px_max', to: 'gate_and', when: true },
+      { from: 'gate_and', to: 'act_buy', when: true },
     ],
   }
 }
 
 /**
- * Serialize the editor graph into the version-1 document.
- *
- * Canvas-only state (positions) never reaches the kernel; `when` rides guard
- * edges as the polarity toggle in the property panel sets it. Nothing is
- * auto-pruned: the kernel is the judge of structure, and a refusal must point
- * at what the author actually drew.
+ * Serialize the editor graph into the v2 blueprint document (preserving meta).
  */
-export function toBlueprintDoc(name: string, nodes: BpNode[], edges: BpEdge[]): string {
+export function toBlueprintDoc(
+  name: string,
+  nodes: BpNode[],
+  edges: BpEdge[],
+  meta?: BlueprintMeta,
+): string {
   const doc: BlueprintDoc = {
-    version: 1,
+    version: 2,
     name: name.trim() || 'untitled_strategy',
+    ...(meta ? { meta } : {}),
     nodes: nodes.map((n) => ({ id: n.id, type: n.type, params: n.params })),
     edges: edges.map((e) => ({ from: e.from, to: e.to, when: e.when })),
   }
@@ -177,11 +203,7 @@ export function toBlueprintDoc(name: string, nodes: BpNode[], edges: BpEdge[]): 
 }
 
 /**
- * Parse an imported blueprint JSON into the editor graph. Same acceptance the
- * preload path applies to `blueprint.load` documents: v1 only, whitelisted
- * node types only, edges must reference known ids. Returns the rejection as a
- * string — the caller renders it verbatim; nothing is coerced into a
- * best-effort graph that would misrepresent what the author wrote.
+ * Parse an imported blueprint JSON into the editor graph (supports v1 and v2).
  */
 export function parseBlueprintDoc(raw: string): { doc: BlueprintDoc } | { error: string } {
   let parsed: unknown
@@ -192,7 +214,9 @@ export function parseBlueprintDoc(raw: string): { doc: BlueprintDoc } | { error:
   }
   if (!parsed || typeof parsed !== 'object') return { error: '蓝图文档必须是 JSON 对象。' }
   const doc = parsed as Partial<BlueprintDoc>
-  if (doc.version !== 1) return { error: '不是 v1 版蓝图文档（内核只编译 v1）。' }
+  if (doc.version !== 1 && doc.version !== 2) {
+    return { error: '仅支持 v1 或 v2 版蓝图文档。' }
+  }
   if (!Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) {
     return { error: '缺 nodes 或 edges 数组。' }
   }
@@ -204,20 +228,23 @@ export function parseBlueprintDoc(raw: string): { doc: BlueprintDoc } | { error:
     seen.add(n.id)
     nodes.push({ id: n.id, type: n.type as BlueprintNodeType, params: clonePlain(n.params ?? {}) })
   }
-  if (nodes.length === 0) return { error: 'nodes 里没有可识别的节点（类型必须在 8 种白名单内、id 非空且不重复）。' }
+  if (nodes.length === 0) return { error: 'nodes 里没有可识别的节点（类型必须在白名单内、id 非空且不重复）。' }
   const edges: BpEdge[] = []
   for (const e of doc.edges) {
     if (!e || !seen.has(e.from) || !seen.has(e.to)) continue
     edges.push({ from: e.from, to: e.to, when: !!e.when })
   }
-  return { doc: { version: 1, name: typeof doc.name === 'string' ? doc.name : 'untitled_strategy', nodes, edges } }
+  return {
+    doc: {
+      version: doc.version,
+      name: typeof doc.name === 'string' ? doc.name : 'untitled_strategy',
+      ...(doc.meta && typeof doc.meta === 'object' ? { meta: clonePlain(doc.meta) } : {}),
+      nodes,
+      edges,
+    },
+  }
 }
 
-/**
- * The save request body — the exact params object `blueprint.save` accepts
- * (`{name, json, overwrite?}`). `overwrite` is the editor's explicit
- * acknowledgement that a package of this name already exists.
- */
 export interface BlueprintSaveBody {
   name: string
   json: string

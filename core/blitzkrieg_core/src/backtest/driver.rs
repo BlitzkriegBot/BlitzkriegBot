@@ -88,6 +88,25 @@ impl EventBacktester {
         // durable writers takes).
         core_cfg.accounts_config_path = None;
         core_cfg.near_miss_path = None;
+        // Backtest / replay must NEVER touch live-deployment durable state
+        // (SQLite store, audit journals, daily-loss budget file, risk/strategy
+        // state snapshots, or .env). Leaving `intent_audit_enabled = true` or
+        // `positions.daily_pnl_path = Some(...)` allowed CLI backtests run from
+        // the repo root to rotate/pollute production `data/audit/intents.jsonl`
+        // and overwrite `data/positions/positions.dry.daily-loss.dry.json`.
+        core_cfg.intent_audit_enabled = false;
+        core_cfg.positions.daily_pnl_path = None;
+        core_cfg.db_path = None;
+        core_cfg.manual_ops_audit_path = None;
+        core_cfg.unified_ledger_path = None;
+        core_cfg.risk_state_path = None;
+        core_cfg.strategy_state_path = None;
+        core_cfg.execution_policy_audit_path = None;
+        core_cfg.audit_log_path = None;
+        core_cfg.applied_log_path = None;
+        core_cfg.settlement_log_path = None;
+        core_cfg.runtime_config_path = None;
+        core_cfg.env_file_path = None;
         core_cfg.discovery_enabled = false;
         core_cfg.feed_ws_enabled = false;
         core_cfg.market_plugin = None;

@@ -175,30 +175,32 @@ async function doResetTrading(): Promise<void> {
         </template>
       </CardHeader>
 
-      <div class="grid gap-3 sm:grid-cols-2">
-        <div class="rounded-lg border border-line bg-panel-2 p-3">
-          <div class="label-micro">当前 token</div>
-          <div class="mt-1.5 flex items-center gap-2">
-            <span class="truncate font-mono text-[13px]">{{ tokenMasked }}</span>
-            <Tooltip content="复制完整 token。它等于会话本身 — 交给谁，谁就能打开这个面板。">
-              <Button variant="ghost" size="sm" :title="tokenCopied ? '已复制' : '复制 token'" @click="copyToken">
-                <Check v-if="tokenCopied" class="size-3.5 text-up" />
-                <Copy v-else class="size-3.5" />
-              </Button>
-            </Tooltip>
+      <div class="rounded-lg border border-line bg-panel-2 p-3">
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0">
+            <div class="label-micro">当前 token</div>
+            <div class="mt-1.5 flex items-center gap-2">
+              <span class="truncate font-mono text-[13px]">{{ tokenMasked }}</span>
+              <Tooltip content="复制完整 token。它等于会话本身 — 交给谁，谁就能打开这个面板。">
+                <Button variant="ghost" size="icon-sm" :title="tokenCopied ? '已复制' : '复制 token'" @click="copyToken">
+                  <Check v-if="tokenCopied" class="size-3.5 text-up" />
+                  <Copy v-else class="size-3.5" />
+                </Button>
+              </Tooltip>
+            </div>
           </div>
-          <p class="mt-1.5 text-[11px] leading-snug text-faint-fg">
+          <p class="text-[11.5px] leading-snug text-faint-fg sm:text-right">
             登录时间：{{ loginTime }}
           </p>
         </div>
       </div>
 
-      <div class="mt-3 flex items-start justify-between gap-3 rounded-md border border-line bg-panel-2 px-3 py-2">
-        <div class="flex min-w-0 flex-1 items-start gap-2 text-[11.5px] leading-snug text-muted-fg">
-          <Info class="mt-px size-3.5 shrink-0 text-faint-fg" />
-          <span>{{ sessionHint || '正在探测网关会话状态…' }}</span>
+      <div class="mt-3 flex flex-col gap-2.5 rounded-md border border-line bg-panel-2 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex min-w-0 flex-1 items-start gap-2 text-[11.5px] leading-relaxed text-muted-fg">
+          <Info class="mt-0.5 size-3.5 shrink-0 text-faint-fg" />
+          <span class="break-words">{{ sessionHint || '正在探测网关会话状态…' }}</span>
         </div>
-        <div class="flex shrink-0 items-center gap-2">
+        <div class="flex shrink-0 flex-wrap items-center justify-end gap-2">
           <Button variant="outline" size="sm" :disabled="sessionState === 'checking'" @click="checkSession">
             <RefreshCw class="size-3.5" />重新探测
           </Button>

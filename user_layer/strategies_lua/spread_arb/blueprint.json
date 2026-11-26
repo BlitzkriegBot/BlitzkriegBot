@@ -1,0 +1,88 @@
+{
+  "version": 2,
+  "name": "spread_arb",
+  "meta": {
+    "description": "Trend-following spread entry in wide odds band [0.45, 0.78] with tight spread <= 0.04.",
+    "holds_to_settlement": false,
+    "entry_maker": false,
+    "once_per_round": true,
+    "thesis_death": false
+  },
+  "nodes": [
+    {
+      "id": "c_spread",
+      "type": "condition",
+      "params": {
+        "field": "tick.spread",
+        "op": "<=",
+        "value": 0.04
+      }
+    },
+    {
+      "id": "c_px_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": ">=",
+        "value": 0.45
+      }
+    },
+    {
+      "id": "c_px_max",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": "<=",
+        "value": 0.78
+      }
+    },
+    {
+      "id": "c_tl_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.time_left_sec",
+        "op": ">=",
+        "value": 90
+      }
+    },
+    {
+      "id": "act_buy",
+      "type": "action_buy",
+      "params": {
+        "budget_ratio": 0.1
+      }
+    },
+    {
+      "id": "gate_and",
+      "type": "logic_and",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "c_spread",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_max",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_tl_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "gate_and",
+      "to": "act_buy",
+      "when": true
+    }
+  ]
+}

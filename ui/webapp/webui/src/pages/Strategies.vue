@@ -98,6 +98,14 @@ function isAccountEnabled(r: StrategyStatsRow): boolean | null {
   return null
 }
 
+/** 策略在账户配置里为「启用」但内核运行态未武装（静默未执行）——绝不能对操作员隐身。 */
+function isConfiguredButUnarmed(r: StrategyStatsRow): boolean {
+  return isAccountEnabled(r) === true && !r.enabled
+}
+const unarmedStrategies = computed<StrategyStatsRow[]>(() =>
+  rows.value.filter(isConfiguredButUnarmed),
+)
+
 async function toggle(r: StrategyStatsRow, next: boolean): Promise<void> {
   busy.value = r.name
   try {
@@ -412,6 +420,17 @@ onMounted(() => {
           </template>
         </CardHeader>
 
+      <AlertBanner
+        v-if="unarmedStrategies.length > 0"
+        tone="warn"
+        class="mb-3"
+        title="检测到策略配置与内核运行态不一致（未实际执行）"
+      >
+        当前账户配置了 {{ unarmedStrategies.length }} 个策略为开启状态，但内核引擎并未运行它们：
+        <span class="font-mono font-medium">{{ unarmedStrategies.map((s) => s.name).join('、') }}</span>。
+        请检查内核启动日志或重新切换对应开关以重新武装。
+      </AlertBanner>
+
       <div class="-mx-2 overflow-x-auto">
         <!--
           `table-fixed` + explicit colgroup, not automatic layout. Under auto
@@ -520,6 +539,13 @@ onMounted(() => {
                         :title="`${r.name} 的启停（只影响显示账户）`"
                         @update:model-value="toggle(r, $event)"
                       />
+                      <Badge
+                        v-if="isConfiguredButUnarmed(r)"
+                        variant="down"
+                        title="账户配置为开启，但内核引擎当前未运行该策略"
+                      >
+                        未运行
+                      </Badge>
                     </span>
                   </td>
                   <td class="px-2 py-2.5">

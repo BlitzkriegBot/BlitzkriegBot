@@ -30,6 +30,24 @@ impl WebServer {
         (200, "application/json", doc.to_string().into_bytes())
     }
 
+    /// Read-only proxy with an explicit minimum IPC read timeout (for RPCs
+    /// that dial external venue APIs such as `smart_money.scan`).
+    pub(super) fn proxy_read_with_timeout(
+        &self,
+        verb: &str,
+        params: serde_json::Value,
+        min_timeout: std::time::Duration,
+    ) -> (u16, &'static str, Vec<u8>) {
+        let doc = match self.snapshot_src.lock() {
+            Ok(mut c) => match c.call_with_timeout(verb, params, min_timeout) {
+                Ok(v) => v,
+                Err(e) => serde_json::json!({ "error": e.to_string() }),
+            },
+            Err(_) => serde_json::json!({ "error": "core client poisoned" }),
+        };
+        (200, "application/json", doc.to_string().into_bytes())
+    }
+
     /// #353: the POST trio (`onchain-pull` / `run`) — the body IS the IPC
     /// params object; a body that is not valid JSON is a 400 that never
     /// reaches the kernel. A thin wrapper over [`Self::proxy_read`].
@@ -40,6 +58,22 @@ impl WebServer {
     ) -> (u16, &'static str, Vec<u8>) {
         match body_params(body) {
             Ok(p) => self.proxy_read(method, p),
+            Err(e) => (
+                400,
+                "application/json",
+                serde_json::json!({ "error": e }).to_string().into_bytes(),
+            ),
+        }
+    }
+
+    pub(super) fn proxy_body_with_timeout(
+        &self,
+        method: &str,
+        body: &str,
+        min_timeout: std::time::Duration,
+    ) -> (u16, &'static str, Vec<u8>) {
+        match body_params(body) {
+            Ok(p) => self.proxy_read_with_timeout(method, p, min_timeout),
             Err(e) => (
                 400,
                 "application/json",
@@ -214,12 +248,16 @@ impl WebServer {
                 // touches the filesystem (repo iron rule).
                 self.proxy_backtest_body("blueprint.saveSource", &req.body)
             }
-            ("POST", "/api/smart-money/scan") => {
-                self.proxy_backtest_body("smart_money.scan", &req.body)
-            }
-            ("POST", "/api/smart-money/analyze") => {
-                self.proxy_backtest_body("smart_money.analyze", &req.body)
-            }
+            ("POST", "/api/smart-money/scan") => self.proxy_body_with_timeout(
+                "smart_money.scan",
+                &req.body,
+                std::time::Duration::from_secs(45),
+            ),
+            ("POST", "/api/smart-money/analyze") => self.proxy_body_with_timeout(
+                "smart_money.analyze",
+                &req.body,
+                std::time::Duration::from_secs(30),
+            ),
             ("GET", "/api/risk-limits") => {
                 // E26 (§4.4): the settings page's risk card reads the EFFECTIVE
                 // systemic limits through the SAME core client the snapshot

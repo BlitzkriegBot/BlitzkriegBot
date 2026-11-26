@@ -14,7 +14,8 @@ pub(crate) async fn handle_smart_money(
     method: &str,
     params: Value,
 ) -> Result<Value, (i32, String, Option<ErrorData>)> {
-    let fetcher = blitzkrieg_onchain_pull::HttpFetcher::new(120);
+    // Polymarket Data API v2 allows 300 req / 10s on /v2/trades (~33ms pacing).
+    let fetcher = blitzkrieg_onchain_pull::HttpFetcher::new(35);
     match method {
         method::SMART_MONEY_SCAN => {
             let req: blitzkrieg_onchain_pull::radar::RadarScanRequest =

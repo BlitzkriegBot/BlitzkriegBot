@@ -408,18 +408,36 @@ impl IpcClient {
     /// The raised timeout is RESTORED afterwards: every other call on this
     /// client must keep failing fast — a panel that waits 30 s to notice a dead
     /// core is a panel that looks fine while nothing is answering.
-    pub fn net_check(&mut self) -> Result<NetCheckReportView, IpcError> {
+    /// Call an arbitrary IPC method with at least `min_timeout` as the socket
+    /// read budget (widening temporarily when the client's default timeout is
+    /// shorter, then restoring on return). Used by RPCs that dial real external
+    /// APIs (`net.check`, `smart_money.scan`, `smart_money.analyze`).
+    pub fn call_with_timeout(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        min_timeout: Duration,
+    ) -> Result<serde_json::Value, IpcError> {
         let previous = self.timeout;
-        let widen = self.timeout < NET_CHECK_READ_TIMEOUT;
+        let widen = self.timeout < min_timeout;
         if widen {
-            self.timeout = NET_CHECK_READ_TIMEOUT;
+            self.timeout = min_timeout;
             self.disconnect();
         }
-        let out = self.call(method::NET_CHECK, serde_json::json!({}));
+        let out = self.call(method, params);
         if widen {
             self.timeout = previous;
             self.disconnect();
         }
+        out
+    }
+
+    pub fn net_check(&mut self) -> Result<NetCheckReportView, IpcError> {
+        let out = self.call_with_timeout(
+            method::NET_CHECK,
+            serde_json::json!({}),
+            NET_CHECK_READ_TIMEOUT,
+        );
         serde_json::from_value(out?).map_err(|e| IpcError::Protocol(e.to_string()))
     }
 

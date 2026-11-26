@@ -80,6 +80,7 @@ const pages = {
   hft: defineAsyncComponent(() => import('./pages/HftPage.vue')),
   backtest: defineAsyncComponent(() => import('./pages/BacktestPage.vue')),
   blueprint: defineAsyncComponent(() => import('./pages/BlueprintPage.vue')),
+  smart_trading: defineAsyncComponent(() => import('./pages/SmartTradingPage.vue')),
   strategies: defineAsyncComponent(() => import('./pages/Strategies.vue')),
   decisions: defineAsyncComponent(() => import('./pages/Decisions.vue')),
   evolution: defineAsyncComponent(() => import('./pages/EvolutionPage.vue')),

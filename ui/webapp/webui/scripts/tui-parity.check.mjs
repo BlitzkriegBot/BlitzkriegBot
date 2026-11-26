@@ -141,6 +141,18 @@ const WEBUI_TAB_SETS = [
     'plugins',
     'settings',
   ],
+  [
+    'overview',
+    'hft',
+    'backtest',
+    'strategies',
+    'blueprint',
+    'smart_trading',
+    'decisions',
+    'evolution',
+    'plugins',
+    'settings',
+  ],
 ]
 check('WebUI nav is a known tab set (six, seven with evolution, eight with decisions, nine with blueprint)', () => {
   assert.ok(
@@ -376,15 +388,14 @@ console.log('WebUI surplus — declared, each with where it lives off-panel')
 const WEBUI_SURPLUS = [
   ['backtest', 'CLI: blitzkrieg-core --backtest --backtest-report（回测是 WebUI 增强面）'],
   ['blueprint', 'CLI/JSON: 手写 blueprint.json 过 blueprint.compile（画布是 WebUI 专属增强面，产物进策略包）'],
+  ['smart_trading', 'CLI/库: tools/onchain_pull reverse::analyze_fills + blueprint::compile（聪明钱逆向是 WebUI 增强面）'],
   ['strategies', 'TUI 指令台 strategy <name> on|off 同动词；账本表格是 WebUI 增强面'],
 ]
 check('every WebUI-only tab has a declared off-panel equivalent', () => {
   const surplus = webuiIds.filter((id) => !TUI_TO_WEBUI.some(([, ts]) => ts.includes(id)))
   assert.deepEqual(
     surplus,
-    // Same three surplus faces as before #381; the order tracks the nav
-    // (blueprint now sits inside the 策略 group, after the ledger it feeds).
-    ['backtest', 'strategies', 'blueprint'],
+    ['backtest', 'strategies', 'blueprint', 'smart_trading'],
     'new WebUI tab without a parity note — add it to WEBUI_SURPLUS and this list',
   )
 })

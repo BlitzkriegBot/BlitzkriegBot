@@ -141,7 +141,16 @@ pub fn parse_trades_to_samples(rows: &[Value], market_filter: Option<&str>) -> V
     let want_dur = target_duration_sec(market_filter);
     let mut out = Vec::new();
     for row in rows {
-        let Some(slug) = val_str(row, &["slug", "eventSlug", "marketSlug"]) else {
+        let Some(slug) = val_str(
+            row,
+            &[
+                "slug",
+                "event_slug",
+                "market_slug",
+                "eventSlug",
+                "marketSlug",
+            ],
+        ) else {
             continue;
         };
         let Some(parsed) = parse_round_slug(slug) else {
@@ -155,7 +164,7 @@ pub fn parse_trades_to_samples(rows: &[Value], market_filter: Option<&str>) -> V
         {
             continue;
         }
-        let Some(condition_id) = val_str(row, &["conditionId", "condition_id"]) else {
+        let Some(condition_id) = val_str(row, &["condition_id", "conditionId"]) else {
             continue;
         };
         let price = val_f64(row, &["price"]);
@@ -163,14 +172,14 @@ pub fn parse_trades_to_samples(rows: &[Value], market_filter: Option<&str>) -> V
             continue;
         }
         let raw_size = val_f64(row, &["size", "shares"]);
-        let usdc = val_f64(row, &["usdcSize"]);
+        let usdc = val_f64(row, &["usdc_size", "usdcSize"]);
         let size_usd = if usdc > 0.0 { usdc } else { raw_size * price };
         let mut ts = val_i64(row, &["timestamp", "ts"]);
         if ts > 10_000_000_000 {
             ts /= 1000;
         }
         let side = val_str(row, &["side"]).unwrap_or("BUY").to_uppercase();
-        let outcome_index = val_i64(row, &["outcomeIndex", "outcome_index"]);
+        let outcome_index = val_i64(row, &["outcome_index", "outcomeIndex"]);
         out.push(FillSample {
             condition_id: condition_id.to_string(),
             asset: parsed.asset,
@@ -197,12 +206,13 @@ pub async fn analyze_wallet_trades(
     if !w.starts_with("0x") || w.len() != 42 {
         return Err(format!("invalid wallet address: {w}"));
     }
-    let url = format!("{DATA_API_BASE}/trades?user={w}&limit=500");
+    let url = format!("{DATA_API_BASE}/v2/trades?user={w}&limit=500");
     let raw = fetcher.get_json(&url).await?;
     let rows = raw
-        .as_array()
-        .or_else(|| raw.get("data").and_then(Value::as_array))
-        .ok_or_else(|| "unexpected /trades response shape (expected array)".to_string())?;
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| raw.as_array())
+        .ok_or_else(|| "unexpected /v2/trades response shape (expected data array)".to_string())?;
     let samples = parse_trades_to_samples(rows, market);
     Ok(analyze_fills(w, &samples))
 }
@@ -214,36 +224,50 @@ pub async fn scan_leaderboard(
     req: &RadarScanRequest,
 ) -> Result<RadarScanResult, String> {
     let limit = req.limit.clamp(1, 30);
-    let period = match req.time_period.trim().to_uppercase().as_str() {
-        "DAY" | "WEEK" | "MONTH" | "ALL" => req.time_period.trim().to_uppercase(),
-        _ => "WEEK".to_string(),
+    let period = match req.time_period.trim().to_ascii_lowercase().as_str() {
+        "day" => "day",
+        "week" => "week",
+        "month" => "month",
+        "all" => "all",
+        _ => "week",
     };
     let url = format!(
-        "{DATA_API_BASE}/v1/leaderboard?category=CRYPTO&timePeriod={period}&orderBy=PNL&limit={limit}"
+        "{DATA_API_BASE}/v2/leaderboard?category=crypto&time_period={period}&sort_by=PNL&limit={limit}"
     );
     let raw = fetcher.get_json(&url).await?;
     let entries = raw
-        .as_array()
-        .or_else(|| raw.get("data").and_then(Value::as_array))
-        .ok_or_else(|| "unexpected /v1/leaderboard response shape".to_string())?;
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| raw.as_array())
+        .ok_or_else(|| "unexpected /v2/leaderboard response shape".to_string())?;
 
     let mut candidates = Vec::new();
     let mut scanned = 0usize;
     let min_fills = req.min_buy_fills.max(1);
 
     for row in entries.iter().take(limit) {
-        let Some(wallet) = val_str(row, &["proxyWallet", "wallet", "user", "address"]) else {
+        let Some(wallet) = val_str(
+            row,
+            &[
+                "user_id",
+                "proxy_wallet",
+                "proxyWallet",
+                "wallet",
+                "user",
+                "address",
+            ],
+        ) else {
             continue;
         };
         if !wallet.starts_with("0x") || wallet.len() != 42 {
             continue;
         }
         scanned += 1;
-        let label = val_str(row, &["userName", "name", "pseudonym"])
+        let label = val_str(row, &["user_name", "userName", "name", "pseudonym"])
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}…{}", &wallet[..6], &wallet[wallet.len() - 4..]));
-        let pnl = val_f64(row, &["pnl", "profit", "netPnl"]);
-        let vol = val_f64(row, &["vol", "volume"]);
+        let pnl = val_f64(row, &["pnl", "profit", "net_pnl", "netPnl"]);
+        let vol = val_f64(row, &["volume", "vol"]);
 
         let Ok(analysis) = analyze_wallet_trades(fetcher, wallet, req.market.as_deref()).await
         else {
@@ -315,11 +339,16 @@ mod tests {
         let w2 = "0x2222222222222222222222222222222222222222";
         let mut routes = HashMap::new();
         routes.insert(
-            format!("{DATA_API_BASE}/v1/leaderboard?category=CRYPTO&timePeriod=WEEK&orderBy=PNL&limit=10"),
-            serde_json::json!([
-                { "proxyWallet": w1, "userName": "sniper_btc", "pnl": 4200.5, "vol": 98000.0 },
-                { "proxyWallet": w2, "userName": "noise_trader", "pnl": 300.0, "vol": 1000.0 }
-            ]),
+            format!(
+                "{DATA_API_BASE}/v2/leaderboard?category=crypto&time_period=week&sort_by=PNL&limit=10"
+            ),
+            serde_json::json!({
+                "data": [
+                    { "rank": 1, "user_id": w1, "user_name": "sniper_btc", "pnl": 4200.5, "volume": 98000.0 },
+                    { "rank": 2, "user_id": w2, "user_name": "noise_trader", "pnl": 300.0, "volume": 1000.0 }
+                ],
+                "pagination": { "next_cursor": null }
+            }),
         );
 
         let mut w1_trades = Vec::new();
@@ -327,9 +356,9 @@ mod tests {
             let start = 1_795_670_000 + (i as i64) * 300;
             w1_trades.push(serde_json::json!({
                 "slug": format!("btc-updown-5m-{start}"),
-                "conditionId": format!("0xcond{i}"),
+                "condition_id": format!("0xcond{i}"),
                 "side": "BUY",
-                "outcomeIndex": 0,
+                "outcome_index": 0,
                 "price": 0.90 + (i % 5) as f64 * 0.01,
                 "size": 10.0,
                 "timestamp": start + 260
@@ -338,31 +367,34 @@ mod tests {
         // Non-updown trade must be ignored.
         w1_trades.push(serde_json::json!({
             "slug": "us-election-2028",
-            "conditionId": "0xother",
+            "condition_id": "0xother",
             "side": "BUY",
-            "outcomeIndex": 0,
+            "outcome_index": 0,
             "price": 0.50,
             "size": 10.0,
             "timestamp": 1_795_670_000
         }));
 
         routes.insert(
-            format!("{DATA_API_BASE}/trades?user={w1}&limit=500"),
-            Value::Array(w1_trades),
+            format!("{DATA_API_BASE}/v2/trades?user={w1}&limit=500"),
+            serde_json::json!({ "data": w1_trades, "pagination": { "next_cursor": null } }),
         );
         routes.insert(
-            format!("{DATA_API_BASE}/trades?user={w2}&limit=500"),
-            serde_json::json!([
-                {
-                    "slug": "btc-updown-5m-1795670000",
-                    "conditionId": "0xsmall",
-                    "side": "BUY",
-                    "outcomeIndex": 0,
-                    "price": 0.91,
-                    "size": 5.0,
-                    "timestamp": 1_795_670_250
-                }
-            ]),
+            format!("{DATA_API_BASE}/v2/trades?user={w2}&limit=500"),
+            serde_json::json!({
+                "data": [
+                    {
+                        "slug": "btc-updown-5m-1795670000",
+                        "condition_id": "0xsmall",
+                        "side": "BUY",
+                        "outcome_index": 0,
+                        "price": 0.91,
+                        "size": 5.0,
+                        "timestamp": 1_795_670_250
+                    }
+                ],
+                "pagination": { "next_cursor": null }
+            }),
         );
 
         let fetcher = MockFetcher { routes };

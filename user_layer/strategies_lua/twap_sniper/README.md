@@ -2,7 +2,7 @@
 
 Final-15s TWAP-lock sniper for 5m binary rounds. With `5–15` seconds left
 (when 75%–92% of the 60s Chainlink settlement TWAP is already locked in),
-buys any lagging ask inside `0.75–0.96` as a taker and holds to settlement.
+buys any lagging ask inside `0.90–0.96` as a taker and holds to settlement.
 One attempt per condition per round.
 
 On 12.5 days of live-recorded 5m L2 orderbook archives (2026-11-11 through
@@ -24,6 +24,6 @@ Enable explicitly (`DRY_RUN` stays default):
 
 | tunable | default | meaning |
 |---|---|---|
-| `min_px` / `max_px` | 0.75 / 0.96 | inclusive entry band |
+| `min_px` / `max_px` | 0.90 / 0.96 | inclusive entry band |
 | `min_time_left` / `max_time_left` | 5 / 15 | seconds remaining |
 | `maker_entry` | 0 | 0 = taker at ask (`late-taker`), 1 = post-only bid |

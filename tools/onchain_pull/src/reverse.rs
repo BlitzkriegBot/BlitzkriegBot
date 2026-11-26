@@ -177,9 +177,15 @@ pub fn analyze_fills(wallet: &str, samples: &[FillSample]) -> ReverseAnalysis {
                 } else {
                     0.0
                 };
-                let payout = if winner == f.outcome_index { shares } else { 0.0 };
+                let payout = if winner == f.outcome_index {
+                    shares
+                } else {
+                    0.0
+                };
                 let pnl = payout - f.size_usd;
-                let entry = cond_pnl.entry(f.condition_id.as_str()).or_insert((0.0, true));
+                let entry = cond_pnl
+                    .entry(f.condition_id.as_str())
+                    .or_insert((0.0, true));
                 entry.0 += pnl;
             }
         }
@@ -408,7 +414,14 @@ pub fn synthesize_blueprint(
 mod tests {
     use super::*;
 
-    fn mk_fill(cond: usize, side: &str, outcome: i64, price: f64, tl: i64, winner: Option<i64>) -> FillSample {
+    fn mk_fill(
+        cond: usize,
+        side: &str,
+        outcome: i64,
+        price: f64,
+        tl: i64,
+        winner: Option<i64>,
+    ) -> FillSample {
         let end = 1_795_670_000 + (cond as i64) * 300;
         FillSample {
             condition_id: format!("0xcond{cond}"),
@@ -437,7 +450,16 @@ mod tests {
     #[test]
     fn late_favorite_wallet_synthesizes_valid_blueprint() {
         let samples: Vec<FillSample> = (0..30)
-            .map(|i| mk_fill(i, "BUY", 0, 0.88 + (i % 8) as f64 * 0.01, 20 + (i % 5) as i64 * 10, Some(0)))
+            .map(|i| {
+                mk_fill(
+                    i,
+                    "BUY",
+                    0,
+                    0.88 + (i % 8) as f64 * 0.01,
+                    20 + (i % 5) as i64 * 10,
+                    Some(0),
+                )
+            })
             .collect();
         let out = analyze_fills("0xdeadbeef0011", &samples);
         assert_eq!(out.archetype, StrategyArchetype::LateFavorite);

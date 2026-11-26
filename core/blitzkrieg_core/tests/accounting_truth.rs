@@ -211,7 +211,11 @@ fn a_redelivered_trade_after_a_restart_is_booked_once() {
     // whatever order resolution picked next.
     assert_eq!(c2.restore_orders(), 0);
     assert!(c2.ome().get(&id).is_none());
-    assert_eq!(c2.restore_positions(), 1, "the open position is recovered");
+    assert_eq!(
+        c2.restore_positions(),
+        Ok(1),
+        "the open position is recovered"
+    );
     assert!(
         c2.ome().already_applied("trade-restart-1"),
         "the applied table must survive the restart"

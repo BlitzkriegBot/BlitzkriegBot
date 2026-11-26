@@ -752,3 +752,33 @@ fn declared_shares_dies_against_the_venue_mandate() {
     let ticket = e.equity_shares("pair-up", dec!(0.20), &e.global_sizing(), "default");
     assert_eq!(ticket, Decimal::ZERO);
 }
+
+#[test]
+fn max_shares_zero_means_unlimited_for_equity_and_absolute_sizing() {
+    // Equity path: max_shares = 0 means no artificial share ceiling (only budget & min_shares bind).
+    let mut e = engine_from(pct_cfg(dec!(20), dec!(5), Decimal::ZERO));
+    e.set_equity_usd(dec!(500));
+    // 500 * 20% = 100 USD -> 100 / 0.50 = 200 shares (not capped at 10, not zeroed).
+    assert_eq!(
+        e.compute_shares(dec!(0.50), "spread_arb", "default"),
+        dec!(200)
+    );
+    // Floor still gates unaffordable orders.
+    e.set_equity_usd(dec!(5));
+    // 5 * 20% = 1 USD -> 1 / 0.50 = 2 < min_shares(5) -> skip (0).
+    assert_eq!(
+        e.compute_shares(dec!(0.50), "spread_arb", "default"),
+        Decimal::ZERO
+    );
+
+    // Absolute path: max_shares = 0 also lifts the artificial ceiling.
+    let mut abs_cfg = cfg();
+    abs_cfg.size_usd = dec!(25);
+    abs_cfg.min_shares = dec!(5);
+    abs_cfg.max_shares = Decimal::ZERO;
+    let abs = engine_from(abs_cfg);
+    assert_eq!(
+        abs.compute_shares(dec!(0.50), "spread_arb", "default"),
+        dec!(50)
+    );
+}

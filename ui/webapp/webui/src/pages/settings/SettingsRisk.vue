@@ -239,7 +239,15 @@ async function saveAll(): Promise<void> {
       policyErr.value = exitPatch
       return
     }
-    // 3. 收集 execution_policy 整段（六项参数 + 规则）
+    // 3. 收集 execution_policy 整段（六项参数 + 规则），并与单一「下注比例」同步，避免双源漂移
+    const pct = limitsRef.value?.currentSizePct()
+    if (pct !== null && pct !== undefined && pct > 0 && pct <= 100) {
+      const syncedRatio = String(Number((pct / 100).toFixed(6)))
+      if (syncedRatio !== editBudgetRatio.value) {
+        editBudgetRatio.value = syncedRatio
+        editDirty.value = true
+      }
+    }
     const policyParams = buildSetParams()
     const keys = Object.keys(limitsPatch ?? {})
     const exitKeys = Object.keys(exitPatch ?? {})
@@ -253,7 +261,7 @@ async function saveAll(): Promise<void> {
       !policyParams.maxPositionsPerAsset &&
       !editDirty.value
     ) {
-      policyErr.value = '没有改动 —— 六项系统限额、退出纪律、执行参数与规则都与内核当前生效值一致。'
+      policyErr.value = '没有改动 —— 当前风控参数与执行规则都与内核生效值一致。'
       return
     }
     // 4. 一次性写入：系统限额、退出纪律、执行策略整段（参数 + 规则）
@@ -265,8 +273,10 @@ async function saveAll(): Promise<void> {
       const res = await api.riskSetExit({ ...exitPatch, reason: 'webui 面板编辑（退出纪律）' })
       if (res.error) throw new Error(res.error)
     }
-    const res = await api.executionPolicySet(policyParams)
-    if (res.error) throw new Error(res.error)
+    if (policySection.value) {
+      const res = await api.executionPolicySet(policyParams)
+      if (res.error) throw new Error(res.error)
+    }
     editDirty.value = false
     await loadPolicy()
   } catch (e) {
@@ -421,56 +431,62 @@ async function rollbackPolicy(): Promise<void> {
       </div>
     </Card>
 
-    <!-- 生效风控：一张卡承载本账户的全部可写面 —— 系统限额 / 退出纪律 /
-         账户生效参数（#params）/ 执行策略规则（#rules），底部一个保存按钮。
-         参数与规则同属 execution_policy 的一个账户段，必须一次整段提交。 -->
-    <SettingsRiskLimits ref="limitsRef" @save-all="saveAll">
-      <template #params>
-        <div v-if="policySection" class="mt-3 border-t border-line pt-3">
-          <div class="label-micro">账户生效参数</div>
-          <p class="mt-1 text-[11px] leading-snug text-faint-fg">
-            下单前内核按这组基础参数给每一单定预算、设门槛 —— 与下方规则同属一个账户段，
-            与规则一起由底部「保存」整段提交（内核验证→落盘→重读→落审计后才应答）。
-          </p>
-          <div class="mt-2 grid gap-2 sm:grid-cols-2">
-            <label class="block">
-              <span class="label-micro">下注比例（balance × ratio）</span>
-              <Input v-model="editBudgetRatio" class="mt-1" type="text" placeholder="如 0.02" @input="editDirty = true" />
-            </label>
-            <label class="block">
-              <span class="label-micro">最小下注（USD）</span>
-              <Input v-model="editMinBudgetUsd" class="mt-1" type="text" placeholder="如 10" @input="editDirty = true" />
-            </label>
-            <label class="block">
-              <span class="label-micro">最低权益要求（USD）</span>
-              <Input v-model="editMinEquityUsd" class="mt-1" type="text" placeholder="如 50" @input="editDirty = true" />
-            </label>
-            <label class="block">
-              <span class="label-micro">单标的最多持仓笔数</span>
+    <!-- 生效风控：3 组 8 项主视图 + 高级设置抽屉 + 底部唯一保存按钮。 -->
+    <SettingsRiskLimits ref="limitsRef" :min-budget-usd="editMinBudgetUsd" @save-all="saveAll">
+      <template #sizing-min>
+        <Input
+          v-model="editMinBudgetUsd"
+          class="num h-7 w-24 text-right text-[12px]"
+          type="text"
+          min="0"
+          step="any"
+          placeholder="最小 USD"
+          aria-label="单笔最小金额"
+          @input="editDirty = true"
+        />
+      </template>
+
+      <template #positions-per-asset>
+        <Input
+          v-model="editMaxPositionsPerAsset"
+          class="num h-7 w-24 text-right text-[12px]"
+          type="number"
+          min="1"
+          step="1"
+          placeholder="1"
+          aria-label="单币种持仓上限"
+          @input="editDirty = true"
+        />
+      </template>
+
+      <template #advanced-policy>
+        <div v-if="policySection" class="border-t border-line pt-2">
+          <div class="flex items-center justify-between gap-3 py-1 text-[12px]">
+            <span class="text-faint-fg">最低权益要求<span class="ml-1 text-[10.5px]">低于该余额暂停开仓</span></span>
+            <span class="flex items-center gap-1.5">
               <Input
-                v-model="editMaxPositionsPerAsset"
-                class="mt-1"
-                type="number"
-                min="1"
-                step="1"
+                v-model="editMinEquityUsd"
+                class="num h-7 w-24 text-right text-[12px]"
+                type="text"
+                min="0"
+                step="any"
+                placeholder="如 50"
+                aria-label="最低权益要求"
                 @input="editDirty = true"
               />
-            </label>
-            <span v-if="editDirty" class="text-[11px] text-primary">有未保存的修改 —— 点底部「保存」落盘</span>
+              <span class="w-8 text-[10.5px] text-faint-fg">USD</span>
+            </span>
           </div>
+          <p v-if="editDirty" class="mt-1 text-[11px] text-primary">有未保存的修改 —— 点底部「保存」落盘</p>
         </div>
-        <AlertBanner v-else-if="!policyBusy && !policyErr" class="mt-3" tone="info">
-          读不到策略视图 —— 这个内核可能不认识 execution_policy。
-        </AlertBanner>
       </template>
 
       <!-- 执行策略规则：与上方参数同一个账户段，共用底部唯一的保存按钮。 -->
       <template #rules>
-        <div v-if="policySection" class="mt-3 border-t border-line pt-3">
+        <div v-if="policySection" class="border-t border-line pt-2">
           <div class="label-micro">执行策略规则</div>
           <p class="mt-1 text-[11px] leading-snug text-faint-fg">
-            下单前内核按「基础参数 → 规则（priority 升序，取第一个命中）」裁决每一单：
-            放行 / 跳过 / 冷静期。生效视图由内核折叠后下发，浏览器不读配置文件。
+            下单前内核按「基础参数 → 规则（priority 升序，取第一个命中）」裁决每一单。
           </p>
           <PolicyRulesEditor
             v-model="editRules"

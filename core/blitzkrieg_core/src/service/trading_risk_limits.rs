@@ -81,7 +81,7 @@ impl Core {
             patch.min_shares.unwrap_or(min_shares),
             patch.max_shares.unwrap_or(max_shares),
         );
-        if new_min > new_max {
+        if new_max > Decimal::ZERO && new_min > new_max {
             return Err(CoreError::new(
                 CoreErrorCode::InvalidParams,
                 format!(
@@ -305,10 +305,10 @@ impl Core {
         }
 
         if let Some(to) = patch.max_shares {
-            if to <= Decimal::ZERO {
+            if to < Decimal::ZERO {
                 return Err(CoreError::new(
                     CoreErrorCode::InvalidParams,
-                    format!("maxShares must be > 0, got {to}; nothing was applied"),
+                    format!("maxShares must be >= 0 (0 = unlimited), got {to}; nothing was applied"),
                 ));
             }
             changes.push(SystemicLimitChange {
@@ -321,7 +321,10 @@ impl Core {
 
         let new_min_shares = patch.min_shares.unwrap_or(self.config.min_shares);
         let new_max_shares = patch.max_shares.unwrap_or(self.config.max_shares);
-        if (patch.min_shares.is_some() || patch.max_shares.is_some()) && new_min_shares > new_max_shares {
+        if (patch.min_shares.is_some() || patch.max_shares.is_some())
+            && new_max_shares > Decimal::ZERO
+            && new_min_shares > new_max_shares
+        {
             return Err(CoreError::new(
                 CoreErrorCode::InvalidParams,
                 format!("minShares {new_min_shares} exceeds maxShares {new_max_shares}; nothing was applied"),

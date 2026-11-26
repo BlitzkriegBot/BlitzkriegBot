@@ -841,16 +841,28 @@ fn a_gate_exemption_never_bypasses_a_safety_boundary() {
     assert!(c.positions().open_positions().is_empty());
 
     // Global capacity ceiling: also outside the entry gates.
+    // With max_positions == 0 now meaning unlimited (#239), test capacity = 1:
+    // fill one position first, then verify the second exempting entry is refused.
     let mut c2 = core_with_declared_dips(
         HashMap::new(),
-        &[("all_in", &["BTC"])],
-        0,
+        &[("all_in", &["BTC", "ETH"])],
+        1,
         WINDOW_SHUT,
         |_| crate::strategies::GateExemptions::all(),
     );
-    feed_three_asset_dip(&mut c2, now);
+    c2.engine_on_data(
+        DataEvent::RoundMarkets {
+            markets: three_markets(now),
+            now_ms: now,
+        },
+        now,
+    );
+    feed_dip_on(&mut c2, now + 1_000, &["BTC"]);
+    assert_eq!(c2.engine_evaluate(now + 1_000), 1, "first entry fits capacity 1");
+    fill(&mut c2, "BTC", now + 2_000);
+    feed_dip_on(&mut c2, now + 3_000, &["ETH"]);
     assert_eq!(
-        c2.engine_evaluate(now + 1_000),
+        c2.engine_evaluate(now + 3_000),
         0,
         "global capacity is not exemptible"
     );

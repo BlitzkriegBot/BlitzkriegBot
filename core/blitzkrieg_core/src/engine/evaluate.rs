@@ -823,7 +823,15 @@ impl Engine {
                             let lag = if row_dur == feed_duration {
                                 slot - m.round_slot
                             } else {
-                                slot * feed_duration / row_dur - m.round_slot
+                                // `slot` is the feeding round's END-anchored slot
+                                // (`expires_at_sec / feed_duration`), so its START
+                                // is `(slot - 1) * feed_duration`. Converting the
+                                // END of a 1h or daily round onto a 5m/15m grid
+                                // projected 4..288 slots into the future and wiped
+                                // out every live non-feeding venue (kalshi,
+                                // polysimulator, etc.) on boot/rollover.
+                                let feed_start_sec = slot.saturating_sub(1) * feed_duration;
+                                feed_start_sec / row_dur - m.round_slot
                             };
                             lag < 2 || m.venue == feeding_venue
                         })

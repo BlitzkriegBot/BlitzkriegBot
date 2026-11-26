@@ -1368,3 +1368,78 @@ fn single_family_tables_read_the_global_numbers_verbatim() {
         assert_eq!(e.last_time_left_sec(), global.time_left_sec);
     }
 }
+
+#[test]
+fn longer_duration_rollover_never_evicts_active_shorter_family_siblings() {
+    // Regression for live bug: when polymarket discovered 1h (slot=498810,
+    // end=18:00 UTC) or daily (slot=20784, end=24:00 UTC), the old cross-family
+    // formula `slot * feed_duration / row_dur - m.round_slot` converted the
+    // END of the longer round onto 5m/15m/1h grids (projecting 4..288 slots
+    // into the future) and wiped out every live kalshi & polysimulator row.
+    let mut e = Engine::new(cfg());
+    let now_ms = 1_795_712_899_000_i64; // 2026-11-26T17:08:19Z
+
+    // Active 5m polysimulator (ends 17:10 UTC) + active 15m kalshi & polysimulator (ends 17:15 UTC)
+    let end_5m = 5_985_710 * 300 * 1000;
+    let end_15m = 1_995_237 * 900 * 1000;
+    let end_1h = 498_810 * 3600 * 1000;
+    let end_daily = 20_784 * 86_400 * 1000;
+
+    e.on_data(DataEvent::RoundMarkets {
+        markets: vec![family_market(end_5m, "polysimulator", 300)],
+        now_ms,
+    });
+    e.on_data(DataEvent::RoundMarkets {
+        markets: vec![family_market(end_15m, "kalshi", 900)],
+        now_ms,
+    });
+    e.on_data(DataEvent::RoundMarkets {
+        markets: vec![family_market(end_15m, "polysimulator", 900)],
+        now_ms,
+    });
+    e.on_data(DataEvent::RoundMarkets {
+        markets: vec![family_market(end_1h, "polysimulator", 3600)],
+        now_ms,
+    });
+
+    // Now polymarket discovers 1h and daily rounds.
+    e.on_data(DataEvent::RoundMarkets {
+        markets: vec![family_market(end_1h, "polymarket", 3600)],
+        now_ms,
+    });
+    e.on_data(DataEvent::RoundMarkets {
+        markets: vec![family_market(end_daily, "polymarket", 86_400)],
+        now_ms,
+    });
+
+    let has = |venue: &str, dur: i64| {
+        e.scanner
+            .markets()
+            .iter()
+            .any(|m| m.venue == venue && m.round_duration_sec == dur)
+    };
+    assert!(
+        has("kalshi", 900),
+        "active kalshi 15m row must survive 1h/daily rollover"
+    );
+    assert!(
+        has("polysimulator", 300),
+        "active polysimulator 5m row must survive 1h/daily rollover"
+    );
+    assert!(
+        has("polysimulator", 900),
+        "active polysimulator 15m row must survive 1h/daily rollover"
+    );
+    assert!(
+        has("polysimulator", 3600),
+        "active polysimulator 1h row must survive daily rollover"
+    );
+    assert!(
+        has("polymarket", 3600),
+        "feeding polymarket 1h row is present"
+    );
+    assert!(
+        has("polymarket", 86_400),
+        "feeding polymarket daily row is present"
+    );
+}

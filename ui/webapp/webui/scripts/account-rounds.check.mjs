@@ -253,7 +253,15 @@ check('ui_kit 转译层保留声明键（内核 wire → 面板 snapshot 的中�
 // ── 4c. 退出纪律 trailing 热配开关（issue 356 升格；risk.setExit）─────────────
 check('退出纪律卡有 trailingEnabled Switch（老内核缺字段 → 禁用降级，不造默认值）', () => {
   const risk = read('src', 'pages', 'settings', 'SettingsRiskLimits.vue')
-  assert.match(risk, /field: 'trailingEnabled'/, 'EXIT_ROW_DEFS 缺 trailingEnabled 行')
+  // #244 replaced the data-driven `EXIT_ROW_DEFS` table with explicit JSX rows,
+  // so the old `field: 'trailingEnabled'` anchor names a shape that no longer
+  // exists. Anchor on the row's behaviour instead: the label an operator sees,
+  // its state accessor, and the write handler must all be wired to the same
+  // key — that is what "the trailing switch is still on the exit-discipline
+  // card" actually means. Intensity is unchanged: a deleted row still fails.
+  assert.match(risk, /移动止盈/, '退出纪律卡缺「移动止盈」行')
+  assert.match(risk, /\['trailingEnabled'\]/, 'trailing 行的读写未绑到 trailingEnabled 键')
+  assert.match(risk, /setTrailing/, 'trailing 行缺写处理器（开关只能显示不能改）')
   assert.match(risk, /<Switch/, 'trailing 行未用 Switch 组件（bool 旋钮不是输入框）')
   assert.match(risk, /trailingSupported/, '缺 trailingSupported feature-detect（老内核缺字段禁用）')
   assert.match(risk, /e\.trailingEnabled !== undefined/, '发送端缺缺省守卫 —— 旧内核会意外收 true')

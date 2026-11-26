@@ -51,8 +51,19 @@ function order(mode, tokenId, price, size, key, asset = 'BTC', extra = {}) {
   // the position (the CI-only "positions.list []" failure). Derive the slot the
   // same way the backtest gate does.
   const liveSlot = Math.floor((Date.now() + 900_000) / 1000 / 900);
+  // conditionId must be UNIQUE PER FIXTURE ORDER (#237). The durable intent
+  // ledger keys an entry intent on (account, strategy, condition_id, round_slot,
+  // direction) and deliberately excludes `internal_key`, so one shared
+  // `conditionId: 'cond'` made every order in this file THE SAME INTENT: from
+  // the second placement on, `orders.place` replayed the first order's result
+  // (same order id, same FILLED status) and placed nothing — the position core
+  // below silently "filled" without opening a position, and the cancel/kill
+  // sections dereferenced an order that never existed. Each key is its own
+  // market here; the dedicated replay check in section 1b asserts the duplicate
+  // case on purpose instead of tripping over it by accident.
+  const conditionId = `cond-${key}`;
   return {
-    tokenId, conditionId: 'cond', side: 'buy', mode, price, size,
+    tokenId, conditionId, side: 'buy', mode, price, size,
     internalKey: key, strategy: 'operator', asset, direction: 'up',
     roundSlot: liveSlot, ...extra,
   };
@@ -133,6 +144,48 @@ try {
   try { await rpc.placeOrder(c, order('taker', 'tkX', 0.4, 100, 'kX')); }
   catch (e) { coreCode = e.coreCode; }
   check('risk cap rejects with RISK_REJECTED', coreCode === 'RISK_REJECTED', `got ${coreCode}`);
+
+  // 1b. The duplicate-intent guard, asserted ON PURPOSE (#237).
+  //
+  // The durable intent ledger keys an entry on (account, strategy, condition_id,
+  // round_slot, direction) and deliberately NOT on `internal_key` (#185): a
+  // retried entry must replay the first result instead of placing a second
+  // order. That is protective — it is what stops a reconnect or an operator
+  // double-click from doubling a position — but until now this gate only ever
+  // tripped over it by accident (every fixture order shared one conditionId, so
+  // the whole file was one intent). Assert it explicitly.
+  //
+  // A MAKER carries the test: it rests without opening a position, so the
+  // duplicate reaches the intent ledger instead of being refused earlier by the
+  // one-position-per-asset gate. Cancelled at the end so the reservation this
+  // section takes never leaks into the balance assertion below.
+  const replayAsset = 'AVAX';
+  const first = await rpc.placeOrder(c, order('maker', 'rp1', 0.4, 5, 'k-rp1', replayAsset));
+  check('the first submit of an intent is a real order', first.status === 'LIVE', JSON.stringify(first));
+  const ordersBefore = (await rpc.listOrders(c)).orders.length;
+  const balanceBefore = await rpc.balance(c);
+  // Same intent, different internal_key: still a duplicate.
+  const replay = await rpc.placeOrder(c, order('maker', 'rp1', 0.4, 5, 'k-rp1-retry', replayAsset, { conditionId: 'cond-k-rp1' }));
+  check('a duplicate entry intent replays the first order id (not a new order)',
+    replay.orderId === first.orderId,
+    `duplicate got ${replay.orderId}, first submit was ${first.orderId}`);
+  check('a duplicate entry intent replays the first status',
+    replay.status === first.status,
+    `duplicate got ${replay.status}, first submit was ${first.status}`);
+  const balanceAfter = await rpc.balance(c);
+  check('a duplicate entry intent places no order and moves no money',
+    (await rpc.listOrders(c)).orders.length === ordersBefore
+      && balanceAfter.balance === balanceBefore.balance
+      && balanceAfter.reserved === balanceBefore.reserved,
+    `orders ${ordersBefore}->${(await rpc.listOrders(c)).orders.length}, balance ${balanceBefore.balance}->${balanceAfter.balance}, reserved ${balanceBefore.reserved}->${balanceAfter.reserved}`);
+  // A DIFFERENT condition_id with an otherwise identical request is a NEW
+  // intent and must place — the guard keys on the intent, not on the token.
+  const distinct = await rpc.placeOrder(c, order('maker', 'rp2', 0.4, 5, 'k-rp2', replayAsset));
+  check('a different condition_id is a new intent and does place',
+    distinct.status === 'LIVE' && distinct.orderId !== first.orderId,
+    JSON.stringify(distinct));
+  await rpc.cancelOrder(c, first.orderId);
+  await rpc.cancelOrder(c, distinct.orderId);
 
   // 3. Maker rests, fills when ask crosses; reserve held meanwhile.
   const maker = await rpc.placeOrder(c, order('maker', 'mk1', 0.4, 5, 'k2', 'ETH', { direction: 'down' }));

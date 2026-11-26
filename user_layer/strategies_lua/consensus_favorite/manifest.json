@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "affcf03da8ccd4d9880c18165a425bf2c3ddfef839fe8a789d89394b4c3dcc6b",
+  "sha256": "dc955ffeb39433d89cfebdfaa945be94a6589633420f7331be234c0ec3fa1b29",
   "author": "BlitzkriegBot",
-  "description": "Multi-asset aligned-direction favorite for 5m binary rounds. With 30-90 seconds left, buys the favorite priced inside 0.94-0.97 ONLY when at least 4 assets in the same round agree on the same direction at >= 0.85, filtering out single-coin fakeouts. Holds to settlement; one attempt per condition per round. maker_entry 0 (default) crosses the ask as a taker (reason late-taker).",
+  "description": "Multi-asset aligned-direction favorite for 5m binary rounds. With 30-90 seconds left, buys the favorite priced inside 0.85-0.97 ONLY when at least 4 assets in the same round agree on the same direction at >= 0.85, filtering out single-coin fakeouts. Holds to settlement; one attempt per condition per round. maker_entry 0 (default) crosses the ask as a taker (reason late-taker).",
   "holds_to_settlement": true,
   "entry_maker": false,
   "gate_exemptions": {
@@ -28,7 +28,7 @@
     },
     "min_px": {
       "type": "decimal",
-      "default": "0.94",
+      "default": "0.85",
       "min": "0.50",
       "max": "0.98"
     },

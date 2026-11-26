@@ -7,18 +7,24 @@
 //! the truly global static settings, the panel password and the credential
 //! master key.
 //!
-//! Orders, fills, positions, trades and the cash ledger are NOT here: since
-//! v2 (#1199 PR-0.5 T-02) those five tables are dropped, because the runtime
-//! truth for all of them is the `data/*.jsonl` files the kernel's JSONL stores
-//! own (`order_db` / `trade_db` / `position_db` / `ledger`) — the tables only
-//! ever held one-shot importer rows and made the schema advertise storage
-//! nothing reads.
+//! Orders, fills, positions and the cash ledger are NOT here: since v2
+//! (#1199 PR-0.5 T-02) those four tables are dropped, because their runtime
+//! truth is the `data/*.jsonl` files the kernel's JSONL stores own
+//! (`order_db` / `position_db` / `ledger`).
+//!
+//! **Closed trades ARE here, since v4.** v2 dropped `trades` alongside those
+//! four on the argument that nothing wrote it; that argument stopped holding
+//! when the store seam grew a trades domain, so [`schema::SCHEMA_V4`] recreates
+//! it with `mode` in the row address (one file serves every mode) and
+//! [`trades`] is its carrier. The JSONL trade log is demoted to an export
+//! format — see [`trades::TradeLog::export_jsonl`].
 //!
 //! # Layout
 //!
-//! - [`schema`] — the v1 DDL (embedded SQL) and the table/index inventory.
+//! - [`schema`] — the DDL constants and the table/index inventory.
 //! - [`migrations`] — the version ledger (`schema_migrations`) and the runner.
 //! - [`credentials`] — AES-256-GCM credential encryption + `.env` fallback.
+//! - [`trades`] — the durable closed-trade log (v4) and the JSONL importer.
 //!
 //! # Concurrency (issue #1189 §5)
 //!
@@ -41,6 +47,8 @@ pub mod credentials;
 pub mod intents;
 pub mod migrations;
 pub mod schema;
+pub mod trades;
+pub mod tx;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};

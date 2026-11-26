@@ -224,8 +224,16 @@ pub struct Core {
     extensions: crate::extension::ExtensionRegistry,
     /// Shadow Evolution (opt-in; disabled by default).
     shadow_evolution: ShadowEvolution,
-    /// Closed-trade log (Node-compatible), when `trade_log_path` is set.
-    trade_db: Option<crate::trade_db::TradeDb>,
+    /// Closed-trade log — the durable SQL carrier (schema v4), when a store is
+    /// wired. `None` = no store (backtester / in-process tests): every trade
+    /// write then reports `WriteOutcome::Refused`/`StoreError::Backend` instead
+    /// of silently landing in a file, and every read answers from the
+    /// in-memory closed-position fallback in `reports.rs`.
+    ///
+    /// This REPLACED the JSONL carrier (`TradeDb`, retired with its module).
+    /// The JSONL trade log is now an export format only — see
+    /// [`crate::db::trades::TradeLog::export_jsonl`].
+    trade_log: Option<crate::db::trades::TradeLog>,
     /// Issue #185: the durable order-intent ledger (SQLite `order_intents`).
     /// `None` = no store wired (backtester / most in-process tests): the
     /// in-memory live-key dedup stays the only guard, and the boundary is

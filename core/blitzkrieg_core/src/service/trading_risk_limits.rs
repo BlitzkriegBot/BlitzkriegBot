@@ -308,7 +308,9 @@ impl Core {
             if to < Decimal::ZERO {
                 return Err(CoreError::new(
                     CoreErrorCode::InvalidParams,
-                    format!("maxShares must be >= 0 (0 = unlimited), got {to}; nothing was applied"),
+                    format!(
+                        "maxShares must be >= 0 (0 = unlimited), got {to}; nothing was applied"
+                    ),
                 ));
             }
             changes.push(SystemicLimitChange {
@@ -327,7 +329,9 @@ impl Core {
         {
             return Err(CoreError::new(
                 CoreErrorCode::InvalidParams,
-                format!("minShares {new_min_shares} exceeds maxShares {new_max_shares}; nothing was applied"),
+                format!(
+                    "minShares {new_min_shares} exceeds maxShares {new_max_shares}; nothing was applied"
+                ),
             ));
         }
 
@@ -343,7 +347,12 @@ impl Core {
         // plan/persist orchestration only.
         let risk_changes: Vec<SystemicLimitChange> = changes
             .iter()
-            .filter(|c| !matches!(c.field, "sizePct" | "maxPositions" | "minShares" | "maxShares"))
+            .filter(|c| {
+                !matches!(
+                    c.field,
+                    "sizePct" | "maxPositions" | "minShares" | "maxShares"
+                )
+            })
             .cloned()
             .collect();
         let row = if !risk_changes.is_empty() {

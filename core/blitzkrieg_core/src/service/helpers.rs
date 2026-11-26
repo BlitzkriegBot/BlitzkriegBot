@@ -137,17 +137,6 @@ pub(super) const PLACE_TIMEOUT_VERDICT_MS: i64 = 30_000;
 /// proves the check RAN and not merely that it never failed (issue #189).
 pub(super) const AUDIT_HEARTBEAT_MS: i64 = 600_000;
 
-/// The trade summary keeps realized PnL as `f64` (Node-compatible on disk); the
-/// audit compares it against `Decimal` cash, so the conversion is explicit here
-/// rather than an `as` cast in the comparison.
-pub(super) fn f64_to_decimal(v: f64) -> Decimal {
-    use std::str::FromStr;
-    if !v.is_finite() {
-        return Decimal::ZERO;
-    }
-    Decimal::from_str(&format!("{v:.9}")).unwrap_or(Decimal::ZERO)
-}
-
 /// A placement intent that CLOSES exposure (an automated exit, a strategy
 /// close, a flatten or a residual backstop) rather than opening one.
 ///

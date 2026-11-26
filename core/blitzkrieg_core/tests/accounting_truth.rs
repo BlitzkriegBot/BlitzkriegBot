@@ -80,11 +80,19 @@ fn base_config() -> CoreConfig {
 
 /// A config that persists orders/positions/trades under `dir` — the deployment
 /// shape a restart has to survive.
+///
+/// `db_path` is part of that shape since schema v4: closed trades live in the
+/// SQLite `trades` table, and a fixture that names only the JSONL export path
+/// leaves the core with NO ledger (`trade_log == None`). That is not a harmless
+/// omission here — the accounting audit treats "no trade log" as "the trade leg
+/// is not covered" and PASSES, so these tests would silently stop exercising the
+/// cash identity they exist for.
 fn persistent_config(dir: &Path) -> CoreConfig {
     CoreConfig {
         order_log_path: Some(join(dir, "orders.jsonl")),
         position_log_path: Some(join(dir, "positions.jsonl")),
         trade_log_path: Some(join(dir, "trades.jsonl")),
+        db_path: Some(dir.join("store.sqlite")),
         ..base_config()
     }
 }

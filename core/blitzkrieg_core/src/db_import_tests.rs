@@ -458,33 +458,49 @@ fn account_rounds_cells_survive_the_import() {
 /// orders/fills/positions/trades/ledger_entries 掉出来之后，随后的 `import_once`
 /// 不得再用 `SCHEMA_V1` 的 `CREATE TABLE IF NOT EXISTS` 把它们建回来。
 /// 旧行为把已迁移下到 13 表的库永久复活成 18 表的 schema 谎言。
+///
+/// v4 反转了其中一张：`trades` 是唯一有运行时消费方的表（schema v4，账本
+/// 单源化），由迁移链自己重建。所以本测试盯的是**导入器**：它建的那四张
+/// 零写表必须继续缺席，而 `trades` 必须在、且必须是迁移建的（空的），
+/// 不是导入器顺手复活出来的。
 #[test]
 fn importer_does_not_resurrect_v2_dropped_ledger_tables() {
     let dir = TmpDir::new();
     let db = dir.path().join("bank.db");
 
-    // 先跑完整迁移链：v1 建 18 表，v2 掉五张零运行时写表（连同索引）；
-    // schema_migrations 记录 [1, 2]，库里只剩 13 张表。
+    // 先跑完整迁移链：v1 建 18 表，v2 掉五张零运行时写表（连同索引），
+    // v3/v4 再各自建自己的表。schema_migrations 记录 [1,2,3,4]。
     {
         let conn = Connection::open(&db).expect("open db");
-        migrations::run(&conn).expect("run v1 + v2 migrations");
+        migrations::run(&conn).expect("run the whole migration chain");
     }
 
-    let five = ["orders", "fills", "positions", "trades", "ledger_entries"];
-    assert_tables_absent(&db, &five, "post v2 migration");
+    let four = ["orders", "fills", "positions", "ledger_entries"];
+    assert_tables_absent(&db, &four, "post migration chain");
+    // v4 有意重建 trades；它必须存在且为空（迁移只建表，不造行）。
+    assert_eq!(
+        scalar_i64(&db, "SELECT COUNT(*) FROM trades"),
+        0,
+        "v4 creates the empty trades table"
+    );
 
     // 导入器再跑一次（启动 #2 等价）：无 import_v1 标记，但
     // schema_migrations 已非空（已迁移库），所以 SCHEMA_V1 不得执行，
-    // 五表继续缺席。
+    // 四张零写表继续缺席，`trades` 也不得被导入器写入任何行。
     let report = import_once(&db, |_| None).expect("import on migrated db");
     assert_eq!(report.accounts, 1, "default account still imports");
-    assert_tables_absent(&db, &five, "post import on migrated db");
+    assert_tables_absent(&db, &four, "post import on migrated db");
+    assert_eq!(
+        scalar_i64(&db, "SELECT COUNT(*) FROM trades"),
+        0,
+        "the importer folds no trades — the ledger is written by the close path"
+    );
 
-    // 标记已落，再跑是标记 no-op，五表仍必须缺席。
+    // 标记已落，再跑是标记 no-op，四表仍必须缺席。
     let second = import_once(&db, |_| None).expect("second import on migrated db");
     assert_eq!(second.accounts, 0);
     assert_eq!(second.audit, 0);
-    assert_tables_absent(&db, &five, "post second import on migrated db");
+    assert_tables_absent(&db, &four, "post second import on migrated db");
 
     let marker: i64 = scalar_i64(
         &db,

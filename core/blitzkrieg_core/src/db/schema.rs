@@ -13,7 +13,7 @@
 //!
 //! `orders` / `fills` / `positions` / `trades` / `ledger_entries` never had a
 //! runtime writer: the live truth for all five lives in the `data/*.jsonl`
-//! files (`order_db.rs` / `trade_db.rs` / `position_db.rs` / `ledger.rs`), and
+//! files (`order_db.rs` / `position_db.rs` / `ledger.rs`), and
 //! the only rows the SQLite tables ever carried came from the one-shot
 //! importer. Keeping them made the schema a lying surface — it advertised
 //! storage nothing reads. [`SCHEMA_V2`] drops them (and their indexes);
@@ -22,7 +22,7 @@
 
 /// The schema version this module defines. Bumped whenever [`SCHEMA_V1`] is
 /// superseded by a new migration (never edited in place).
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Every table the CURRENT schema creates, in dependency order (parents first).
 ///
@@ -30,6 +30,12 @@ pub const SCHEMA_VERSION: i64 = 3;
 /// renamed or dropped cannot pass unnoticed. Since v2 (#1199 T-02) this is the
 /// post-migration target state: the five ledger tables the importer alone ever
 /// wrote are dropped, and the JSONL files are their only home.
+///
+/// v4 reverses that for ONE of the five: `trades` comes back, because the
+/// closed-trade log is the only money fact the panel's headline number comes
+/// from and v2's reasoning ("nothing reads it") stopped being true the moment
+/// the store seam grew a trades domain. See [`SCHEMA_V4`] — and note the table
+/// is NOT the v1 shape (that one had no account/exit index and no mode column).
 pub const TABLES: &[&str] = &[
     "schema_migrations",
     "kernel_meta",
@@ -46,18 +52,33 @@ pub const TABLES: &[&str] = &[
     "audit_log",
     // v3 (#185): the durable order-intent ledger.
     "order_intents",
+    // v4: the durable closed-trade log (the one v2 drop that is reversed).
+    "trades",
+    // v4: where an account-history wipe preserves what it erased (#1253).
+    // A SEPARATE table, not archived rows inside `trades`: mixing them would
+    // put an "is this row live?" predicate on every read, and a reader that
+    // forgot the predicate would count erased trades in the headline.
+    "trades_archive",
 ];
 
 /// Every index the CURRENT schema creates. Since v2 (#1199 T-02) the five
 /// per-account ledger indexes went with their tables; v3 (#185) adds the
 /// intent ledger's unique intent index plus the age index its capacity
-/// policy prunes by.
+/// policy prunes by. v4 adds the trades page index and its ledger-wide id
+/// scan index.
 pub const INDEXES: &[&str] = &[
     "idx_audit_ts",
     "idx_rounds_account",
     "idx_markets_venue",
     "uq_intent",
     "idx_intents_created",
+    // v4 trades: the page query's (mode, account, exit_time DESC) cover, plus
+    // the unscoped ledger-wide index the id-tail memory reads.
+    "idx_trades_mode_account_exit",
+    "idx_trades_mode_id",
+    // v4 archive: "what did that wipe remove from this account" reads
+    // newest-archive-first.
+    "idx_trades_archive_account_time",
 ];
 
 /// The complete v1 schema.
@@ -353,6 +374,134 @@ CREATE INDEX IF NOT EXISTS idx_intents_created
   ON order_intents(created_at_ms);
 "#;
 
+/// v4: the durable closed-trade log — one row per realized close.
+///
+/// # Why this reverses one of v2's five drops
+///
+/// v2 dropped five ledger tables because "nothing reads them": the runtime
+/// truth lived in `data/*.jsonl` and keeping the tables made the schema
+/// advertise storage nobody used. That reasoning was correct for FOUR of them
+/// and wrong for `trades`: the closed-trade log is where the panel's headline
+/// realized-PnL number comes from, and it is now consumed through the store
+/// seam ([`crate::contracts::TradeRead`] / [`crate::contracts::TradeWrite`]),
+/// which v2 knew nothing about. The other four stay dropped.
+///
+/// # Shape
+///
+/// `payload_json` carries the full [`crate::trade::TradeRecord`] verbatim so
+/// the wire shape has exactly one definition (`TradeRecord`'s serde) rather
+/// than a second column-per-field mapping that would drift from it. The
+/// columns beside it exist only for what the seam QUERIES on:
+///
+/// * `mode` — dry and live keep SEPARATE books. The JSONL era spelled this as
+///   two filenames (`trades.jsonl` vs `trades-live.jsonl`) precisely so a live
+///   panel could not render dry-era rows; a single table without this column
+///   would silently merge them, which is a worse bug than the one being fixed.
+/// * `account_id` — every read is account-scoped (#1221/#1223).
+/// * `exit_time` — the page order and the second half of the row identity.
+/// * `net_pnl_usd` / `gross_pnl_usd` / `fees_usd` / `hold_time_sec` /
+///   `source` — the aggregate legs. Stored as decimal strings (never REAL:
+///   [`SCHEMA_V1`]'s rule applies to every version) so `SUM` runs on exact
+///   decimals rather than IEEE floats.
+///
+/// # Identity
+///
+/// `PRIMARY KEY (mode, account_id, id, exit_time)` is the row address the
+/// contract calls [`crate::contracts::TradeIdentity`]. It deliberately excludes
+/// `net_pnl_usd`: the JSONL version had to include that moving field because a
+/// file line had no stable identity, which is why `amend_net_pnl` could not
+/// address a row it had already amended. In a table the uniqueness is a
+/// constraint, so the amendment guards its precondition with an explicit
+/// compare-and-swap instead.
+///
+/// A duplicate `(mode, account, id, exit_time)` is a REAL COLLISION: the
+/// position book reuses `hft-N` ids across restarts (#942 records nine such
+/// collisions in production), so a reissued id can legitimately meet an old
+/// close at a different time — but the same id at the same exit time is the
+/// same close twice, and the importer refuses it rather than collapsing it.
+pub const SCHEMA_V4: &str = r#"
+-- The durable closed-trade log. See this constant's doc for why v2's drop of
+-- `trades` is reversed here and why `mode` is part of the row address.
+CREATE TABLE IF NOT EXISTS trades (
+  -- The book this close belongs to: 'dry' | 'live' | 'readonly'. Two modes
+  -- share one database file (db_path is single), so the separation the JSONL
+  -- era got from two filenames has to be a column here.
+  mode         TEXT NOT NULL,
+  account_id   TEXT NOT NULL,
+  -- The position book's id at close (`hft-N`), reused across restarts.
+  id           TEXT NOT NULL,
+  -- The close's own timestamp, epoch milliseconds. Part of the identity:
+  -- it does not move under an amendment, and two closes of one id cannot
+  -- share it.
+  exit_time    INTEGER NOT NULL,
+  -- The full TradeRecord, verbatim (camelCase wire shape). One definition of
+  -- the trade row, not a second column-per-field mapping to keep in sync.
+  payload_json TEXT NOT NULL,
+  -- Aggregate legs, copied out of the payload so SUM/COUNT run in SQL.
+  -- Decimal strings, never REAL: a float SUM would lose the precision the
+  -- cash identity depends on.
+  net_pnl_usd    TEXT NOT NULL,
+  gross_pnl_usd  TEXT NOT NULL,
+  fees_usd       TEXT NOT NULL,
+  hold_time_sec  INTEGER NOT NULL,
+  -- The close's provenance: 'venue' (a real venue verdict) or 'fallback'
+  -- (bookkeeping value with no venue answer). R7.1 requires the unverified
+  -- slice to be reportable as its own line, so it is a queryable column, not
+  -- a string buried in JSON.
+  source         TEXT NOT NULL DEFAULT '',
+  -- When this row landed, epoch milliseconds (carrier commit time).
+  written_at_ms  INTEGER NOT NULL,
+  PRIMARY KEY (mode, account_id, id, exit_time)
+);
+
+-- The page query's cover: newest-first within one account's book.
+CREATE INDEX IF NOT EXISTS idx_trades_mode_account_exit
+  ON trades(mode, account_id, exit_time);
+
+-- The ledger-wide id memory (max hft-N tail, issue #942) is unscoped by
+-- account on purpose: it seeds the position counter for the whole book.
+CREATE INDEX IF NOT EXISTS idx_trades_mode_id
+  ON trades(mode, id);
+
+-- Where an account-history wipe preserves what it erased (issue #1253: a
+-- reset that leaves no trace of the rows it removed is an unarchived
+-- erasure). A SEPARATE table rather than archived rows inside `trades`, and
+-- seeded by copy-then-delete in the SAME transaction, so a crash cannot
+-- leave a wipe without its archive or an archive without the wipe.
+--
+-- It carries the same payload columns as `trades` because an archived row is
+-- the same fact, just retired; and `restored_at_ms = 0` marks "not restored",
+-- which is the only state today. The archive is append-only: nothing in this
+-- kernel deletes from it, so a mistaken wipe stays auditable.
+CREATE TABLE IF NOT EXISTS trades_archive (
+  mode            TEXT NOT NULL,
+  account_id      TEXT NOT NULL,
+  id              TEXT NOT NULL,
+  exit_time       INTEGER NOT NULL,
+  payload_json    TEXT NOT NULL,
+  net_pnl_usd     TEXT NOT NULL,
+  gross_pnl_usd   TEXT NOT NULL,
+  fees_usd        TEXT NOT NULL,
+  hold_time_sec   INTEGER NOT NULL,
+  source          TEXT NOT NULL DEFAULT '',
+  -- When the row first landed (copied from trades.written_at_ms).
+  written_at_ms   INTEGER NOT NULL,
+  -- When the wipe that retired it committed.
+  archived_at_ms  INTEGER NOT NULL,
+  -- Who/what caused the wipe (the caller's own label), for the audit trail.
+  archive_reason  TEXT NOT NULL DEFAULT '',
+  -- Reserved: non-zero once a restore path exists. Nothing sets it yet, so an
+  -- operator can tell "never restored" from "restored" without guessing.
+  restored_at_ms  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (mode, account_id, id, exit_time, archived_at_ms)
+);
+
+-- An operator asking "what did the 2026-11-26 wipe remove from account X"
+-- reads newest-archive-first, so the index leads with the account.
+CREATE INDEX IF NOT EXISTS idx_trades_archive_account_time
+  ON trades_archive(mode, account_id, archived_at_ms);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,6 +542,13 @@ mod tests {
     /// v2 (#1199 T-02) drops exactly the five zero-runtime-write tables and
     /// their five indexes — no more, no less. A typo in the DROP list would
     /// either leave a lying table behind or take a live one down.
+    ///
+    /// v4 re-creates ONE of them (`trades`) with a DIFFERENT shape. That is not
+    /// a hole in this assertion: the historical fact is "v2's SQL drops these
+    /// five", and the current-state fact is checked right below it. Keeping
+    /// both means neither can silently regress — a v2 edit that stopped
+    /// dropping a table would still red here, and a v4 that forgot to re-create
+    /// `trades` would red on the inventory assertion.
     #[test]
     fn v2_drops_exactly_the_five_ledger_tables() {
         const DROPPED_TABLES: &[&str] =
@@ -408,10 +564,6 @@ mod tests {
             assert!(
                 SCHEMA_V2.contains(&format!("DROP TABLE IF EXISTS {table};")),
                 "SCHEMA_V2 must drop table {table}"
-            );
-            assert!(
-                !TABLES.contains(table),
-                "{table} is dropped by v2 — it must not be in the TABLES inventory"
             );
         }
         for index in DROPPED_INDEXES {
@@ -430,6 +582,59 @@ mod tests {
             assert!(
                 SCHEMA_V1.contains(&format!("CREATE TABLE IF NOT EXISTS {table} (")),
                 "SCHEMA_V1 keeps its historical DDL: {table} must still be created there"
+            );
+        }
+    }
+
+    /// v4 re-creates `trades` and NOTHING else from v2's drop list, with a
+    /// strictly stronger address than the v1 table had.
+    ///
+    /// Why this assertion exists next to the one above: the pair together pin
+    /// the whole decision — "four stay dropped, one comes back, and it comes
+    /// back mode-scoped". A future edit that also resurrected `orders` (or
+    /// dropped `mode` from the key, silently merging dry and live books) reds
+    /// here.
+    #[test]
+    fn v4_recreates_only_trades_and_mode_is_part_of_its_identity() {
+        for dropped in ["orders", "fills", "positions", "ledger_entries"] {
+            assert!(
+                !TABLES.contains(&dropped),
+                "{dropped} stays dropped: v2's reasoning (no runtime consumer) still holds for it"
+            );
+        }
+        assert!(
+            TABLES.contains(&"trades"),
+            "v4 re-creates `trades` — the closed-trade log is the store seam's trades domain"
+        );
+        assert!(
+            SCHEMA_V4.contains("CREATE TABLE IF NOT EXISTS trades ("),
+            "the table must be created by SCHEMA_V4 (SCHEMA_V1's shape is historical)"
+        );
+        // The identity must be mode-scoped. One database file serves dry and
+        // live; the JSONL era got its separation from two filenames, and a
+        // table without `mode` in the key would merge the two books.
+        assert!(
+            SCHEMA_V4.contains("PRIMARY KEY (mode, account_id, id, exit_time)"),
+            "a trades row is addressed by (mode, account, id, exit_time): \
+             `mode` keeps dry and live books apart, and `net_pnl_usd` must NOT \
+             be in the key (amend_trade_net_pnl mutates it)"
+        );
+        assert!(
+            !SCHEMA_V4.contains("PRIMARY KEY (id)"),
+            "the v1 single-column key must not come back: it cannot represent \
+             two modes or a reissued id"
+        );
+        // Money is a decimal string in EVERY version, never REAL.
+        let ddl: String = SCHEMA_V4
+            .lines()
+            .map(|line| line.split("--").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_uppercase();
+        for forbidden in ["REAL", "FLOAT", "DOUBLE", "NUMERIC"] {
+            assert!(
+                !ddl.contains(forbidden),
+                "schema v4 must not declare {forbidden} columns: money is a decimal string"
             );
         }
     }

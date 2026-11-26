@@ -60,6 +60,19 @@ impl Core {
         &mut self.config
     }
 
+    /// Read-only handle on the closed-trade ledger — TEST SEAM ONLY (test cfg
+    /// or feature `test-support`, the same gate [`Self::positions_mut`] carries).
+    ///
+    /// A test that has to prove something about the LEDGER (a page window, a
+    /// per-account split, an id baseline) must seed rows through the real
+    /// carrier. Production never reads this field from outside `service`; the
+    /// writes there all go through the close/redemption paths so they carry
+    /// their own receipts.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn trade_log(&self) -> Option<&crate::db::trades::TradeLog> {
+        self.trade_log.as_ref()
+    }
+
     /// Point the exit ladder's deadline grid at the step the caller will
     /// actually drive (#390 replay nofast). `tick_schedule_ms` is the grid
     /// the counter ratchets backfill over (consumed by

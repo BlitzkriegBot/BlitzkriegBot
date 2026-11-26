@@ -487,10 +487,12 @@ impl Core {
                 "refusing to boot: venue-round-id ledger migration failed ({e}) —                  restore the *.pre-venue-round-id backup if one was written,                  fix the file, and restart; a kernel must not trade against a                  half-migrated ledger"
             ),
         }
-        let trade_db = config
-            .trade_log_path
-            .as_ref()
-            .map(crate::trade_db::TradeDb::new);
+        // The closed-trade log's carrier is the SQLite store (schema v4), not
+        // the JSONL file: `trade_log_path` no longer selects a carrier, it only
+        // names where an operator-requested EXPORT lands. No store = no trade
+        // ledger — every write face then reports the refusal instead of writing
+        // a file only some readers ever saw.
+        let trade_log = sqlite.as_ref().map(|s| s.trade_log(config.mode));
         let order_db = config
             .order_log_path
             .as_ref()
@@ -902,7 +904,7 @@ impl Core {
                 reg
             },
             shadow_evolution: ShadowEvolution::new_with_env_path(shadow_cfg, &[], shadow_env_path),
-            trade_db,
+            trade_log,
             order_db,
             position_db,
             stats: CoreStats::default(),

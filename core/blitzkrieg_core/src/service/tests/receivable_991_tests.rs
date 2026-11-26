@@ -47,6 +47,10 @@ fn receivable_core(dir: &std::path::Path, max_age_ms: i64) -> Core {
         auto_exits_enabled: false,
         unverified_expiry_policy: UnverifiedExpiryPolicy::Receivable,
         receivable_max_age_ms: max_age_ms,
+        // The closed-trade ledger is the SQLite store (schema v4); the test's
+        // own directory keeps its book private. Without it the fallback close
+        // has nowhere to land and the amend under test would have no row.
+        db_path: Some(dir.join("store.sqlite")),
         position_log_path: path("positions.jsonl"),
         trade_log_path: path("trades.jsonl"),
         settlement_log_path: path("settlements.jsonl"),

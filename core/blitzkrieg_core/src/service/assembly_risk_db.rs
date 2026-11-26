@@ -139,7 +139,7 @@ impl Core {
                 }
                 if let Some(raw) = keys.get(MAX_SHARES_SETTING) {
                     match raw.trim().parse::<Decimal>() {
-                        Ok(v) if v > Decimal::ZERO => {
+                        Ok(v) if v >= Decimal::ZERO => {
                             self.config.max_shares = v;
                             band_changed = true;
                         }
@@ -151,11 +151,57 @@ impl Core {
                     }
                 }
                 if band_changed {
-                    if self.config.min_shares > self.config.max_shares {
+                    if self.config.max_shares > Decimal::ZERO
+                        && self.config.min_shares > self.config.max_shares
+                    {
                         self.config.min_shares = self.config.max_shares;
                     }
                     if let Some(engine) = self.engine.as_mut() {
                         engine.set_share_band(self.config.min_shares, self.config.max_shares);
+                    }
+                }
+                // #243 Fail-Closed migration: when both legacy BK_SIZE_PCT and
+                // POLICY_BUDGET_RATIO are present, take the tighter percentage
+                // (never silently widen) and emit a clear WARN.
+                if self.config.size_pct > Decimal::ZERO {
+                    let policy_ratio = keys
+                        .get("POLICY_BUDGET_RATIO")
+                        .and_then(|raw| raw.trim().parse::<Decimal>().ok())
+                        .or_else(|| {
+                            self.execution_policy
+                                .as_ref()
+                                .map(|p| p.section_for(default_id.as_str()).budget_ratio)
+                        });
+                    if let Some(ratio) = policy_ratio
+                        && ratio > Decimal::ZERO
+                        && ratio <= Decimal::ONE
+                    {
+                        let policy_pct = ratio * Decimal::ONE_HUNDRED;
+                        if policy_pct < self.config.size_pct {
+                            tracing::warn!(
+                                target: "risk",
+                                account = %account_id,
+                                bk_size_pct = %self.config.size_pct,
+                                policy_budget_ratio = %ratio,
+                                effective_pct = %policy_pct,
+                                "both legacy BK_SIZE_PCT and POLICY_BUDGET_RATIO are set; \
+                                 taking tighter bound fail-closed"
+                            );
+                            self.config.size_pct = policy_pct;
+                            if let Some(engine) = self.engine.as_mut() {
+                                engine.set_size_pct(policy_pct);
+                            }
+                        } else if policy_pct > self.config.size_pct {
+                            tracing::warn!(
+                                target: "risk",
+                                account = %account_id,
+                                bk_size_pct = %self.config.size_pct,
+                                policy_budget_ratio = %ratio,
+                                effective_pct = %self.config.size_pct,
+                                "both legacy BK_SIZE_PCT and POLICY_BUDGET_RATIO are set; \
+                                 keeping tighter BK_SIZE_PCT fail-closed"
+                            );
+                        }
                     }
                 }
             }

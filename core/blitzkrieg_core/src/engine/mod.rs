@@ -837,7 +837,12 @@ impl Engine {
                 return Decimal::ZERO;
             }
         };
-        raw.max(sizing.min_shares).min(sizing.max_shares)
+        let floored = raw.max(sizing.min_shares);
+        if sizing.max_shares > Decimal::ZERO {
+            floored.min(sizing.max_shares)
+        } else {
+            floored
+        }
     }
 
     /// The ticket for one signal, or `None` when the configured sizing produces
@@ -922,7 +927,7 @@ impl Engine {
             }
             None => raw,
         };
-        if budget <= Decimal::ZERO || sizing.max_shares <= Decimal::ZERO {
+        if budget <= Decimal::ZERO {
             return Decimal::ZERO;
         }
         let Some(ticket) = budget.checked_div(price) else {
@@ -961,7 +966,11 @@ impl Engine {
         if floored < min_shares {
             return Decimal::ZERO;
         }
-        floored.min(sizing.max_shares)
+        if sizing.max_shares > Decimal::ZERO {
+            floored.min(sizing.max_shares)
+        } else {
+            floored
+        }
     }
 
     /// #932: the venue's own declared minimum for a token as read from
@@ -1029,13 +1038,19 @@ impl Engine {
             // leg out entirely (an explicit off switch).
             size_usd = (size_usd * w).max(Decimal::ZERO).min(globals.size_usd);
         }
-        let max_shares = over
-            .max_shares
-            .map_or(globals.max_shares, |v| v.min(globals.max_shares));
-        let min_shares = over
+        let max_shares = if globals.max_shares > Decimal::ZERO {
+            over.max_shares
+                .filter(|v| *v > Decimal::ZERO)
+                .map_or(globals.max_shares, |v| v.min(globals.max_shares))
+        } else {
+            over.max_shares.unwrap_or(Decimal::ZERO).max(Decimal::ZERO)
+        };
+        let mut min_shares = over
             .min_shares
-            .map_or(globals.min_shares, |v| v.max(globals.min_shares))
-            .min(max_shares);
+            .map_or(globals.min_shares, |v| v.max(globals.min_shares));
+        if max_shares > Decimal::ZERO {
+            min_shares = min_shares.min(max_shares);
+        }
         // #202: the global percentage is the ceiling when it is armed. An
         // unarmed (0) global is "no opinion", not a zero ceiling, so a
         // per-strategy percentage is what a single leg gets configured with.

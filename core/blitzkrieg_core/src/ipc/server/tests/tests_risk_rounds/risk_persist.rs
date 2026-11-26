@@ -212,5 +212,60 @@ async fn risk_set_systemic_persists_max_positions_and_share_band_on_boot() {
     assert_eq!(c2.config().min_shares, dec!(5));
     assert_eq!(c2.config().max_shares, dec!(200));
 
+    // maxShares = 0 means unlimited and must persist + reload cleanly even when minShares > 0.
+    let unlimited = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":3,"method":"risk.setSystemic","params":{"maxShares":"0","reason":"unlimited"}}"#.to_string(),
+    )
+    .await;
+    assert!(unlimited.get("error").is_none(), "maxShares=0 failed: {unlimited}");
+    let mut c3 = Core::new(cfg.clone());
+    c3.open_account_risk_db(&db_path).expect("reopen risk db");
+    assert_eq!(c3.config().min_shares, dec!(5));
+    assert_eq!(c3.config().max_shares, dec!(0));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn boot_reconciles_legacy_size_pct_and_policy_budget_ratio_fail_closed() {
+    use rust_decimal_macros::dec;
+    let dir = std::env::temp_dir().join(format!("bk-fail-closed-pct-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("risk.sqlite");
+
+    // Seed both legacy BK_SIZE_PCT=10 (10%) and POLICY_BUDGET_RATIO=0.04 (4%):
+    // Fail-Closed migration must pick the tighter 4% bound and never widen.
+    use crate::store::StoreApi;
+    let store = crate::store::SqliteStore::open(&db_path).expect("temp store opens");
+    let default_id = crate::account::AccountId::from("default");
+    let scope = crate::store::AccountScope::new(&default_id);
+    store
+        .put_setting(scope, crate::risk::account_store::SIZE_PCT_SETTING, Some("10"))
+        .unwrap();
+    store
+        .put_setting(scope, "POLICY_BUDGET_RATIO", Some("0.04"))
+        .unwrap();
+    drop(store);
+
+    let cfg = CoreConfig {
+        dry_seed_balance: dec!(1000),
+        trade_log_path: None,
+        order_log_path: None,
+        position_log_path: None,
+        allowed_round_secs: crate::account::config::TEST_ALLOWED_ROUNDS.to_vec(),
+        ..Default::default()
+    };
+    let mut c = Core::new(cfg);
+    c.open_account_risk_db(&db_path).expect("reopen risk db");
+    assert_eq!(
+        c.config().size_pct,
+        dec!(4),
+        "must pick tighter 4% instead of widening to 10%"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }

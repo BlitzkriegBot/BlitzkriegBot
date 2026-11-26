@@ -232,7 +232,7 @@ function bk_evaluate()
 
     local params = bk.params()
     local maker = int_p(params, "maker_entry", 0) == 1
-    local lo = num_p(params, "min_px", 0.94)
+    local lo = num_p(params, "min_px", 0.85)
     local hi = num_p(params, "max_px", 0.97)
     local t_min = int_p(params, "min_time_left", 30)
     local t_max = int_p(params, "max_time_left", 90)

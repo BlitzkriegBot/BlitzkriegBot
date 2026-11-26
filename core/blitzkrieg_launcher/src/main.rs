@@ -397,7 +397,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Trade log destination. The DEFAULT is derived from the resolved run
-    // mode (`crate::trade_db::default_trade_log_path`): live derives
+    // mode (`crate::trade::default_trade_log_path`): live derives
     // `data/trades/trades-live.jsonl`, dry/readonly keep the historical
     // `data/trades/trades.jsonl` (dry tooling + the dry-era rows stay put).
     // `--trade-log <path>` overrides both (tests pin their own file) and
@@ -407,7 +407,7 @@ async fn main() -> anyhow::Result<()> {
             None
         } else {
             Some(args.trade_log.clone().unwrap_or_else(|| {
-                blitzkrieg_core::trade_db::default_trade_log_path(mode).to_string()
+                blitzkrieg_core::trade::default_trade_log_path(mode).to_string()
             }))
         };
 

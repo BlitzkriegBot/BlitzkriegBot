@@ -720,7 +720,7 @@ impl Default for CoreConfig {
             // deployment's ledger — the historical `data/trades/trades.jsonl`
             // the dry-era rows and dry tooling already own. A LIVE boot never
             // reads this cell: the binary's `main` derives its default through
-            // `crate::trade_db::default_trade_log_path(mode)` (live →
+            // `crate::trade::default_trade_log_path(mode)` (live →
             // `trades-live.jsonl`) before the config is built. Keep the two
             // spellings mirrored when the default tree changes.
             trade_log_path: Some("data/trades/trades.jsonl".to_string()),

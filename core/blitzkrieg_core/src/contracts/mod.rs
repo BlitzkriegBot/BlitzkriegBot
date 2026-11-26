@@ -20,6 +20,7 @@
 //! | `halt` — `HaltScope` / `Halt` | T10 | P1-7 |
 //! | `order` — `OrderState` / `TerminalEvidence` / `PageRequest` / `Page` | T7, T9 | P1-4 / P1-6 |
 //! | `attribution` — `VenueTrade.account` / `FoldVerdict` | T2 | P0-1 |
+//! | `trades` — `TradeRead` / `TradeWrite` / `TradeTotals` | T4-trades | P0-6 补充（账本未 SQL 化） |
 //!
 //! Source of truth for every claim in this module: the v0.4.3 architecture audit
 //! `dev/audit/audit-architecture-v043-2026-11-24.md` (Step 1 defect sections,
@@ -50,6 +51,7 @@ pub mod order;
 pub mod price;
 pub mod readonly;
 pub mod store;
+pub mod trades;
 
 pub use attribution::{FoldVerdict, UnattributedFill, VenueTrade, VenueTradeFacts};
 pub use halt::{Halt, HaltScope};
@@ -63,4 +65,8 @@ pub use readonly::{MethodKind, MethodSpec, ReadonlyPolicy};
 pub use store::{
     AccountRecord, LedgerProjection, MemoryOnlyReason, SettingKey, SettingValue, StoreApi,
     StoreError, StoreRead, StoreTx, StoreWrite, StrategySet, WriteOutcome,
+};
+pub use trades::{
+    TradeIdentity, TradeRead, TradeRecord, TradeRetraction, TradeScope, TradeTotals, TradeWrite,
+    UnverifiedTrades,
 };

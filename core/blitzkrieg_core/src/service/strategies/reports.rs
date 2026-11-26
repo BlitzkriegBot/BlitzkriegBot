@@ -28,24 +28,44 @@ impl Core {
     /// Rows predating E28 carry no accountId and read as the default account,
     /// so an account query on a legacy log still sees them.
     pub fn trade_summary(&self, account: Option<&str>) -> serde_json::Value {
-        if account.is_none()
-            && let Some(db) = self.trade_db.as_ref()
-        {
-            return serde_json::to_value(db.summary()).unwrap_or(serde_json::Value::Null);
+        // The carrier path: one SQL aggregate per scope, no row folding in
+        // kernel memory. This replaces BOTH the persisted-summary read (global)
+        // and the per-account JSONL re-fold (which read the whole log to count
+        // it — the version-sensitive dependency the old comment here warned
+        // about).
+        if let Some(log) = self.trade_log.as_ref() {
+            use crate::contracts::trades::{TradeRead, TradeScope};
+            let scope = match account {
+                None => TradeScope::AllAccounts,
+                Some(id) => TradeScope::Account(crate::contracts::store::AccountScope {
+                    account: &crate::model::AccountId::from(id),
+                }),
+            };
+            match log.trade_totals(scope) {
+                Ok(t) => return trade_totals_to_wire(&t),
+                Err(e) => {
+                    // An unreadable ledger must not render as a zeroed book:
+                    // "no data" and "cannot read" look identical to an operator
+                    // and only one of them is a bug (R7.1 L4).
+                    tracing::error!(
+                        account = account.unwrap_or("<all>"),
+                        error = ?e,
+                        "trade totals unavailable — reporting the summary as unknown"
+                    );
+                    return serde_json::Value::Null;
+                }
+            }
         }
-        // Fallback / per-account path: aggregate over whatever history we can
-        // reach, filtered to the requested account when one was named. The
-        // account comparison goes through the record's serde-defaulted
+        // No store wired (backtester / in-process tests): aggregate over the
+        // in-memory closed positions. This is a REAL source — the same closes
+        // the write path would have persisted — not a fabricated fallback.
+        //
+        // The account comparison goes through the record's serde-defaulted
         // accountId: empty on pre-E28 rows = the default account.
         let want = account.unwrap_or(crate::account::DEFAULT_ACCOUNT_ID);
         let empty = Vec::new();
-        // `limit == 0` = 「整份日志」（`trade_db::read_page` 的 no-cap 契约），
-        // 因此这一行是 per-account 路径的全史重折——**这条依赖是版本敏感的**：
-        // issue #186 / T9 会把 `limit: 0` 重定义成「默认一页」（约 50 行），
-        // 到那时这里会静默退化成只折最近 50 行，per-account summary 的
-        // totalTrades/net 会凭空缩水且没有任何报错。那个改动落地时必须把本行
-        // 改成显式的「要全量」拼写（PageRequest 的 None / 一个 no-cap 常量），
-        // 不能沿用 0。
+        // `limit == 0` is this path's existing "the whole set" spelling; it feeds
+        // only the in-memory window below, never a carrier read.
         let all_rows = self.recent_trades(0);
         let rows: Vec<serde_json::Value> = match account {
             None => all_rows,
@@ -140,28 +160,57 @@ impl Core {
     /// One page of closed trades, counted back from the NEWEST end (#1282).
     ///
     /// `offset` skips the most recent rows (0 = latest), `limit` caps the
-    /// window; `limit == 0` = uncapped (whole log at offset=0, everything
-    /// older at offset>0) — the same contract `trade_db::read_page` documents.
-    /// `recent_trades` is exactly this at offset=0, so the two stay one
-    /// surface. The in-memory fallback (no trade log attached) windows
-    /// `closed_positions` the same way: newest last, window cut from the end,
-    /// so the page contract holds whichever branch serves the rows.
+    /// window; `limit == 0` = uncapped (the whole set at offset=0, everything
+    /// older at offset>0). `recent_trades` is exactly this at offset=0, so the
+    /// two stay one surface.
+    ///
+    /// The `limit == 0` case is spelled out rather than passed through: the
+    /// carrier's read takes a `NonZeroU32` precisely so "unbounded" is
+    /// unrepresentable. Here the page size is derived from the carrier's own
+    /// count (`total − offset`), so an uncapped request is a bounded read of a
+    /// known size — not an accidental whole-file load.
     pub fn recent_trades_page(&self, limit: usize, offset: usize) -> Vec<serde_json::Value> {
-        if let Some(path) = self.config.trade_log_path.as_ref() {
-            let p = std::path::Path::new(path);
-            if p.exists() {
-                let rows = crate::trade_db::read_page(p, offset, limit);
-                if !rows.is_empty() || offset > 0 {
-                    return rows;
+        if let Some(log) = self.trade_log.as_ref() {
+            use crate::contracts::trades::{TradeRead, TradeScope};
+            let total = match log.trade_totals(TradeScope::AllAccounts) {
+                Ok(t) => t.total_trades,
+                Err(e) => {
+                    // A ledger we cannot count is not an empty ledger. Returning
+                    // an empty page would make a read failure look like "no
+                    // trades", which is the silent-degradation pattern (L4).
+                    tracing::error!(error = ?e, "trade page count unavailable");
+                    return Vec::new();
                 }
-                // offset == 0 with an empty log keeps the historical fallback:
-                // a fresh boot may hold closed positions in memory that the
-                // JSONL has not picked up yet. offset > 0 does NOT fall back —
-                // an empty page there means "the page ran past the oldest
-                // logged row", and splicing the in-memory window in would
-                // corrupt the page contract (a paginator would loop forever).
+            };
+            let end = total.saturating_sub(offset as u64);
+            if end == 0 {
+                // Past the oldest row: an empty page is the paginator's
+                // end-of-log signal, not an error.
+                return Vec::new();
             }
+            let window = if limit == 0 {
+                end
+            } else {
+                (limit as u64).min(end)
+            };
+            let window = u32::try_from(window).unwrap_or(u32::MAX);
+            let Some(window) = std::num::NonZeroU32::new(window) else {
+                return Vec::new();
+            };
+            return match log.load_trades(TradeScope::AllAccounts, offset as u64, window) {
+                Ok(rows) => rows
+                    .iter()
+                    .map(|r| serde_json::to_value(r).unwrap_or(serde_json::Value::Null))
+                    .collect(),
+                Err(e) => {
+                    tracing::error!(error = ?e, "trade page read failed");
+                    Vec::new()
+                }
+            };
         }
+        // No store wired: window the in-memory closed positions the same way
+        // (newest last, window cut from the end), so the page contract holds
+        // whichever branch serves the rows.
         let closed = self.positions.closed_positions();
         let end = closed.len().saturating_sub(offset);
         let start = if limit == 0 {
@@ -172,9 +221,62 @@ impl Core {
         closed[start..end]
             .iter()
             .map(|c| {
-                serde_json::to_value(crate::trade_db::TradeRecord::from_closed(c))
+                serde_json::to_value(crate::trade::TradeRecord::from_closed(c))
                     .unwrap_or(serde_json::Value::Null)
             })
             .collect()
     }
+}
+
+/// Render [`crate::contracts::trades::TradeTotals`] as the `trades.summary`
+/// wire object.
+///
+/// # Why this adapter exists
+///
+/// The wire shape is FROZEN for this change: the panel reads these exact keys,
+/// so re-spelling them here would be a second, hidden change smuggled into a
+/// carrier swap. Every key below is the one `TradeSummary` emits today.
+///
+/// # What it deliberately changes
+///
+/// Only the two places where the OLD producer emitted a fabricated number:
+///
+/// * `bestTradePnl` / `worstTradePnl` for an account with no trades were `0.0`
+///   from `TradeSummary::default()`, so an all-losing account reported a best
+///   trade of `0.00` — a trade it never made. The carrier reports `None`, and
+///   `null` is the honest spelling. A consumer that renders `null` as `0.00`
+///   reintroduces the defect on its own side, which is why the panel's
+///   formatter treats `null` as 「未知」.
+/// * `winRate` stays `0.0` when nothing is decided because the field is
+///   non-optional on the wire (see `TradeSummary::win_rate`'s doc): the
+///   「unknown」 signal is `wins + losses == 0`, which the carrier exposes
+///   through the tally. Emitting `null` here would break every existing
+///   reader, so the spelling is preserved and the ambiguity documented.
+fn trade_totals_to_wire(t: &crate::contracts::trades::TradeTotals) -> serde_json::Value {
+    fn f64_of(d: &rust_decimal::Decimal) -> f64 {
+        use std::str::FromStr;
+        f64::from_str(&d.to_string()).unwrap_or(0.0)
+    }
+    let win_rate = t.tally.win_rate().unwrap_or(0.0);
+    serde_json::json!({
+        "totalTrades": t.total_trades,
+        "wins": u64::from(t.tally.wins),
+        "losses": u64::from(t.tally.losses),
+        "flat": u64::from(t.tally.flats),
+        "winRate": win_rate,
+        "attributedGrossPnl": f64_of(&t.gross_pnl),
+        "totalFees": f64_of(&t.fees),
+        "attributedNetPnl": f64_of(&t.net_pnl),
+        // Mean over ALL closed trades (the contract's one answer). `null` when
+        // there are no rows, never 0.0.
+        "avgHoldTimeSec": t.avg_hold_time_sec,
+        "bestTradePnl": t.best_trade_pnl.as_ref().map(f64_of),
+        "worstTradePnl": t.worst_trade_pnl.as_ref().map(f64_of),
+        "lastUpdated": t.as_of_ms,
+        // R7.1「未核实敞口」单列: the unverified slice of the numbers above.
+        // A SUBSET of attributedNetPnl, never something a consumer subtracts to
+        // get a prettier headline.
+        "unverifiedTrades": t.unverified.as_ref().map(|u| u.trades),
+        "unverifiedNetPnl": t.unverified.as_ref().map(|u| f64_of(&u.net_pnl)),
+    })
 }

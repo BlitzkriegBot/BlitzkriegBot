@@ -10,7 +10,7 @@ use rust_decimal::Decimal;
 #[cfg(any(test, feature = "test-support"))]
 use crate::ledger::Ledger;
 
-use crate::service::{AUDIT_HEARTBEAT_MS, f64_to_decimal};
+use crate::service::AUDIT_HEARTBEAT_MS;
 
 use super::Core;
 
@@ -56,10 +56,31 @@ impl Core {
         // did: the global summary/global receivable/all-books positions fold
         // made `trade_ledger_identity` drift by exactly what the sibling
         // account traded).
-        let (realized, seen_trades, has_trade_log) = match self.trade_db.as_ref() {
-            Some(db) => {
-                let s = db.summary_for(active_id.as_str());
-                (f64_to_decimal(s.attributed_net_pnl), s.total_trades, true)
+        let (realized, seen_trades, has_trade_log) = match self.trade_log.as_ref() {
+            Some(log) => {
+                use crate::contracts::trades::{TradeRead, TradeScope};
+                // One scoped SQL aggregate over the ACTIVE account's book — the
+                // identity is a per-account invariant (§9.2), so a global fold
+                // here would drift by exactly what a sibling account traded
+                // (that is the E28 bug this scoping exists to prevent).
+                match log.trade_totals(TradeScope::Account(crate::contracts::store::AccountScope {
+                    account: &active_id,
+                })) {
+                    Ok(t) => (t.net_pnl, t.total_trades, true),
+                    Err(e) => {
+                        // An unreadable ledger is not a flat one. Reporting zero
+                        // here would silently satisfy the cash identity, so the
+                        // failure is loud and the trade leg is left unverified
+                        // (`has_trade_log = false` makes the audit say so).
+                        tracing::error!(
+                            account = %active_id,
+                            error = ?e,
+                            "accounting audit cannot read the trade ledger — \
+                             the trade leg of the cash identity is UNVERIFIED"
+                        );
+                        (Decimal::ZERO, 0, false)
+                    }
+                }
             }
             None => (Decimal::ZERO, 0, false),
         };

@@ -356,19 +356,38 @@ impl Core {
                 }
             }
             // The trade record's net moves with the cash (Δrealized == Δcash),
-            // matched on the retract triple captured at close.
+            // matched on the identity + the booked net captured at close.
+            //
+            // Every non-persisted outcome is LOUD: cash has already been
+            // credited above, so a trade row that did not move means the ledger
+            // identity now drifts by `delta` — a number an operator has to
+            // reconcile by hand, never a warning to scroll past (R7.1 L4).
             if delta != Decimal::ZERO
-                && let Some(db) = self.trade_db.as_mut()
+                && let Some(log) = self.trade_log.as_ref()
             {
-                let amended =
-                    db.amend_net_pnl(&position_id, closed_at_ms, booked_net, delta, now_ms);
-                if !amended {
-                    tracing::error!(
+                let identity = crate::contracts::TradeIdentity {
+                    id: position_id.clone(),
+                    exit_time: closed_at_ms,
+                };
+                let account = AccountId::from(account_id.as_str());
+                match log.amend_net_pnl(&account, &identity, booked_net, delta) {
+                    Ok(crate::contracts::store::WriteOutcome::Persisted { .. }) => {}
+                    Ok(other) => tracing::error!(
                         position = %position_id,
                         booked_net = %booked_net,
+                        delta = %delta,
+                        outcome = ?other,
+                        "fallback redemption could not durably amend the trade record — \
+                         trade_ledger_identity drifts by {delta}"
+                    ),
+                    Err(e) => tracing::error!(
+                        position = %position_id,
+                        booked_net = %booked_net,
+                        delta = %delta,
+                        error = ?e,
                         "fallback redemption could not amend the trade record — \
-                         trade_ledger_identity will drift by {delta}"
-                    );
+                         trade_ledger_identity drifts by {delta}; manual reconciliation required"
+                    ),
                 }
             }
             tracing::info!(

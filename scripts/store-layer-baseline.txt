@@ -19,9 +19,3 @@ core/blitzkrieg_core/src/position/mod.rs:580 json-direct if !crate::jsonl::rewri
 core/blitzkrieg_core/src/position/mod.rs:651 json-direct if !crate::jsonl::rewrite_atomic(std::path::Path::new(path), text.as_bytes()) {
 core/blitzkrieg_core/src/service/config/records.rs:98 json-direct if !crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
 core/blitzkrieg_core/src/service/risk_admission/persist.rs:129 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
-core/blitzkrieg_core/src/trade_db.rs:331 json-direct crate::jsonl::rewrite_atomic(&self.summary_path, text.as_bytes());
-core/blitzkrieg_core/src/trade_db.rs:397 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
-core/blitzkrieg_core/src/trade_db.rs:427 json-direct let _ = crate::jsonl::rewrite_atomic(&self.jsonl_path, b"");
-core/blitzkrieg_core/src/trade_db.rs:470 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {
-core/blitzkrieg_core/src/trade_db.rs:517 json-direct if !crate::jsonl::rewrite_atomic(&archive_path, text.as_bytes()) {
-core/blitzkrieg_core/src/trade_db.rs:529 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, out.as_bytes()) {

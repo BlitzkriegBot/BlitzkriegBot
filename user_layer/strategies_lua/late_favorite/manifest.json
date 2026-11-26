@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "98bb4c17a47afdb091117276497788b905235d4c9626402a0cbc68a773b68831",
+  "sha256": "918725d1494f71a4ae1edcd83ecfefacca500ca8128f66f1865218fa4b9fa39a",
   "author": "BlitzkriegBot",
-  "description": "Near-settlement favorite. With 45-60 seconds left, buy the side whose touch is inside 0.85-0.97 and hold it to settlement. One attempt per condition per round; a fill or a cancel is not re-entered. maker_entry 0 (default) crosses the ask as a taker (order reason late-taker). maker_entry 1 rests a post-only bid at the touch and cancels it once time_left falls below min_time_left. Applies to every asset the venue lists (BTC, ETH, SOL, XRP, ...). Not in the default enabled set. The strategy loader does not require a lua_ prefix; the registry id is the directory name late_favorite.",
+  "description": "Near-settlement favorite (BTC only). With 45-60 seconds left, buy the BTC side whose touch is inside 0.85-0.97 and hold it to settlement. One attempt per condition per round; a fill or a cancel is not re-entered. maker_entry 0 (default) crosses the ask as a taker (order reason late-taker). maker_entry 1 rests a post-only bid at the touch and cancels it once time_left falls below min_time_left. Not in the default enabled set. The strategy loader does not require a lua_ prefix; the registry id is the directory name late_favorite.",
   "holds_to_settlement": true,
   "entry_maker": false,
   "gate_exemptions": {

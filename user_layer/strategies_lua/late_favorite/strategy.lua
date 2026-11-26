@@ -254,7 +254,7 @@ function bk_evaluate()
 
     for _, market in ipairs(bk.markets()) do
         local cond = market.condition_id
-        if cond ~= nil then
+        if cond ~= nil and market.asset == "BTC" then
             local k = key_of(round.slot, cond)
             local st = quoted[k]
             local up_held = market.up_token ~= nil and held[market.up_token]

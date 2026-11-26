@@ -63,6 +63,8 @@ export interface PanelAccountRow {
    * （LIVE 尚未收到首笔 venue equity）为 null，面板须显示「未知」。
    * 老内核缺字段 = undefined。 */
   cumulativeNetPnl?: number | null
+  /** 账户总权益（内核 SSOT：现金余额 + 在途持仓市值）。老内核缺省时为 undefined。 */
+  equity?: string | number
 }
 
 export const usePanelStore = defineStore('panel', () => {

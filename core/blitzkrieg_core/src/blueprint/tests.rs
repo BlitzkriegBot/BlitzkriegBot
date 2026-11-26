@@ -499,12 +499,12 @@ fn an_unknown_node_type_is_refused_with_the_id() {
 #[test]
 fn a_wrong_version_is_refused() {
     let bp = json!({
-        "version": 2, "name": "future",
+        "version": 99, "name": "future",
         "nodes": [ { "id": "a1", "type": "action_hold" } ],
         "edges": []
     })
     .to_string();
-    let err = compile(&bp).expect_err("version 2 must fail");
+    let err = compile(&bp).expect_err("version 99 must fail");
     assert!(err.contains("version"), "{err}");
 }
 
@@ -725,4 +725,187 @@ fn logic_or_blueprint_json() -> String {
         ]
     })
     .to_string()
+}
+
+#[test]
+fn blueprint_schema_covers_every_whitelisted_field() {
+    let s = schema();
+    assert_eq!(s.default_version, 2);
+    assert!(s.supported_versions.contains(&1) && s.supported_versions.contains(&2));
+    for (name, _) in FIELD_WHITELIST {
+        assert!(
+            s.fields.iter().any(|f| f.name == name),
+            "schema() missing whitelisted field {name}"
+        );
+    }
+    assert!(s.nodes.iter().any(|n| n.node_type == "action_buy_pair"));
+}
+
+#[test]
+fn all_repo_strategy_blueprints_compile_and_run_natively() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../user_layer/strategies_lua");
+    let mut checked = 0usize;
+    for entry in std::fs::read_dir(&root).expect("read strategies_lua") {
+        let entry = entry.expect("dir entry");
+        if !entry.file_type().expect("ftype").is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "common" {
+            continue;
+        }
+        let bp_path = entry.path().join("blueprint.json");
+        assert!(
+            bp_path.is_file(),
+            "strategy `{name}` is missing equivalent blueprint.json"
+        );
+        let raw = std::fs::read_to_string(&bp_path).expect("read blueprint.json");
+        let compiled = compile_full(&raw)
+            .unwrap_or_else(|e| panic!("blueprint `{name}` failed to compile: {e}"));
+        assert!(
+            compiled.lua.contains("function bk_evaluate()"),
+            "compiled `{name}` missing bk_evaluate"
+        );
+        // Verify native Rust BlueprintStrategy parses and implements EngineStrategy.
+        let native = BlueprintStrategy::from_json(&raw)
+            .unwrap_or_else(|e| panic!("native BlueprintStrategy `{name}` failed: {e}"));
+        assert_eq!(crate::strategies::EngineStrategy::name(&native), name);
+        checked += 1;
+    }
+    assert!(
+        checked >= 20,
+        "expected at least 20 strategy blueprints, found {checked}"
+    );
+}
+
+#[test]
+fn native_blueprint_late_favorite_is_btc_only_and_once_per_round() {
+    use crate::model::{CryptoMarket, OrderbookSnapshot};
+    use crate::strategies::{EngineStrategy, StrategyCtx};
+    use rust_decimal_macros::dec;
+
+    let bp_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../user_layer/strategies_lua/late_favorite/blueprint.json");
+    let raw = std::fs::read_to_string(&bp_path).expect("read late_favorite/blueprint.json");
+    let mut strat = BlueprintStrategy::from_json(&raw).expect("parse late_favorite");
+
+    let ge = strat.gate_exemptions();
+    assert!(ge.timing);
+    assert!(!ge.momentum);
+    assert_eq!(ge.timing_min_time_left_sec, Some(45));
+
+    let mk_market = |asset: &str, cond: &str, up: &str, dn: &str| CryptoMarket {
+        asset: asset.into(),
+        condition_id: cond.into(),
+        question_id: cond.into(),
+        up_token_id: up.into(),
+        down_token_id: dn.into(),
+        up_price: dec!(0.90),
+        down_price: dec!(0.10),
+        expires_at_ms: 1_795_700_000_000,
+        round_slot: 100,
+        round_duration_sec: 300,
+        archive_verdict: false,
+        venue: String::new(),
+        neg_risk: false,
+        question: String::new(),
+    };
+    let markets = vec![
+        mk_market("BTC", "0xbtc", "btc_up", "btc_dn"),
+        mk_market("ETH", "0xeth", "eth_up", "eth_dn"),
+    ];
+    let book_fn = |tok: &str| -> Option<OrderbookSnapshot> {
+        let (bid, ask) = match tok {
+            "btc_up" | "eth_up" => (dec!(0.88), dec!(0.90)),
+            _ => (dec!(0.09), dec!(0.11)),
+        };
+        Some(OrderbookSnapshot {
+            token_id: tok.into(),
+            bids: vec![],
+            asks: vec![],
+            bid_depth: dec!(100),
+            ask_depth: dec!(100),
+            obi: dec!(0),
+            spread: ask - bid,
+            spread_pct: dec!(0.02),
+            best_bid: bid,
+            best_ask: ask,
+            mid_price: (bid + ask) / dec!(2),
+            timestamp: 1_000,
+        })
+    };
+
+    // Window 45-60s: BTC fires once, ETH is ignored (BTC-only).
+    let ctx = StrategyCtx::new(&markets, 100, 50, 1_000, &book_fn);
+    let sigs = strat.find_candidates(&ctx);
+    assert_eq!(sigs.len(), 1, "only BTC up should fire: {sigs:?}");
+    assert_eq!(sigs[0].asset, "BTC");
+    assert_eq!(sigs[0].price, dec!(0.90));
+
+    // Second tick in same round: once_per_round suppresses duplicate.
+    let sigs2 = strat.find_candidates(&ctx);
+    assert!(
+        sigs2.is_empty(),
+        "once_per_round must suppress second entry"
+    );
+
+    // Out of time window (30s left on new slot): no entry.
+    let ctx_late = StrategyCtx::new(&markets, 101, 30, 2_000, &book_fn);
+    assert!(strat.find_candidates(&ctx_late).is_empty());
+}
+
+#[test]
+fn native_blueprint_pair_discount_arb_emits_paired_signals() {
+    use crate::model::{CryptoMarket, OrderbookSnapshot};
+    use crate::strategies::{EngineStrategy, StrategyCtx};
+    use rust_decimal_macros::dec;
+
+    let bp_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../user_layer/strategies_lua/pair_discount_arb/blueprint.json");
+    let raw = std::fs::read_to_string(&bp_path).expect("read pair_discount_arb/blueprint.json");
+    let mut strat = BlueprintStrategy::from_json(&raw).expect("parse pair_discount_arb");
+
+    let markets = vec![CryptoMarket {
+        asset: "BTC".into(),
+        condition_id: "0xpair".into(),
+        question_id: "0xpair".into(),
+        up_token_id: "up_tok".into(),
+        down_token_id: "dn_tok".into(),
+        up_price: dec!(0.48),
+        down_price: dec!(0.48),
+        expires_at_ms: 1_795_700_000_000,
+        round_slot: 200,
+        round_duration_sec: 300,
+        archive_verdict: false,
+        venue: String::new(),
+        neg_risk: false,
+        question: String::new(),
+    }];
+    let book_fn = |tok: &str| -> Option<OrderbookSnapshot> {
+        let (bid, ask) = (dec!(0.47), dec!(0.48));
+        Some(OrderbookSnapshot {
+            token_id: tok.into(),
+            bids: vec![],
+            asks: vec![],
+            bid_depth: dec!(100),
+            ask_depth: dec!(100),
+            obi: dec!(0),
+            spread: ask - bid,
+            spread_pct: dec!(0.02),
+            best_bid: bid,
+            best_ask: ask,
+            mid_price: (bid + ask) / dec!(2),
+            timestamp: 1_000,
+        })
+    };
+
+    let ctx = StrategyCtx::new(&markets, 200, 120, 1_000, &book_fn);
+    let sigs = strat.find_candidates(&ctx);
+    assert_eq!(sigs.len(), 2, "action_buy_pair must emit UP + DOWN legs");
+    assert!(sigs[0].pair.is_some() && sigs[1].pair.is_some());
+    assert_eq!(
+        sigs[0].pair.as_ref().unwrap().key,
+        sigs[1].pair.as_ref().unwrap().key
+    );
 }

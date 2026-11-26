@@ -55,13 +55,27 @@ pub const CONDITION_OPS: [&str; 7] = ["<", "<=", ">", ">=", "==", "!=", "in"];
 /// The readable field whitelist → the fixed Lua expression it compiles to.
 /// `account.available_balance` is projected by the host onto the tick table
 /// as `tick.available_balance`, which is what the emitted budget line reads.
-pub const FIELD_WHITELIST: [(&str, &str); 6] = [
+/// Blueprint v2 extends the original 6 fields with 12 read-only market/round/
+/// spot/pair projections derived from the existing `bk.*` host surface.
+pub const FIELD_WHITELIST: [(&str, &str); 18] = [
     ("tick.price", "tick.price"),
     ("tick.mid_price", "tick.mid_price"),
     ("tick.time_left_sec", "tick.time_left_sec"),
     ("tick.trend_confirmed", "tick.trend_confirmed"),
     ("tick.obi", "tick.obi"),
     ("account.available_balance", "tick.available_balance"),
+    ("tick.asset", "tick.asset"),
+    ("tick.side_label", "tick.side_label"),
+    ("tick.best_bid", "tick.best_bid"),
+    ("tick.best_ask", "tick.best_ask"),
+    ("tick.spread", "tick.spread"),
+    ("tick.elapsed_pct", "tick.elapsed_pct"),
+    ("tick.pair_ask_sum", "tick.pair_ask_sum"),
+    ("tick.pair_bid_sum", "tick.pair_bid_sum"),
+    ("tick.round_min_price", "tick.round_min_price"),
+    ("tick.round_max_price", "tick.round_max_price"),
+    ("tick.consensus_aligned", "tick.consensus_aligned"),
+    ("tick.spot_return_bps", "tick.spot_return_bps"),
 ];
 
 /// The three substrings a generated file must never carry (the §6.2 sandbox
@@ -85,10 +99,48 @@ fn forbidden_substring(s: &str) -> Option<&'static str> {
 
 // ── wire types ──────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq)]
+pub struct BlueprintGateExemptions {
+    #[serde(default)]
+    pub timing: bool,
+    #[serde(default)]
+    pub momentum: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_min_time_left_sec: Option<i64>,
+}
+
+/// Optional v2 manifest/runtime metadata carried on a blueprint document.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq)]
+pub struct BlueprintMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub holds_to_settlement: bool,
+    #[serde(default)]
+    pub entry_maker: bool,
+    #[serde(default)]
+    pub once_per_round: bool,
+    #[serde(default)]
+    pub thesis_death: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_exemptions: Option<BlueprintGateExemptions>,
+}
+
+/// Full compilation output including generated Lua, evolvable tunables, and
+/// optional v2 manifest metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledBlueprint {
+    pub lua: String,
+    pub tunables: Vec<BlueprintTunable>,
+    pub meta: BlueprintMeta,
+}
+
 #[derive(Debug, Deserialize)]
 struct Blueprint {
     version: u32,
     name: String,
+    #[serde(default)]
+    meta: BlueprintMeta,
     nodes: Vec<BpNode>,
     #[serde(default)]
     edges: Vec<BpEdge>,
@@ -130,12 +182,12 @@ impl NodeKind {
         match node_type {
             "data_source" => Ok(Self::Source),
             "condition" => Ok(Self::Condition),
-            "action_buy" | "action_sell" | "action_hold" => Ok(Self::Action),
+            "action_buy" | "action_sell" | "action_hold" | "action_buy_pair" => Ok(Self::Action),
             "constant" => Ok(Self::Source),
             "logic_and" | "logic_or" => Ok(Self::Gate),
             other => Err(format!(
                 "node {id}: unknown type '{other}' (supported: data_source, condition, \
-                 action_buy, action_sell, action_hold, constant, logic_and, logic_or)"
+                 action_buy, action_sell, action_hold, action_buy_pair, constant, logic_and, logic_or)"
             )),
         }
     }
@@ -170,18 +222,29 @@ pub struct BlueprintTunable {
 /// Compile a blueprint JSON document into Lua source. Every failure names the
 /// node id and the reason; success is deterministic (same input → same text).
 pub fn compile(json: &str) -> Result<String, String> {
-    compile_with_tunables(json).map(|(lua, _)| lua)
+    compile_full(json).map(|c| c.lua)
 }
 
 /// [`compile`] plus the evolvable-knob export: the same document yields the
 /// same Lua AND the tunables table `blueprint.save` writes into the package
 /// manifest so the loader registers evolution knobs for it (#393 shape).
 pub fn compile_with_tunables(json: &str) -> Result<(String, Vec<BlueprintTunable>), String> {
+    compile_full(json).map(|c| (c.lua, c.tunables))
+}
+
+/// Full compile entry point returning Lua source, evolvable tunables, and
+/// optional v2 manifest metadata.
+pub fn compile_full(json: &str) -> Result<CompiledBlueprint, String> {
     let bp: Blueprint =
         serde_json::from_str(json).map_err(|e| format!("blueprint parse failed: {e}"))?;
     let graph = validate_structure(&bp)?;
     validate_semantics(&bp, &graph)?;
-    generate(&bp, &graph)
+    let (lua, tunables) = generate(&bp, &graph)?;
+    Ok(CompiledBlueprint {
+        lua,
+        tunables,
+        meta: bp.meta,
+    })
 }
 
 /// The save-time domain rule: ± half the value's own magnitude, floored to a
@@ -211,10 +274,17 @@ struct Graph {
 }
 
 fn validate_structure(bp: &Blueprint) -> Result<Graph, String> {
-    if bp.version != 1 {
+    if bp.version != 1 && bp.version != 2 {
         return Err(format!(
-            "blueprint version {} is not supported (this compiler speaks version 1)",
+            "blueprint version {} is not supported (this compiler speaks version 1 and 2)",
             bp.version
+        ));
+    }
+    if let Some(desc) = bp.meta.description.as_deref()
+        && let Some(bad) = forbidden_substring(desc)
+    {
+        return Err(format!(
+            "blueprint meta.description contains forbidden substring {bad:?}"
         ));
     }
     if bp.name.trim().is_empty() {
@@ -764,9 +834,9 @@ fn validate_semantics(bp: &Blueprint, graph: &Graph) -> Result<(), String> {
             }
             NodeKind::Action => {
                 for key in n.params.keys() {
-                    if !matches!(key.as_str(), "price" | "budget_ratio") {
+                    if !matches!(key.as_str(), "price" | "budget_ratio" | "maker") {
                         return Err(format!(
-                            "action {}: unknown param {key:?} (allowed: `price`, `budget_ratio`)",
+                            "action {}: unknown param {key:?} (allowed: `price`, `budget_ratio`, `maker`)",
                             n.id
                         ));
                     }
@@ -780,6 +850,11 @@ fn validate_semantics(bp: &Blueprint, graph: &Graph) -> Result<(), String> {
                     && !b.is_number()
                 {
                     return Err(format!("action {}: `budget_ratio` must be a number", n.id));
+                }
+                if let Some(m) = n.params.get("maker")
+                    && !m.is_boolean()
+                {
+                    return Err(format!("action {}: `maker` must be a boolean", n.id));
                 }
             }
         }
@@ -932,12 +1007,15 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     }
     steps.reverse();
 
-    let call = order_call_tunable(action, &steps, &mut tunables);
+    let call = order_call_tunable(action, &steps, bp.version, &mut tunables);
     let mut out = String::new();
     out.push_str(&format!(
-        "-- generated by blitzkrieg-core from blueprint \"{}\" (version 1).\n",
-        bp.name
+        "-- generated by blitzkrieg-core from blueprint \"{}\" (version {}).\n",
+        bp.name, bp.version
     ));
+    if bp.meta.thesis_death {
+        out.push_str("BK_THESIS_DEATH_ENABLE = true\n");
+    }
     // The evolution bridge (用户裁决：蓝图生产的策略也要支持进化)：numeric
     // anchors read `bk.params()[name]` through `__param`, falling back to the
     // authored literal when the registry carries no (or a non-numeric) value.
@@ -951,50 +1029,129 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     out.push_str("  if v then return v end\n");
     out.push_str("  return fallback\n");
     out.push_str("end\n");
-    // The runtime bridge (#413): the §6.5 loader contract requires
-    // `bk_evaluate()` returning the intent tables, and `place_order` is not a
-    // sandbox global — so the emitted package carries its OWN collector: each
-    // `on_tick(tick)` call that reaches an action appends one entry row built
-    // from the same fields the suggestion names. `bk_evaluate` then drives
-    // `on_tick` once per round token (a market without a fresh book is
-    // skipped — stale data is not a signal) and returns the collected table.
-    // `tick.*` values come from the host `bk.*` surface the handwritten
-    // strategies read: best_ask as the per-token price (a limit BUY priced at
-    // the ask is the fillable side), mid when no ask exists (mid-keyed
-    // conditions still evaluate), round timing, obi, and the account view's
-    // available balance. The `bk.*` surface speaks decimal STRINGS (the wire
-    // rule) while generated guards compare numbers, so `__tick_of` coerces
-    // through `tonumber` — a string `<=` a number would error and kill every
-    // evaluation. `trend_confirmed` has no kernel-side producer yet —
-    // it reads as `false` so a trend-gated blueprint holds instead of trading
-    // a made-up true (fail-closed, the blueprint house rule). The balance
-    // falls back to 0 so a `budget_ratio` line never multiplies nil.
+    // Runtime bridge (#413 + Blueprint v2): collects intents over per-token books,
+    // tracks per-round min/max price, spot open anchor, cross-asset consensus, and
+    // optional once_per_round deduplication.
     out.push_str("-- runtime bridge: intent collection over the per-token book (see header).\n");
     out.push_str("local __orders = {}\n");
+    out.push_str("local __slot_seen = nil\n");
+    out.push_str("local __fired = {}\n");
+    out.push_str("local __min_px = {}\n");
+    out.push_str("local __max_px = {}\n");
+    out.push_str("local __spot_open = {}\n");
+    out.push_str("local __cur_cond = nil\n");
+    out.push_str("local __cur_slot = nil\n");
+    out.push_str("local __cur_cdir = nil\n");
+    out.push_str("local __once_per_round = ");
+    out.push_str(if bp.meta.once_per_round {
+        "true\n"
+    } else {
+        "false\n"
+    });
+    out.push_str("local function __held_index()\n");
+    out.push_str("  local map = {}\n");
+    out.push_str("  local hs = bk.holdings and bk.holdings() or {}\n");
+    out.push_str("  if type(hs) == \"table\" then\n");
+    out.push_str("    for i = 1, #hs do\n");
+    out.push_str("      local h = hs[i]\n");
+    out.push_str("      if type(h) == \"table\" and type(h.token_id) == \"string\" then map[h.token_id] = true end\n");
+    out.push_str("    end\n");
+    out.push_str("  end\n");
+    out.push_str("  return map\n");
+    out.push_str("end\n");
+    out.push_str("local function __consensus_dir(markets)\n");
+    out.push_str("  local up_n, dn_n = 0, 0\n");
+    out.push_str("  for _, m in ipairs(markets) do\n");
+    out.push_str("    local bu = m.up_token and bk.book(m.up_token) or nil\n");
+    out.push_str("    local bd = m.down_token and bk.book(m.down_token) or nil\n");
+    out.push_str(
+        "    local pu = bu and bu.fresh and (tonumber(bu.mid) or tonumber(bu.best_ask)) or nil\n",
+    );
+    out.push_str(
+        "    local pd = bd and bd.fresh and (tonumber(bd.mid) or tonumber(bd.best_ask)) or nil\n",
+    );
+    out.push_str("    if pu and pu >= 0.65 then up_n = up_n + 1 elseif pd and pd >= 0.65 then dn_n = dn_n + 1 end\n");
+    out.push_str("  end\n");
+    out.push_str("  if up_n >= 3 then return \"up\" elseif dn_n >= 3 then return \"down\" end\n");
+    out.push_str("  return nil\n");
+    out.push_str("end\n");
     out.push_str("local function __tick_of(m, token)\n");
+    out.push_str("  local side_label = (m and token == m.up_token) and \"up\" or \"down\"\n");
+    out.push_str("  local other_token = (m and token == m.up_token) and m.down_token or (m and m.up_token or nil)\n");
+    out.push_str("  local cdir = __cur_cdir\n");
     out.push_str("  local b = bk.book(token)\n");
+    out.push_str("  local ob = other_token and bk.book(other_token) or nil\n");
     out.push_str("  local r = bk.round()\n");
     out.push_str("  local a = bk.account()\n");
     out.push_str("  local t = {}\n");
     out.push_str("  t.symbol = token\n");
+    out.push_str("  t.other_symbol = other_token\n");
+    out.push_str("  t.asset = m and m.asset or nil\n");
+    out.push_str("  t.side_label = side_label\n");
     out.push_str("  t.account_id = a and a.id or nil\n");
     out.push_str("  t.available_balance = tonumber(a and (a.available or a.balance)) or 0\n");
     out.push_str("  t.time_left_sec = r and r.time_left_sec or nil\n");
+    out.push_str("  local dur = r and tonumber(r.duration_sec) or 300\n");
+    out.push_str("  if t.time_left_sec and dur > 0 then t.elapsed_pct = (dur - t.time_left_sec) / dur else t.elapsed_pct = 0 end\n");
     out.push_str("  t.trend_confirmed = false\n");
+    out.push_str("  t.consensus_aligned = (cdir ~= nil and cdir == side_label)\n");
+    out.push_str(
+        "  local sp = (m and m.asset and bk.spot) and tonumber(bk.spot(m.asset)) or nil\n",
+    );
+    out.push_str("  if sp and sp > 0 and m and m.asset then\n");
+    out.push_str("    if __spot_open[m.asset] == nil then __spot_open[m.asset] = sp end\n");
+    out.push_str("    local so = __spot_open[m.asset]\n");
+    out.push_str("    t.spot_return_bps = so and so > 0 and ((sp - so) / so * 10000) or 0\n");
+    out.push_str("  else\n");
+    out.push_str("    t.spot_return_bps = 0\n");
+    out.push_str("  end\n");
     out.push_str("  if b and b.fresh then\n");
+    out.push_str("    local ask = tonumber(b.best_ask)\n");
+    out.push_str("    local bid = tonumber(b.best_bid)\n");
+    out.push_str("    local mid = tonumber(b.mid)\n");
+    out.push_str("    t.best_ask = ask\n");
+    out.push_str("    t.best_bid = bid\n");
     out.push_str("    t.price = tonumber(b.best_ask) or tonumber(b.mid)\n");
-    out.push_str("    t.mid_price = tonumber(b.mid)\n");
-    out.push_str("    t.obi = tonumber(b.obi)\n");
+    out.push_str("    t.mid_price = mid\n");
+    out.push_str("    t.obi = tonumber(b.obi) or 0\n");
+    out.push_str("    t.spread = tonumber(b.spread) or ((ask and bid) and (ask - bid) or 0)\n");
+    out.push_str("    if t.price then\n");
+    out.push_str("      local mn = __min_px[token]\n");
+    out.push_str("      local mx = __max_px[token]\n");
+    out.push_str(
+        "      if mn == nil or t.price < mn then __min_px[token] = t.price; mn = t.price end\n",
+    );
+    out.push_str(
+        "      if mx == nil or t.price > mx then __max_px[token] = t.price; mx = t.price end\n",
+    );
+    out.push_str("      t.round_min_price = mn\n");
+    out.push_str("      t.round_max_price = mx\n");
+    out.push_str("    end\n");
+    out.push_str("    local oask = ob and ob.fresh and tonumber(ob.best_ask) or nil\n");
+    out.push_str("    local obid = ob and ob.fresh and tonumber(ob.best_bid) or nil\n");
+    out.push_str("    t.other_best_ask = oask\n");
+    out.push_str("    t.other_best_bid = obid\n");
+    out.push_str("    t.pair_ask_sum = (ask and oask) and (ask + oask) or 2.0\n");
+    out.push_str("    t.pair_bid_sum = (bid and obid) and (bid + obid) or 2.0\n");
     out.push_str("  end\n");
     out.push_str("  return t\n");
     out.push_str("end\n");
     out.push_str("local function place_order(o)\n");
+    out.push_str("  if not o then return end\n");
+    out.push_str("  if o.side == \"buy_pair\" and o.symbol and o.other_symbol and type(o.price) == \"number\" and type(o.other_price) == \"number\" then\n");
     out.push_str(
-        "  if o and o.symbol and o.side == \"buy\" and type(o.price) == \"number\" then\n",
+        "    local pk = tostring(__cur_slot or 0) .. \":\" .. tostring(__cur_cond or o.symbol)\n",
     );
+    out.push_str("    __orders[#__orders + 1] = { token = o.symbol, price = string.format(\"%.6g\", o.price), reason = \"blueprint-pair\", pair = { key = pk, leg = \"up\" } }\n");
+    out.push_str("    __orders[#__orders + 1] = { token = o.other_symbol, price = string.format(\"%.6g\", o.other_price), reason = \"blueprint-pair\", pair = { key = pk, leg = \"down\" } }\n");
+    out.push_str("    if __once_per_round and __cur_cond then __fired[tostring(__cur_slot or 0) .. \":\" .. __cur_cond] = true end\n");
+    out.push_str("    return\n");
+    out.push_str("  end\n");
+    out.push_str("  if o.symbol and o.side == \"buy\" and type(o.price) == \"number\" then\n");
     out.push_str(
-        "    __orders[#__orders + 1] = { token = o.symbol, price = string.format(\"%.6g\", o.price), reason = \"blueprint\" }\n",
+        "    __orders[#__orders + 1] = { token = o.symbol, price = string.format(\"%.6g\", o.price), reason = o.maker and \"blueprint-maker\" or \"blueprint\" }\n",
     );
+    out.push_str("    if __once_per_round and __cur_cond then __fired[tostring(__cur_slot or 0) .. \":\" .. __cur_cond] = true end\n");
     out.push_str("  end\n");
     out.push_str("end\n");
     out.push_str("function on_tick(tick)\n");
@@ -1018,14 +1175,38 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     }
     out.push_str("  return nil\n");
     out.push_str("end\n");
+    out.push_str("function bk_on_round(round)\n");
+    out.push_str("  if round ~= nil and round.slot ~= nil and round.slot ~= __slot_seen then\n");
+    out.push_str("    __fired = {}; __min_px = {}; __max_px = {}; __spot_open = {}; __slot_seen = round.slot\n");
+    out.push_str("  end\n");
+    out.push_str("end\n");
     out.push_str("function bk_evaluate()\n");
     out.push_str("  __orders = {}\n");
     out.push_str("  local r = bk.round()\n");
     out.push_str("  if r == nil then return { entries = {}, exits = {}, breaks = {} } end\n");
-    out.push_str("  for _, m in ipairs(bk.markets()) do\n");
-    out.push_str("    for _, token in ipairs({ m.up_token, m.down_token }) do\n");
-    out.push_str("      local tick = __tick_of(m, token)\n");
-    out.push_str("      if tick.price ~= nil then on_tick(tick) end\n");
+    out.push_str("  if r.slot ~= nil and r.slot ~= __slot_seen then\n");
+    out.push_str(
+        "    __fired = {}; __min_px = {}; __max_px = {}; __spot_open = {}; __slot_seen = r.slot\n",
+    );
+    out.push_str("  end\n");
+    out.push_str("  __cur_slot = r.slot\n");
+    out.push_str("  local markets = bk.markets()\n");
+    out.push_str("  __cur_cdir = __consensus_dir(markets)\n");
+    out.push_str("  local held = __once_per_round and __held_index() or {}\n");
+    out.push_str("  for _, m in ipairs(markets) do\n");
+    out.push_str("    __cur_cond = m.condition_id\n");
+    out.push_str(
+        "    local fk = tostring(r.slot or 0) .. \":\" .. tostring(m.condition_id or \"\")\n",
+    );
+    out.push_str("    local skip = __once_per_round and (__fired[fk] or (m.up_token and held[m.up_token]) or (m.down_token and held[m.down_token]))\n");
+    out.push_str("    if not skip then\n");
+    out.push_str("      local pairs_iter = { { m.up_token, \"up\", m.down_token }, { m.down_token, \"down\", m.up_token } }\n");
+    out.push_str("      for _, leg in ipairs(pairs_iter) do\n");
+    out.push_str("        if leg[1] ~= nil and (not __once_per_round or not __fired[fk]) then\n");
+    out.push_str("          local token = leg[1]; local tick = __tick_of(m, token)\n");
+    out.push_str("          if tick.price ~= nil then on_tick(tick) end\n");
+    out.push_str("        end\n");
+    out.push_str("      end\n");
     out.push_str("    end\n");
     out.push_str("  end\n");
     out.push_str("  return { entries = __orders, exits = {}, breaks = {} }\n");
@@ -1061,13 +1242,20 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
 fn order_call_tunable(
     action: &BpNode,
     steps: &[(String, bool)],
+    version: u32,
     tunables: &mut Vec<BlueprintTunable>,
 ) -> String {
     let side = match action.node_type.as_str() {
         "action_buy" => "buy",
         "action_sell" => "sell",
+        "action_buy_pair" => "buy_pair",
         _ => "hold",
     };
+    let maker = action
+        .params
+        .get("maker")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let price: Option<String> = action
         .params
         .get("price")
@@ -1083,11 +1271,19 @@ fn order_call_tunable(
             param_expr(&action.id, "price", v)
         })
         .or_else(|| {
-            // Innermost-first: the last condition on tick.price / tick.mid_price.
-            steps
-                .iter()
-                .rev()
-                .find_map(|(expr, _)| price_threshold(expr))
+            if version >= 2 {
+                if maker {
+                    Some("tick.best_bid or tick.price".to_string())
+                } else {
+                    Some("tick.price".to_string())
+                }
+            } else {
+                // Innermost-first: the last condition on tick.price / tick.mid_price.
+                steps
+                    .iter()
+                    .rev()
+                    .find_map(|(expr, _)| price_threshold(expr))
+            }
         });
     let budget = action.params.get("budget_ratio").map(|v| {
         if v.as_f64().is_some() {
@@ -1111,6 +1307,17 @@ fn order_call_tunable(
         "symbol = tick.symbol".into(),
         format!("side = \"{side}\""),
     ];
+    if side == "buy_pair" {
+        fields.push("other_symbol = tick.other_symbol".into());
+        fields.push(if maker {
+            "other_price = tick.other_best_bid or tick.other_best_ask".into()
+        } else {
+            "other_price = tick.other_best_ask or tick.other_best_bid".into()
+        });
+    }
+    if maker {
+        fields.push("maker = true".into());
+    }
     match price {
         Some(p) => {
             fields.push("order_type = \"limit\"".into());
@@ -1244,6 +1451,12 @@ fn lua_string(s: &str) -> String {
     out.push('"');
     out
 }
+
+pub mod runtime;
+pub use runtime::{
+    BlueprintFieldDef, BlueprintNodeDef, BlueprintSchema, BlueprintStrategy, FieldVal,
+    UnifiedTickView, schema,
+};
 
 #[cfg(test)]
 mod tests;

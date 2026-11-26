@@ -1,0 +1,107 @@
+{
+  "version": 2,
+  "name": "consensus_favorite",
+  "meta": {
+    "description": "Multi-asset aligned-direction favorite for 5m rounds: 30-90s left, consensus aligned, price in [0.85, 0.97].",
+    "holds_to_settlement": true,
+    "entry_maker": false,
+    "once_per_round": true,
+    "thesis_death": false,
+    "gate_exemptions": {
+      "timing": true,
+      "momentum": false,
+      "timing_min_time_left_sec": 30
+    }
+  },
+  "nodes": [
+    {
+      "id": "c_cons",
+      "type": "condition",
+      "params": {
+        "field": "tick.consensus_aligned",
+        "op": "==",
+        "value": true
+      }
+    },
+    {
+      "id": "c_tl_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.time_left_sec",
+        "op": ">=",
+        "value": 30
+      }
+    },
+    {
+      "id": "c_tl_max",
+      "type": "condition",
+      "params": {
+        "field": "tick.time_left_sec",
+        "op": "<=",
+        "value": 90
+      }
+    },
+    {
+      "id": "c_px_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": ">=",
+        "value": 0.85
+      }
+    },
+    {
+      "id": "c_px_max",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": "<=",
+        "value": 0.97
+      }
+    },
+    {
+      "id": "act_buy",
+      "type": "action_buy",
+      "params": {
+        "budget_ratio": 0.1
+      }
+    },
+    {
+      "id": "gate_and",
+      "type": "logic_and",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "c_cons",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_tl_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_tl_max",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_max",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "gate_and",
+      "to": "act_buy",
+      "when": true
+    }
+  ]
+}

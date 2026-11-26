@@ -36,7 +36,7 @@ import {
   starterBlueprint, toBlueprintDoc, parseBlueprintDoc,
 } from '@/lib/blueprint'
 import { clonePlain } from '@/lib/clone-plain'
-import type { BlueprintDoc, BlueprintNodeType, BpNode, BpEdge, NodeFamily } from '@/lib/blueprint'
+import type { BlueprintDoc, BlueprintMeta, BlueprintNodeType, BpNode, BpEdge, NodeFamily } from '@/lib/blueprint'
 import { highlightLua } from '@/lib/lua-highlight'
 import { usePanelStore } from '@/stores/panel'
 import { useBlueprintDraftStore } from '@/stores/blueprint-draft'
@@ -56,6 +56,7 @@ const TYPE_ICONS: Record<BlueprintNodeType, Component<LucideProps>> = {
   data_source: Database,
   condition: ToggleLeft,
   action_buy: ShoppingCart,
+  action_buy_pair: ShoppingCart,
   action_sell: Tag,
   action_hold: PauseCircle,
   constant: Hash,
@@ -89,7 +90,9 @@ const {
 
 const bpNodes = ref<BpNode[]>([])
 const bpEdges = ref<BpEdge[]>([])
-const strategyName = ref('starter_dog')
+const bpMeta = ref<BlueprintMeta | undefined>(undefined)
+const fieldOptions = ref<string[]>([...FIELD_WHITELIST])
+const strategyName = ref('late_favorite')
 const selectedId = ref<string | null>(null)
 let idSeq = 1
 
@@ -206,11 +209,12 @@ function clearCanvas(): void {
   void scheduleCompile()
 }
 
-/** 重置为 4 节点示例模板（price ≤ 0.25 → trend_confirmed → buy）。 */
+/** 重置为蓝图版 late_favorite 默认策略模板（BTC-only，45–60s，0.85–0.97）。 */
 function loadStarter(): void {
   clearCanvas()
   const starter = starterBlueprint()
   strategyName.value = starter.name
+  bpMeta.value = starter.meta
   const idMap = new Map<string, string>()
   let y = 40
   for (const n of starter.nodes) {
@@ -302,8 +306,8 @@ onBeforeUnmount(() => {
   bpDraft.cancelPending()
 })
 
-/** 当前画布 → 蓝图 JSON 文档（v1 wire 形，字段/枚举全部镜像编译链）。 */
-const blueprintJson = computed(() => toBlueprintDoc(strategyName.value, bpNodes.value, bpEdges.value))
+/** 当前画布 → 蓝图 JSON 文档（v2 wire 形，字段/枚举镜像内核 blueprint.schema）。 */
+const blueprintJson = computed(() => toBlueprintDoc(strategyName.value, bpNodes.value, bpEdges.value, bpMeta.value))
 
 async function doCompile(): Promise<void> {
   await bpDraft.doCompile(blueprintJson.value)
@@ -504,6 +508,11 @@ async function preloadPackage(name: string): Promise<void> {
 }
 
 onMounted(() => {
+  void api.blueprintSchema().then((s) => {
+    if (s && Array.isArray(s.fields) && s.fields.length > 0) {
+      fieldOptions.value = s.fields.map((f) => f.name)
+    }
+  }).catch(() => {})
   const pre = store.takeBlueprintPreload()
   if (pre) void preloadPackage(pre)
 })
@@ -774,7 +783,7 @@ function exitSourceMode(): void {
                     :value="String(selectedNode.params.field ?? '')"
                     @change="setParam('field', ($event.target as HTMLSelectElement).value)"
                   >
-                    <option v-for="f in FIELD_WHITELIST" :key="f" :value="f">{{ f }}</option>
+                    <option v-for="f in fieldOptions" :key="f" :value="f">{{ f }}</option>
                   </select>
                 </label>
               </template>
@@ -813,7 +822,7 @@ function exitSourceMode(): void {
                     @change="setParam('field', ($event.target as HTMLSelectElement).value)"
                   >
                     <option value="">（用入边）</option>
-                    <option v-for="f in FIELD_WHITELIST" :key="f" :value="f">{{ f }}</option>
+                    <option v-for="f in fieldOptions" :key="f" :value="f">{{ f }}</option>
                   </select>
                 </label>
               </template>

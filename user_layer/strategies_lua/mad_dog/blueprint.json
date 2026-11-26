@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "name": "mad_dog",
+  "meta": {
+    "description": "Mean-reversion cheap-chip catcher with spot waterfall guard: price <= 0.30 and spot move >= -30 bps.",
+    "holds_to_settlement": false,
+    "entry_maker": false,
+    "once_per_round": true,
+    "thesis_death": true
+  },
+  "nodes": [
+    {
+      "id": "c_px_max",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": "<=",
+        "value": 0.3
+      }
+    },
+    {
+      "id": "c_spot",
+      "type": "condition",
+      "params": {
+        "field": "tick.spot_return_bps",
+        "op": ">=",
+        "value": -30
+      }
+    },
+    {
+      "id": "c_tl_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.time_left_sec",
+        "op": ">=",
+        "value": 90
+      }
+    },
+    {
+      "id": "act_buy",
+      "type": "action_buy",
+      "params": {
+        "budget_ratio": 0.1
+      }
+    },
+    {
+      "id": "gate_and",
+      "type": "logic_and",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "c_px_max",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_spot",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_tl_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "gate_and",
+      "to": "act_buy",
+      "when": true
+    }
+  ]
+}

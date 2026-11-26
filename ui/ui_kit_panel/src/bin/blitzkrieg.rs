@@ -302,13 +302,13 @@ fn build_supervisor_config(cli: &ParsedCli, fallback_socket: String) -> Supervis
         cfg.min_time_left = v;
     }
     if let Some(v) = cli.max_positions {
-        cfg.max_positions = v;
+        cfg.max_positions = Some(v);
     }
     if let Some(v) = cli.min_shares {
-        cfg.min_shares = v;
+        cfg.min_shares = Some(v);
     }
     if let Some(v) = cli.max_shares {
-        cfg.max_shares = v;
+        cfg.max_shares = Some(v);
     }
     for flag in &cli.extra_flags {
         if !cfg.extra_args.contains(flag) {

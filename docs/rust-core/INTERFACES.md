@@ -266,6 +266,13 @@ WebUI 画布产出蓝图 JSON，一切碰盘的动作都请内核做——UI 永
 | `shadow_evolution.decide` | `{ id, decision }` —— `decision` ∈ `accept`/`reject`/`defer` | `{ decision: "accepted"\|"rejected"\|"deferred", proposal }` —— 操作员对单个被 HOLD 提案的裁决；热路径零改动 |
 | `shadow_evolution.set_auto` | `{ enabled: &lt;bool&gt; }` | `{ autoEvolve: &lt;bool&gt; }` —— 自动进化开关（**持久化**，重启保持所择模式） |
 
+### 2.17 智能交易与聪明钱雷达（只读，无跟单）
+
+| method | params | result |
+|:---|:---|:---|
+| `smart_money.scan` | `{ window?, minVolumeUsd?, minFills?, limit? }` —— 缺省扫描 Polymarket 加密 5m/15m 市场近期活跃地址 | `{ scannedAt, window, marketCount, candidates[] }` —— 按有效成交量与净盈亏/胜率排序的聪明钱候选地址雷达列表（纯只读分析，不触发任何下单） |
+| `smart_money.analyze` | `{ address, fillsLimit? }` —— 指定目标地址并拉取其近期公开成交 | `{ address, sampleCount, resolvedCount, archetype, profile, blueprintJson, strategyName }` —— 行为指纹提取与可编译 Blueprint JSON 合成结果（纯只读分析） |
+
 ### 2.16 版本对账门禁（2026-10-26，Issue #644）
 
 `scripts/interfaces-methods-check.mjs` 是本表与实现的**结构对账门禁**：从

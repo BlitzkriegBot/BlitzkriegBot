@@ -21,6 +21,7 @@ pub(crate) mod position;
 pub(crate) mod risk;
 pub(crate) mod round;
 pub(crate) mod se;
+pub(crate) mod smart_money;
 pub(crate) mod strategy;
 pub(crate) mod system;
 pub(crate) mod trades;

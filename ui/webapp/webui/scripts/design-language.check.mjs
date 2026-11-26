@@ -62,6 +62,7 @@ const FILES = [
   ['行情·三表', 'src', 'components', 'hft', 'TradesTables.vue'],
   ['回测', 'src', 'pages', 'BacktestPage.vue'],
   ['蓝图', 'src', 'pages', 'BlueprintPage.vue'],
+  ['智能交易', 'src', 'pages', 'SmartTradingPage.vue'],
   ['策略', 'src', 'pages', 'Strategies.vue'],
   ['插件', 'src', 'pages', 'Plugins.vue'],
   ['设置壳', 'src', 'pages', 'SettingsPage.vue'],
@@ -229,6 +230,38 @@ check('styles carry the token palette the pages consume', () => {
   const styles = read('src', 'styles', 'theme.css')
   for (const token of ['--primary', '--panel', '--line', '--up', '--down']) {
     assert.ok(styles.includes(token), `missing ${token} in styles/theme.css`)
+  }
+})
+
+console.log('component library — unified control height, mobile header wrap & modal safety')
+
+check('form controls (Button/Input/Select/SegmentedControl) share h-8 (sm) and h-9 (default)', () => {
+  const controls = [
+    ['Button', read('src', 'components', 'ui', 'button', 'index.ts')],
+    ['Input', read('src', 'components', 'ui', 'input', 'Input.vue')],
+    ['Select', read('src', 'components', 'ui', 'select', 'Select.vue')],
+    ['SegmentedControl', read('src', 'components', 'ui', 'segmented', 'SegmentedControl.vue')],
+  ]
+  for (const [name, src] of controls) {
+    assert.ok(/\bh-8\b/.test(src), `${name} missing sm height h-8 (32px)`)
+    assert.ok(/\bh-9\b/.test(src), `${name} missing default height h-9 (36px)`)
+  }
+})
+
+check('CardHeader wraps cleanly on mobile without shrink-0 overflow', () => {
+  const header = read('src', 'components', 'ui', 'card', 'CardHeader.vue')
+  assert.ok(/<header[^>]*flex-wrap/.test(header), 'CardHeader <header> must allow flex-wrap on narrow screens')
+})
+
+check('modal dialogs keep backdrop non-dismissible to prevent accidental form loss', () => {
+  const modals = [
+    ['AddAccountDialog', read('src', 'components', 'AddAccountDialog.vue')],
+    ['CreateArbDialog', read('src', 'components', 'CreateArbDialog.vue')],
+    ['ConfirmWordDialog', read('src', 'components', 'ui', 'confirm', 'ConfirmWordDialog.vue')],
+    ['ConfirmDialog', read('src', 'components', 'ui', 'confirm', 'ConfirmDialog.vue')],
+  ]
+  for (const [name, src] of modals) {
+    assert.ok(!/@click\.self=/.test(src), `${name} must not dismiss on backdrop click.self`)
   }
 })
 

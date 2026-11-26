@@ -62,6 +62,7 @@ import { versionApi } from './version.ts'
 import { backtestApi, type OnchainPullParams, type BacktestRunParams, type BacktestDataset, type BacktestDatasetListDoc, type BacktestJobIdsDoc, type BacktestJobStatusDoc, type BacktestLadderRow, type BacktestResultDoc, type BacktestExportDoc } from './backtest.ts'
 import { executionPolicyApi, type PolicyConditionField, type PolicyOpWire, type PolicyThenAction, type PolicyWhenView, type PolicyThenView, type PolicyRuleView, type ExecutionPolicySectionDoc, type ExecutionPolicyListDoc, type ExecutionPolicyPreviewRow, type ExecutionPolicyPreviewDoc, type ExecutionPolicyAuditLine, type ExecutionPolicyHistoryDoc, type ExecutionPolicySetParams } from './execution-policy.ts'
 import { blueprintApi, type BlueprintCompileDoc, type BlueprintSaveBody, type BlueprintSaveDoc, type BlueprintLoadDoc, type BlueprintLoadSourceDoc, type BlueprintSaveSourceBody, type BlueprintSaveSourceDoc, type BlueprintSchemaDoc } from './blueprint.ts'
+import { smartMoneyApi, type RadarCandidateDoc, type RadarScanDoc, type SmartMoneyAnalyzeDoc, type StrategyArchetype, type WalletFingerprintDoc } from './smart-money.ts'
 import { ApiError, ping, login, logout, getToken, setToken, clearToken, hasToken, LOGIN_AT_KEY, loginAt, request } from './core.ts'
 
 export type {
@@ -100,6 +101,7 @@ export type {
   ExecutionPolicyHistoryDoc, ExecutionPolicySetParams,
   BlueprintCompileDoc, BlueprintSaveBody, BlueprintSaveDoc, BlueprintLoadDoc,
   BlueprintLoadSourceDoc, BlueprintSaveSourceBody, BlueprintSaveSourceDoc,
+  RadarCandidateDoc, RadarScanDoc, SmartMoneyAnalyzeDoc, StrategyArchetype, WalletFingerprintDoc,
 }
 
 export {
@@ -125,6 +127,7 @@ export const api = {
   ...backtestApi,
   ...executionPolicyApi,
   ...blueprintApi,
+  ...smartMoneyApi,
 
   /** Dispatch a gateway command verb (`status`/`start`/`stop`/…). */
   command: (cmd: string) =>

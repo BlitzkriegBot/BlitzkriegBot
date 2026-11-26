@@ -363,7 +363,7 @@ onMounted(() => {
       instead of 24px. From `md` the nav moves inside the header and `pt-10`
       (40px) clears the sticky offset plus the shadow.
     -->
-    <main class="mx-auto max-w-[1280px] px-4 pt-8 pb-20 md:pt-10">
+    <main class="mx-auto max-w-[1280px] min-w-0 overflow-x-clip px-4 pt-8 pb-20 md:pt-10">
       <!-- 首屏骨架：首次快照到达前不留白，数据区显示连接中 -->
       <div v-if="connecting" class="flex flex-col items-center justify-center min-h-[320px] pt-20">
         <p class="text-sm text-faint-fg">正在连接内核…</p>
@@ -455,9 +455,9 @@ onMounted(() => {
       </div>
 
       <!-- 组内叶子是页内 tab（SettingsPage 的域切换模式）：内容上方一排页签，
-           不在导航条上出现第二级控件。 -->
-      <nav v-if="activeGroup" class="mb-4 px-4 sm:px-0">
-        <SegmentedControl v-model="tab" :segments="activeGroup.children" />
+           不在导航条上出现第二级控件；窄屏横向滚动不撑破页面宽度。 -->
+      <nav v-if="activeGroup" class="mb-4 overflow-x-auto no-scrollbar">
+        <SegmentedControl v-model="tab" :segments="activeGroup.children" class="min-w-max" />
       </nav>
       <component :is="activePage" />
       </div>

@@ -430,4 +430,8 @@ pub mod method {
     /// with the four leg fields + `pairs`, or `configured: false` with null
     /// legs and an empty array — never a partial shape.
     pub const ARB_CONFIG_GET: &str = "arb.config.get";
+
+    // ── Smart Money Reverse-to-Strategy (RFC #249) ──────────────────────────
+    pub const SMART_MONEY_SCAN: &str = "smart_money.scan";
+    pub const SMART_MONEY_ANALYZE: &str = "smart_money.analyze";
 }

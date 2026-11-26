@@ -376,46 +376,42 @@ onMounted(() => {
                  当前显示账户是已配置套利的腿账户时渲染（不可见 = 段消失）；
                  「创建套利」按钮留在 header 供所有账户可达（唯一弹窗入口，
                  可达性优先，见下方按钮注释）。
-                 移动端：整个 action 区域 overflow-x-auto 横向滚动，所有元素
-                 同行显示，避免 SegmentedControl 宽度挤掉搜索/创建按钮。 -->
-            <div class="pb-1">
-              <!-- 移动端按钮换行：flex-wrap 让 SegmentedControl / 搜索 / 创建按钮
-                   在窄屏自动折行，不再横向滚动也不再互相挤掉。 -->
-              <div class="flex items-start gap-2 flex-wrap min-w-0">
-                <SegmentedControl
-                  v-model="perfTab"
-                  :segments="[
-                    { id: 'single', label: '单交易所策略', badge: singleRows.length },
-                    ...(arbTabVisible ? [{ id: 'arb', label: '套利策略', badge: arbRows.length }] : []),
-                  ]"
+                 移动端：CardHeader 已允许折行，工具栏在卡片宽度内自动换行，
+                 所有控件统一 sm (h-8 / 32px) 等高且垂直居中对齐。 -->
+            <div class="flex w-full min-w-0 max-w-full flex-wrap items-center gap-2 sm:w-auto">
+              <SegmentedControl
+                v-model="perfTab"
+                :segments="[
+                  { id: 'single', label: '单交易所策略', badge: singleRows.length },
+                  ...(arbTabVisible ? [{ id: 'arb', label: '套利策略', badge: arbRows.length }] : []),
+                ]"
+                size="sm"
+                class="shrink-0"
+              />
+              <div class="relative min-w-[140px] flex-1 sm:flex-none">
+                <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint-fg" />
+                <Input
+                  :model-value="query"
+                  placeholder="搜索策略…"
                   size="sm"
-                  class="shrink-0"
+                  class="w-full pl-8 sm:w-44"
+                  @update:model-value="query = $event"
                 />
-                <div class="relative min-w-0 shrink-0">
-                  <Search class="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-faint-fg" />
-                  <Input
-                    :model-value="query"
-                    placeholder="搜索策略…"
-                    size="sm"
-                    class="w-44 pl-7"
-                    @update:model-value="query = $event"
-                  />
-                </div>
-                <Badge variant="gold" dot class="shrink-0">
-                  <RollingNumber :value="currentRows.length" /> 行
-                </Badge>
-                <!-- issue 393 (⑤): the page's create entry — jumps to the blueprint canvas. -->
-                <Button variant="gold" size="sm" title="在蓝图中新建一个策略" @click="createStrategy" class="shrink-0">
-                  <Plus class="size-3.5" />创建策略
-                </Button>
-                <!-- 创建套利：配置双腿套利并启用所选套利策略
-                     （配置意图模型，创建即持久化；弹窗内自取配置与凭证读数）。
-                     可达性优先：套利 tab 对非腿账户不可见，而本按钮是弹窗的唯一
-                     入口 —— 故固定在 header，两 tab 共用，任何账户都能开弹窗。 -->
-                <Button variant="outline" size="sm" title="配置双腿套利并启用所选套利策略" @click="arbOpen = true" class="shrink-0">
-                  <Link2 class="size-3.5" />创建套利
-                </Button>
               </div>
+              <Badge variant="gold" dot class="shrink-0">
+                <RollingNumber :value="currentRows.length" /> 行
+              </Badge>
+              <!-- issue 393 (⑤): the page's create entry — jumps to the blueprint canvas. -->
+              <Button variant="gold" size="sm" title="在蓝图中新建一个策略" @click="createStrategy" class="shrink-0">
+                <Plus class="size-3.5" />创建策略
+              </Button>
+              <!-- 创建套利：配置双腿套利并启用所选套利策略
+                   （配置意图模型，创建即持久化；弹窗内自取配置与凭证读数）。
+                   可达性优先：套利 tab 对非腿账户不可见，而本按钮是弹窗的唯一
+                   入口 —— 故固定在 header，两 tab 共用，任何账户都能开弹窗。 -->
+              <Button variant="outline" size="sm" title="配置双腿套利并启用所选套利策略" @click="arbOpen = true" class="shrink-0">
+                <Link2 class="size-3.5" />创建套利
+              </Button>
             </div>
           </template>
         </CardHeader>

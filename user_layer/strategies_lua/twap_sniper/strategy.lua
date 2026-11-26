@@ -1,6 +1,6 @@
 -- twap_sniper — final-15s TWAP-lock sniper for 5m binary rounds.
 -- In the last 5-15 seconds before expiry, 75%-92% of the 60s Chainlink
--- settlement TWAP is already locked in. Buys any lagging ask inside 0.75-0.96
+-- settlement TWAP is already locked in. Buys any lagging ask inside 0.90-0.96
 -- as a taker (reason "late-taker") and holds to $1 redemption.
 --
 -- One attempt per condition per round. Low frequency (~15 trades/day) with
@@ -231,7 +231,7 @@ function bk_evaluate()
 
     local params = bk.params()
     local maker = int_p(params, "maker_entry", 0) == 1
-    local lo = num_p(params, "min_px", 0.75)
+    local lo = num_p(params, "min_px", 0.90)
     local hi = num_p(params, "max_px", 0.96)
     local t_min = int_p(params, "min_time_left", 5)
     local t_max = int_p(params, "max_time_left", 15)

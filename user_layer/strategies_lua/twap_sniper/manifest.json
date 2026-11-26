@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "6fa7658111626abc3aaf0a2dc3b25722923c74a822a557f5f335706ab1cd3388",
+  "sha256": "58b1575738532b709c09280600679198f5a1d621d529ed31781a59d7f26fb499",
   "author": "BlitzkriegBot",
-  "description": "Final-15s TWAP-lock sniper for 5m binary rounds. With 5-15 seconds remaining (75%-92% of the 60s settlement TWAP locked in), crosses any lagging ask inside 0.75-0.96 as a taker (reason late-taker) and holds to settlement. One attempt per condition per round; low frequency, high PF, low drawdown.",
+  "description": "Final-15s TWAP-lock sniper for 5m binary rounds. With 5-15 seconds remaining (75%-92% of the 60s settlement TWAP locked in), crosses any lagging ask inside 0.90-0.96 as a taker (reason late-taker) and holds to settlement. One attempt per condition per round; low frequency, high PF, low drawdown.",
   "holds_to_settlement": true,
   "entry_maker": false,
   "gate_exemptions": {
@@ -16,7 +16,7 @@
   "tunables": {
     "min_px": {
       "type": "decimal",
-      "default": "0.75",
+      "default": "0.90",
       "min": "0.50",
       "max": "0.95"
     },

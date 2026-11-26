@@ -325,7 +325,11 @@ impl Engine {
                         continue;
                     }
                     let sizing = self.effective_sizing(&sig.strategy);
-                    let mut capped = n.min(sizing.max_shares);
+                    let mut capped = if sizing.max_shares > Decimal::ZERO {
+                        n.min(sizing.max_shares)
+                    } else {
+                        n
+                    };
                     if sizing.size_pct > Decimal::ZERO {
                         // #932: the venue's own declared minimum rides the
                         // affordability gate — a depth-shaped leg dies inside

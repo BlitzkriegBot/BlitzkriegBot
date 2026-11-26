@@ -1,22 +1,20 @@
 <script setup lang="ts">
 /**
- * 生效风控读数 + 编辑（E26 §4.4 / 用户裁决：六项系统限额必须都能改）。每个限额
- * 都是「值 + 来源」，来源不明的数字不是操作者能据以行动的答案。
- *
- * 可编辑：每行一个输入框（预填当前生效值），保存走 risk.setSystemic —— 只发
- * 改动过的字段，内核 plan-first（一项非法整体拒）+ 逐字段审计。效果分级由
- * 内核在回执里逐字段给出：六项 live（立即约束下一笔策略开仓），回撤预算 +
- * 连亏熔断 + 冷静期三项 next_session（本会话不追溯改判，重启后按新值武装）。
- * 未持久化（persisted=false）：重启回到启动 flag/env/TOML 的解析结果 —— 来源
- * 徽标会变成「命令行/热改」，这是内核 LimitSource::Flag 的如实呈现。
+ * 生效风控卡（傻白甜单真源版 — RFC #241/#242/#243）：
+ *   主视图只保留 3 组 / 8 项高频直觉控件：
+ *     1. 每单下多少：下注比例（% + 实时 USD 估算预览）+ 单笔金额范围（最小 ~ 最大 USD）
+ *     2. 最多开几单：总并发持仓上限（0=不限）+ 单币种持仓上限
+ *     3. 亏了怎么停：当日最大亏损 + 连亏保护（连亏 N 次暂停 M 分钟）+ 止损 % + 止盈 %
+ *   低频与专家参数（单笔最大亏损、单仓上限、份额上下限、最低权益、强平秒数、移动止盈、
+ *   maker-first、执行策略规则）统一折叠在「高级设置」抽屉内。
+ *   整张卡片共用底部唯一「保存」按钮，一次整段提交。
  */
 import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { RefreshCw, Save, ShieldCheck } from 'lucide-vue-next'
-import {
-  type RiskBound, type RiskLimitsDoc,
-} from '@/api/client'
+import { ChevronRight, RefreshCw, Save, ShieldCheck } from 'lucide-vue-next'
+import { type RiskBound, type RiskLimitsDoc } from '@/api/client'
 import { finiteNumber } from '@/lib/format'
+import { usePanelStore } from '@/stores/panel'
 import { useRiskLimitsStore } from '@/stores/risk-limits'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
@@ -24,18 +22,26 @@ import Badge from '@/components/ui/badge/Badge.vue'
 import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
 import Switch from '@/components/ui/switch/Switch.vue'
+import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
 
+const props = defineProps<{
+  /** 当前编辑中的最小下注金额（USD），用于实时估算单笔下单金额预览。 */
+  minBudgetUsd?: string
+}>()
+
+const panel = usePanelStore()
 const limits = useRiskLimitsStore()
 const { riskDoc, riskErr, riskBusy } = storeToRefs(limits)
 const riskSaving = ref(false)
+const advancedOpen = ref(false)
 
-/** 本卡片是「生效风控」一张表单：账户级限额 + 退出纪律 + 账户生效参数（#params 插槽）
- *  由底部唯一的保存按钮一次性提交，子组件不自己调接口。 */
+/** 本卡片是「生效风控」一张表单：由底部唯一保存按钮一次性提交。 */
 defineEmits<{ (e: 'save-all'): void }>()
 
 defineExpose({
   buildPatch,
   buildExitPatch,
+  currentSizePct,
   riskSaving,
 })
 
@@ -44,57 +50,45 @@ async function loadRisk(): Promise<void> {
   if (doc && !doc.error) syncBuffers(doc)
 }
 
-/** 来源词表：出厂/环境变量/命令行或热改，与内核 LimitSource 一致（去 TOML 后只允许 flag/env/default）。 */
-function sourceLabel(s: RiskBound['source']): string {
-  switch (s) {
-    case 'default': return '出厂'
-    case 'env': return '环境变量'
-    case 'flag': return '命令行/热改'
-    default: return String(s)
-  }
-}
-/** 0 = 关闭（§4.1 出厂即静默）：显示「关闭」而不是一个伪装成保护措施的 0。 */
 function boundArmed(b: RiskBound): boolean {
   return Number(b.value) > 0
 }
 function boundText(b: RiskBound): string {
-  return boundArmed(b) ? b.value : '关闭'
+  return boundArmed(b) ? b.value : '0'
 }
 
-/** 一行的定义：wire 字段名（camelCase）+ 展示元数据 + 整数/小数。 */
 interface RiskRowDef {
-  field: string; label: string; unit: string; group: string; int: boolean
+  field: string
+  label: string
+  unit: string
+  int: boolean
   max?: number
-  /** 可选的通俗解释：某一行的含义用户读不出时给一句。 */
   hint?: string
   bound: () => RiskBound | undefined
 }
+
 const ROW_DEFS: RiskRowDef[] = [
-  { field: 'maxSingleLossUsd', label: '单笔最大亏损', unit: 'USD', group: '账户', int: false, bound: () => riskDoc.value?.account.limits.maxSingleLossUsd },
-  { field: 'maxDailyDrawdownUsd', label: '当日最大回撤', unit: 'USD', group: '账户', int: false, bound: () => riskDoc.value?.account.limits.maxDailyDrawdownUsd },
-  { field: 'maxPositionSize', label: '单仓上限', unit: '股', group: '账户', int: true, bound: () => riskDoc.value?.account.limits.maxPositionSize },
-  { field: 'maxConsecutiveLosses', label: '连亏熔断', unit: '次', group: '账户', int: true, bound: () => riskDoc.value?.account.limits.maxConsecutiveLosses },
-  { field: 'cooldownMinutes', label: '熔断冷静期', unit: '分钟', group: '账户', int: true, bound: () => riskDoc.value?.account.limits.cooldownMinutes },
-  { field: 'maxOrderNotionalUsd', label: '单笔最大限额', unit: 'USD', group: '账户', int: false, hint: '无论策略算出要下多少钱，系统单笔最多按这个金额发单（超出部分静默截断）', bound: () => riskDoc.value?.account.limits.maxOrderNotionalUsd },
+  { field: 'maxSingleLossUsd', label: '单笔最大亏损', unit: 'USD', int: false, hint: '0 = 关闭', bound: () => riskDoc.value?.account.limits.maxSingleLossUsd },
+  { field: 'maxDailyDrawdownUsd', label: '当日最大亏损', unit: 'USD', int: false, hint: '0 = 关闭', bound: () => riskDoc.value?.account.limits.maxDailyDrawdownUsd },
+  { field: 'maxPositionSize', label: '单仓上限', unit: '股', int: true, hint: '0 = 关闭', bound: () => riskDoc.value?.account.limits.maxPositionSize },
+  { field: 'maxConsecutiveLosses', label: '连亏次数', unit: '次', int: true, bound: () => riskDoc.value?.account.limits.maxConsecutiveLosses },
+  { field: 'cooldownMinutes', label: '冷静期', unit: '分钟', int: true, bound: () => riskDoc.value?.account.limits.cooldownMinutes },
+  { field: 'maxOrderNotionalUsd', label: '单笔最大金额', unit: 'USD', int: false, bound: () => riskDoc.value?.account.limits.maxOrderNotionalUsd },
   {
     field: 'sizePct',
-    label: '单笔权益比例 (BK_SIZE_PCT)',
+    label: '下注比例',
     unit: '%',
-    group: '账户',
     int: false,
     max: 100,
-    hint: '按账户现金权益百分比计算单笔预算（0 = 关闭，走固定股数/金额；例：填 2 表示 2%）',
     bound: () => riskDoc.value?.sizePct !== undefined
       ? { value: String(riskDoc.value.sizePct), source: Number(riskDoc.value.sizePct) > 0 ? 'flag' : 'default' }
       : undefined,
   },
   {
     field: 'maxPositions',
-    label: '最大并发持仓',
+    label: '总并发持仓上限',
     unit: '笔',
-    group: '账户',
     int: true,
-    hint: '账户同时持有的未到期持仓上限（0 = 关闭/不限；修改后立即生效并持久化）',
     bound: () => riskDoc.value?.maxPositions !== undefined
       ? { value: String(riskDoc.value.maxPositions), source: riskDoc.value.maxPositions > 0 ? 'flag' : 'default' }
       : undefined,
@@ -103,9 +97,8 @@ const ROW_DEFS: RiskRowDef[] = [
     field: 'minShares',
     label: '单笔最小份额',
     unit: '股',
-    group: '账户',
     int: false,
-    hint: '单笔下单份额下限（需 ≤ 单笔最大份额；修改后立即生效并持久化）',
+    hint: '0 = 仅按场地门槛',
     bound: () => riskDoc.value?.minShares !== undefined
       ? { value: String(riskDoc.value.minShares), source: Number(riskDoc.value.minShares) > 0 ? 'flag' : 'default' }
       : undefined,
@@ -114,43 +107,57 @@ const ROW_DEFS: RiskRowDef[] = [
     field: 'maxShares',
     label: '单笔最大份额',
     unit: '股',
-    group: '账户',
     int: false,
-    hint: '单笔下单份额上限（必须 > 0 且 ≥ 单笔最小份额；例：10、100、500）',
+    hint: '0 = 不限（仅受金额上限与余额约束）',
     bound: () => riskDoc.value?.maxShares !== undefined
       ? { value: String(riskDoc.value.maxShares), source: Number(riskDoc.value.maxShares) > 0 ? 'flag' : 'default' }
       : undefined,
   },
 ]
 
-// ── 编辑缓冲 + 保存（risk.setSystemic，只发改动项）──
+const ADVANCED_LIMIT_FIELDS = ['maxSingleLossUsd', 'maxPositionSize', 'minShares', 'maxShares'] as const
+
 const editBufs = ref<Record<string, string>>({})
 
 function syncBuffers(d: RiskLimitsDoc): void {
   const next: Record<string, string> = {}
   for (const r of ROW_DEFS) next[r.field] = r.bound()?.value ?? '0'
-  // 退出纪律三行同用一块编辑缓冲（field 不与限额行重叠）。
   next['stopLossPct'] = String(d.exit.stopLossPct)
   next['takeProfitPct'] = String(d.exit.takeProfitPct)
   next['forceExitSec'] = String(d.exit.forceExitSec)
-  // 老内核缺 trailingEnabled → undefined：开关缺省 = 关（显示层如实降级，
-  // 发送的 patch 里也不带它 —— 不会意外把未声明的开关拨到 true）。
   next['trailingEnabled'] = String(d.exit.trailingEnabled ?? false)
   next['makerFirstExits'] = String(d.exit.strategyExitMakerFirst ?? false)
   editBufs.value = next
 }
 
-/** 只发改动过的字段；空串=保持不变。非法输入就地拒绝保存。 */
+function currentSizePct(): number | null {
+  return finiteNumber((editBufs.value['sizePct'] ?? '').trim())
+}
+
+/** 实时单笔预算预览：按当前展示账户可用余额 × 下注比例，叠加最小/最大金额范围。 */
+const liveBudgetPreview = computed<string>(() => {
+  const pct = currentSizePct()
+  if (pct === null || pct <= 0) return '0 = 关闭比例下单（走固定预算）'
+  const bal = finiteNumber(panel.activeAccountRow?.available ?? panel.activeAccountRow?.balance)
+  if (bal === null || bal <= 0) return `占可用余额 ${pct}%`
+  let est = (bal * pct) / 100
+  const minUsd = finiteNumber(props.minBudgetUsd)
+  const maxUsd = finiteNumber(editBufs.value['maxOrderNotionalUsd'])
+  if (minUsd !== null && minUsd > 0 && est < minUsd) est = minUsd
+  if (maxUsd !== null && maxUsd > 0 && est > maxUsd) est = maxUsd
+  return `≈ $${est.toFixed(2)} / 单（余额 $${bal.toFixed(2)}）`
+})
+
+/** 只发改动过的字段；空串 = 保持不变。maxShares 允许 0（不限）。 */
 function buildPatch(): Record<string, string | number> | string {
   const patch: Record<string, string | number> = {}
   for (const r of ROW_DEFS) {
     const raw = (editBufs.value[r.field] ?? '').trim()
-    if (raw === '') continue // 空串 = 这一行不动
+    if (raw === '') continue
     const cur = r.bound()?.value ?? '0'
     if (raw === cur) continue
     const n = Number(raw)
-    if (!Number.isFinite(n) || n < 0) return `${r.label}：必须是 ≥ 0 的数字（0 = 关闭）`
-    if (r.field === 'maxShares' && n <= 0) return `${r.label}：必须 > 0`
+    if (!Number.isFinite(n) || n < 0) return `${r.label}：必须是 ≥ 0 的数字（0 = 关闭/不限）`
     if (r.max !== undefined && n > r.max) return `${r.label}：不能超过 ${r.max}`
     if (r.int && !Number.isInteger(n)) return `${r.label}：必须是整数`
     patch[r.field] = r.field === 'maxPositions' ? n : raw
@@ -158,73 +165,19 @@ function buildPatch(): Record<string, string | number> | string {
   return patch
 }
 
-// ── 退出纪律（Gate 4 绑定）：止损/止盈/强平三行，走 risk.setExit ──────────
-// 与系统限额同卡但不同写路径：退出纪律不是 Bound（没有来源徽标的枚举语义，
-// 内核里它是行为旋钮），percentages 拒绝 ≤ 0，forceExitSec 0 = 关闭强平
-// （出厂校准值）。生效 = live：新入场下一笔按新值绑定，已开仓位的退出扫描
-// 同步跟随 —— 内核回执逐项 old→new。
-interface ExitRowDef { field: string; label: string; toggle?: boolean; hint?: string; excluded?: boolean }
-const EXIT_ROW_DEFS: ExitRowDef[] = [
-  { field: 'stopLossPct', label: '止损' },
-  { field: 'takeProfitPct', label: '止盈' },
-  { field: 'forceExitSec', label: '强平' },
-  {
-    field: 'trailingEnabled',
-    label: '移动止盈',
-    toggle: true,
-    hint: '浮盈回吐即锁利离场。出厂关；spread_arb 一类价差策略建议开。',
-  },
-  {
-    field: 'makerFirstExits',
-    label: '策略出场 maker-first',
-    toggle: true,
-    hint: 'on 时利润侧策略出场（止盈/移动止盈）先挂单后升级，降出场烧格；保护侧（止损/强平）永不转挂单。',
-  },
-  {
-    field: 'holderStopPct',
-    label: '止损（持有到期口径）',
-    excluded: true,
-    hint: '策略族口径（holds_to_settlement 专属），不是全局设置，不进本卡。',
-  },
-]
-const EXIT_FIELDS = new Set(EXIT_ROW_DEFS.filter((r) => !r.excluded).map((r) => r.field))
-
 function exitPctText(v: unknown): string {
   const n = finiteNumber(v)
   return n === null ? '—' : `${n}%`
 }
 
-/** 退出纪律行的当前值文本（单位随行）：输入框的参照。 */
-function exitCurrentText(field: string): string {
-  const e = riskDoc.value?.exit
-  if (!e) return '—'
-  if (field === 'stopLossPct') return `%（当前 ${exitPctText(e.stopLossPct)}）`
-  if (field === 'takeProfitPct') return `%（当前 ${exitPctText(e.takeProfitPct)}）`
-  if (field === 'holderStopPct') return `%（持有到期策略生效 ${exitPctText(e.holderStopPct)}；通用 12% 不绑它们）`
-  return `秒（当前 ${e.forceExitSec}s${Number(e.forceExitSec) === 0 ? '，关闭' : ''}）`
-}
-function exitPlaceholder(field: string): string {
-  const e = riskDoc.value?.exit
-  if (!e || isExcluded(field)) return ''
-  if (field === 'stopLossPct') return String(e.stopLossPct)
-  if (field === 'takeProfitPct') return String(e.takeProfitPct)
-  return String(e.forceExitSec)
-}
-/** 被排除的行（策略族口径）不属于本卡的可写面。 */
-function isExcluded(field: string): boolean {
-  return EXIT_ROW_DEFS.find((r) => r.field === field)?.excluded ?? false
-}
-/** trailing 开关（toggle 行）：草稿缓冲存 'true'/'false' 字符串。 */
 function trailingOn(): boolean {
   return (editBufs.value['trailingEnabled'] ?? 'false') === 'true'
 }
 function setTrailing(on: boolean): void {
   editBufs.value['trailingEnabled'] = String(on)
 }
-/** 老内核不认识 trailingEnabled（读数缺字段）→ 开关禁用并说明。 */
 const trailingSupported = computed(() => riskDoc.value?.exit.trailingEnabled !== undefined)
 
-/** maker-first 开关（toggle 行，同 trailing 的缓冲/适用性约定）。 */
 function makerFirstOn(): boolean {
   return (editBufs.value['makerFirstExits'] ?? 'false') === 'true'
 }
@@ -233,12 +186,6 @@ function setMakerFirst(on: boolean): void {
 }
 const makerFirstSupported = computed(() => riskDoc.value?.exit.strategyExitMakerFirst !== undefined)
 
-/** 退出纪律没有 LimitSource 枚举：热改后 badge 如实写「行为旋钮」。 */
-function exitSourceLabel(): string {
-  return '行为旋钮'
-}
-
-/** 退出纪律 patch：只发改动项；百分比必须 > 0，强平 ≥ 0（0 = 关闭）。 */
 function buildExitPatch(): Record<string, string | number | boolean> | string {
   const e = riskDoc.value?.exit
   if (!e) return '读不到退出纪律当前值'
@@ -261,13 +208,10 @@ function buildExitPatch(): Record<string, string | number | boolean> | string {
     if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return '强平：必须是 ≥ 0 的整数秒（0 = 关闭强平）'
     patch.forceExitSec = n
   }
-  // trailing 开关只在老内核缺字段（undefined）时降级为不可拨 —— 缺省发送
-  // 会把未声明的开关意外拨到 true，宁可不发。
   if (e.trailingEnabled !== undefined) {
     const tr = (editBufs.value['trailingEnabled'] ?? 'false') === 'true'
     if (tr !== e.trailingEnabled) patch.trailingEnabled = tr
   }
-  // maker-first 开关同约定：老内核缺字段不拨。
   if (e.strategyExitMakerFirst !== undefined) {
     const mf = (editBufs.value['makerFirstExits'] ?? 'false') === 'true'
     if (mf !== e.strategyExitMakerFirst) patch.strategyExitMakerFirst = mf
@@ -275,23 +219,19 @@ function buildExitPatch(): Record<string, string | number | boolean> | string {
   return patch
 }
 
-/** 行渲染：读数（bound）驱动徽标，编辑缓冲驱动输入框。 */
-const riskRows = computed(() =>
-  ROW_DEFS.map((r) => ({ ...r, bound: r.bound() })))
-const armedRows = computed(() => riskRows.value.filter((r) => r.bound && boundArmed(r.bound)))
+const riskRows = computed(() => ROW_DEFS.map((r) => ({ ...r, bound: r.bound() })))
+const advancedLimitRows = computed(() =>
+  riskRows.value.filter((r) => (ADVANCED_LIMIT_FIELDS as readonly string[]).includes(r.field)),
+)
+const armedCount = computed(() => riskRows.value.filter((r) => r.bound && boundArmed(r.bound)).length)
 
 const riskBadge = computed(() => {
   if (!riskDoc.value) return { text: '不可用', variant: 'default' as const }
-  return armedRows.value.length > 0
-    ? { text: `已武装 ${armedRows.value.length} 项`, variant: 'gold' as const }
-    : { text: '出厂（全部关闭）', variant: 'up' as const }
+  return armedCount.value > 0
+    ? { text: `已生效 ${armedCount.value} 项`, variant: 'gold' as const }
+    : { text: '出厂默认', variant: 'up' as const }
 })
-const riskHint = computed(() => {
-  if (!riskDoc.value) return ''
-  return armedRows.value.length > 0
-    ? '六项改动立即约束下一笔策略开仓；回撤 / 连亏 / 冷静期三项重启后生效（本会话不追溯改判）。连亏熔断触发时暂停该账户的新开仓，平仓永不受限。'
-    : '六项系统限额全部为 0 = 关闭（出厂承诺）：内核行为与未加风控时逐位一致。保存后六项立即生效。'
-})
+
 onMounted(() => void loadRisk())
 </script>
 
@@ -307,29 +247,221 @@ onMounted(() => void loadRisk())
     </CardHeader>
 
     <p class="text-[11.5px] leading-snug text-muted-fg">
-      内核正在执行的系统性限额（risk.limits）——每个数字都带着它从哪来（出厂 / 环境变量 /
-      热改）。没来源的数字不是能据以行动的答案；0 = 关闭，不是伪装成保护措施的零。
-      改动保存进内核内存并逐字段落审计，重启后回到启动配置的解析结果。
+      只保留 3 组核心风控（每单下多少 / 最多开几单 / 亏了怎么停），修改后点底部「保存」立即生效并持久化。
     </p>
 
     <AlertBanner v-if="!riskDoc && !riskErr" class="mt-3" tone="info">正在读取风控读数…</AlertBanner>
     <AlertBanner v-else-if="!riskDoc" class="mt-3" tone="warn">
-      读不到风控读数（{{ riskErr ?? '内核离线或版本过旧' }}）。这个内核可能不认识 risk.limits。
+      读不到风控读数（{{ riskErr ?? '内核离线或版本过旧' }}）。
     </AlertBanner>
 
     <template v-else>
-      <div class="mt-3">
-        <template v-for="group in ['账户']" :key="group">
-          <div class="label-micro mt-2 first:mt-0">{{ group }}级限额</div>
-          <div class="mt-1">
+      <!-- 1. 每单下多少（2 项） -->
+      <div class="mt-3" data-risk-group="sizing">
+        <div class="label-micro">每单下多少</div>
+        <div class="mt-1.5 space-y-2">
+          <div class="flex flex-wrap items-center justify-between gap-2 py-1 text-[12px]">
+            <div>
+              <span class="text-fg">下注比例</span>
+              <span class="ml-2 num text-[11px] text-primary">{{ liveBudgetPreview }}</span>
+            </div>
+            <span class="flex items-center gap-1.5">
+              <Input
+                v-model="editBufs['sizePct']"
+                class="num h-7 w-24 text-right text-[12px]"
+                type="text"
+                min="0"
+                max="100"
+                step="any"
+                placeholder="如 2"
+                aria-label="下注比例"
+              />
+              <span class="w-8 text-[11px] text-faint-fg">%</span>
+            </span>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 border-t border-line py-1.5 text-[12px]">
+            <div>
+              <span class="text-fg">单笔金额范围</span>
+              <span class="ml-1.5 text-[10.5px] text-faint-fg">最小 ~ 最大（最大 0 = 不限）</span>
+            </div>
+            <span class="flex items-center gap-1.5">
+              <slot name="sizing-min" />
+              <span class="text-[11px] text-faint-fg">~</span>
+              <Input
+                v-model="editBufs['maxOrderNotionalUsd']"
+                class="num h-7 w-24 text-right text-[12px]"
+                type="text"
+                min="0"
+                step="any"
+                placeholder="最大 USD"
+                aria-label="单笔最大金额"
+              />
+              <span class="w-8 text-[11px] text-faint-fg">USD</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. 最多开几单（2 项） -->
+      <div class="mt-3 border-t border-line pt-3" data-risk-group="positions">
+        <div class="label-micro">最多开几单</div>
+        <div class="mt-1.5 space-y-1.5">
+          <div class="flex items-center justify-between gap-3 py-1 text-[12px]">
+            <div>
+              <span class="text-fg">总并发持仓上限</span>
+              <span class="ml-1.5 text-[10.5px] text-faint-fg">0 = 不限</span>
+            </div>
+            <span class="flex items-center gap-1.5">
+              <Input
+                v-model="editBufs['maxPositions']"
+                class="num h-7 w-24 text-right text-[12px]"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0"
+                aria-label="总并发持仓上限"
+              />
+              <span class="w-8 text-[11px] text-faint-fg">笔</span>
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between gap-3 border-t border-line py-1.5 text-[12px]">
+            <div>
+              <span class="text-fg">单币种持仓上限</span>
+              <span class="ml-1.5 text-[10.5px] text-faint-fg">同一标的最多同时持有</span>
+            </div>
+            <span class="flex items-center gap-1.5">
+              <slot name="positions-per-asset" />
+              <span class="w-8 text-[11px] text-faint-fg">笔</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. 亏了怎么停（4 项） -->
+      <div class="mt-3 border-t border-line pt-3" data-risk-group="protection">
+        <div class="label-micro">亏了怎么停</div>
+        <div class="mt-1.5 space-y-1.5">
+          <div class="flex items-center justify-between gap-3 py-1 text-[12px]">
+            <div>
+              <span class="text-fg">当日最大亏损</span>
+              <span class="ml-1.5 text-[10.5px] text-faint-fg">达到后当日停止新开仓，0 = 关闭</span>
+            </div>
+            <span class="flex items-center gap-1.5">
+              <Input
+                v-model="editBufs['maxDailyDrawdownUsd']"
+                class="num h-7 w-24 text-right text-[12px]"
+                type="text"
+                min="0"
+                step="any"
+                placeholder="0"
+                aria-label="当日最大亏损"
+              />
+              <span class="w-8 text-[11px] text-faint-fg">USD</span>
+            </span>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 border-t border-line py-1.5 text-[12px]">
+            <div>
+              <span class="text-fg">连亏保护</span>
+              <span class="ml-1.5 text-[10.5px] text-faint-fg">0 = 关闭（重启后生效）</span>
+            </div>
+            <span class="flex items-center gap-1.5">
+              <span class="text-[11px] text-faint-fg">连亏</span>
+              <Input
+                v-model="editBufs['maxConsecutiveLosses']"
+                class="num h-7 w-16 text-right text-[12px]"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0"
+                aria-label="连亏次数"
+              />
+              <span class="text-[11px] text-faint-fg">次暂停</span>
+              <Input
+                v-model="editBufs['cooldownMinutes']"
+                class="num h-7 w-16 text-right text-[12px]"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0"
+                aria-label="冷静期"
+              />
+              <span class="text-[11px] text-faint-fg">分钟</span>
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between gap-3 border-t border-line py-1.5 text-[12px]">
+            <div>
+              <span class="text-fg">止损</span>
+              <span class="ml-1.5 text-[10.5px] text-faint-fg">当前 {{ exitPctText(riskDoc.exit.stopLossPct) }}</span>
+            </div>
+            <span class="flex items-center gap-1.5">
+              <Input
+                v-model="editBufs['stopLossPct']"
+                class="num h-7 w-24 text-right text-[12px]"
+                type="text"
+                min="0"
+                step="any"
+                aria-label="止损"
+              />
+              <span class="w-8 text-[11px] text-faint-fg">%</span>
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between gap-3 border-t border-line py-1.5 text-[12px]">
+            <div>
+              <span class="text-fg">止盈</span>
+              <span class="ml-1.5 text-[10.5px] text-faint-fg">当前 {{ exitPctText(riskDoc.exit.takeProfitPct) }}</span>
+            </div>
+            <span class="flex items-center gap-1.5">
+              <Input
+                v-model="editBufs['takeProfitPct']"
+                class="num h-7 w-24 text-right text-[12px]"
+                type="text"
+                min="0"
+                step="any"
+                aria-label="止盈"
+              />
+              <span class="w-8 text-[11px] text-faint-fg">%</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 默认折叠：高级设置抽屉 -->
+      <div class="mt-3 border-t border-line pt-3" data-risk-drawer="advanced">
+        <button
+          type="button"
+          class="flex w-full items-center justify-between rounded-md px-1 py-1 text-left text-[12px] font-medium text-muted-fg hover:text-fg"
+          :aria-expanded="advancedOpen"
+          @click="advancedOpen = !advancedOpen"
+        >
+          <span class="flex items-center gap-1.5">
+            <ChevronRight
+              class="size-3.5 transition-transform"
+              :class="advancedOpen ? 'rotate-90' : ''"
+            />
+            高级设置（份额上下限 / 单仓限额 / 强平与策略出场 / 执行规则）
+          </span>
+          <span class="text-[10.5px] text-faint-fg">{{ advancedOpen ? '收起' : '展开' }}</span>
+        </button>
+
+        <div v-show="advancedOpen" class="mt-2 space-y-2 rounded-lg border border-line bg-panel-2/30 p-3">
+          <div class="label-micro">份额与单仓微调</div>
+          <div>
             <div
-              v-for="(row, i) in riskRows.filter((r) => r.group === group)"
+              v-for="(row, i) in advancedLimitRows"
               :key="row.field"
               class="flex items-center justify-between gap-3 py-1.5 text-[12px]"
               :class="i === 0 ? '' : 'border-t border-line'"
             >
-              <span class="text-faint-fg">{{ row.label }}<span v-if="row.hint" class="ml-1 text-[10.5px] text-faint-fg">{{ row.hint }}</span></span>
-              <span class="flex items-center gap-2">
+              <span class="text-faint-fg">
+                {{ row.label }}
+                <span v-if="row.hint" class="ml-1 text-[10.5px] text-faint-fg">{{ row.hint }}</span>
+              </span>
+              <span class="flex items-center gap-1.5">
                 <Input
                   v-model="editBufs[row.field]"
                   class="num h-7 w-24 text-right text-[12px]"
@@ -339,75 +471,80 @@ onMounted(() => void loadRisk())
                   :placeholder="row.bound ? boundText(row.bound) : ''"
                   :aria-label="row.label"
                 />
-                <span v-if="row.bound && boundArmed(row.bound)" class="text-[10.5px] font-normal text-faint-fg">{{ row.unit }}</span>
-                <span v-else class="text-[10.5px] font-normal text-faint-fg">关闭</span>
-                <Badge :variant="row.bound && boundArmed(row.bound) ? 'gold' : 'default'">{{ row.bound ? sourceLabel(row.bound.source) : '—' }}</Badge>
+                <span class="w-8 text-[10.5px] text-faint-fg">{{ row.unit }}</span>
               </span>
             </div>
           </div>
-        </template>
 
-        <div class="label-micro mt-3">退出纪律</div>
-        <div class="mt-1">
-          <div
-            v-for="(row, i) in EXIT_ROW_DEFS.filter((r) => !r.excluded)"
-            :key="row.field"
-            class="flex items-center justify-between gap-3 py-1.5 text-[12px]"
-            :class="i === 0 ? '' : 'border-t border-line'"
-          >
-            <span class="text-faint-fg">{{ row.label }}<span v-if="row.hint" class="ml-1 text-[10.5px] text-faint-fg">{{ row.hint }}</span></span>
-            <span class="flex items-center gap-2">
-              <!-- trailingEnabled 热配开关（bool 行用 Switch，
-                   数值行保持 Input；老内核缺字段 → 禁用态，不造默认值）。 -->
-              <Switch
-                v-if="row.toggle"
-                :model-value="row.field === 'trailingEnabled' ? trailingOn() : makerFirstOn()"
-                :disabled="row.field === 'trailingEnabled' ? !trailingSupported : !makerFirstSupported"
-                :aria-label="row.label"
-                @update:model-value="(v: boolean) => (row.field === 'trailingEnabled' ? setTrailing(v) : setMakerFirst(v))"
-              />
-              <Input
-                v-else
-                v-model="editBufs[row.field]"
-                class="num h-7 w-24 text-right text-[12px]"
-                type="text"
-                :min="0"
-                step="any"
-                :placeholder="exitPlaceholder(row.field)"
-                :aria-label="row.label"
-              />
-              <span class="text-[10.5px] font-normal text-faint-fg">{{ row.field === 'trailingEnabled' ? (trailingSupported ? (trailingOn() ? '开' : '关') : '内核不支持') : row.toggle ? (makerFirstSupported ? (makerFirstOn() ? '开' : '关') : '内核不支持') : exitCurrentText(row.field) }}</span>
-              <Badge variant="gold">{{ exitSourceLabel() }}</Badge>
-            </span>
+          <slot name="advanced-policy" />
+
+          <div class="border-t border-line pt-2">
+            <div class="label-micro">高级退出控制</div>
+            <div class="mt-1 space-y-1">
+              <div class="flex items-center justify-between gap-3 py-1 text-[12px]">
+                <span class="text-faint-fg">到期前强平<span class="ml-1 text-[10.5px]">0 = 关闭</span></span>
+                <span class="flex items-center gap-1.5">
+                  <Input
+                    v-model="editBufs['forceExitSec']"
+                    class="num h-7 w-24 text-right text-[12px]"
+                    type="number"
+                    min="0"
+                    step="1"
+                    aria-label="强平"
+                  />
+                  <span class="w-8 text-[10.5px] text-faint-fg">秒</span>
+                </span>
+              </div>
+              <div class="flex items-center justify-between gap-3 border-t border-line py-1.5 text-[12px]">
+                <span class="text-faint-fg">移动止盈<span class="ml-1 text-[10.5px]">浮盈回吐即锁利离场</span></span>
+                <span class="flex items-center gap-2">
+                  <Switch
+                    :model-value="trailingOn()"
+                    :disabled="!trailingSupported"
+                    aria-label="移动止盈"
+                    @update:model-value="setTrailing"
+                  />
+                  <span class="w-8 text-[10.5px] text-faint-fg">{{ trailingSupported ? (trailingOn() ? '开' : '关') : '不支持' }}</span>
+                </span>
+              </div>
+              <div class="flex items-center justify-between gap-3 border-t border-line py-1.5 text-[12px]">
+                <span class="text-faint-fg">策略出场 maker-first<span class="ml-1 text-[10.5px]">止盈优先挂单，止损不转挂单</span></span>
+                <span class="flex items-center gap-2">
+                  <Switch
+                    :model-value="makerFirstOn()"
+                    :disabled="!makerFirstSupported"
+                    aria-label="策略出场 maker-first"
+                    @update:model-value="setMakerFirst"
+                  />
+                  <span class="w-8 text-[10.5px] text-faint-fg">{{ makerFirstSupported ? (makerFirstOn() ? '开' : '关') : '不支持' }}</span>
+                </span>
+              </div>
+            </div>
           </div>
+
+          <!-- 执行策略规则：保留在卡内，共用底部唯一保存按钮。 -->
+          <slot name="rules" />
         </div>
       </div>
 
-      <!-- issue 393 (①): 账户生效执行参数（可编辑）插进来 —— 有运行时写路径的
-           风控参数与系统限额同卡呈现，各归各位（插槽内容来自编排壳）。
-           参数与规则同属 execution_policy 的【一个账户段】，由底部唯一的保存按钮
-           整段提交 —— 拆成两个按钮时，各自只发半段，内核按「缺省即清扫」把另一半
-           抹掉（2026-11-24 修复：两个保存按钮互相排斥）。 -->
-      <slot name="params" />
-
-      <!-- 执行策略规则：与上方参数同一个账户段，共用同一个保存按钮。 -->
-      <slot name="rules" />
-
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <Button
-          size="sm" :disabled="riskSaving || riskBusy"
-          title="把本卡全部内容（账户级限额 / 退出纪律 / 账户生效参数 / 执行策略规则）一次性提交给内核"
+          size="sm"
+          :disabled="riskSaving || riskBusy"
+          title="把本卡全部风控参数与执行规则一次性提交给内核"
           @click="$emit('save-all')"
         >
           <Save class="size-3.5" />{{ riskSaving ? '保存中…' : '保存' }}
         </Button>
         <Button
-          variant="outline" size="sm" :disabled="riskBusy" title="重新读取内核的风控读数（放弃未保存的编辑）"
+          variant="outline"
+          size="sm"
+          :disabled="riskBusy"
+          title="重新读取内核的风控读数（放弃未保存的编辑）"
           @click="loadRisk"
         >
           <RefreshCw class="size-3.5" />刷新
         </Button>
-        <span class="text-[11px] leading-snug text-faint-fg">{{ riskHint }}</span>
       </div>
       <p v-if="riskErr" class="mt-2 text-[11px] leading-snug text-down">{{ riskErr }}</p>
     </template>

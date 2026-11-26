@@ -10,7 +10,7 @@
   "entry_maker": false,
   "gate_exemptions": {
     "timing": true,
-    "momentum": true,
+    "momentum": false,
     "timing_min_time_left_sec": 5
   },
   "tunables": {

@@ -1107,3 +1107,81 @@ fn unknown_strategy_refuses() {
         "the refusal names the unhosted strategy: {err}"
     );
 }
+
+/// Regression: `EventBacktester::new` must strip every live-deployment durable
+/// writer (including `intent_audit_enabled` and `positions.daily_pnl_path`) so
+/// a replay invoked from the repo root can never rotate/pollute production
+/// `data/audit/intents.jsonl` or overwrite `positions.dry.daily-loss.dry.json`.
+#[test]
+fn backtester_strips_all_production_persistence_and_intent_audit() {
+    let dir = std::env::temp_dir().join(format!(
+        "bk-backtest-iso-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let daily_path = dir.join("positions.dry.daily-loss.dry.json");
+    let db_path = dir.join("blitzkrieg.sqlite");
+
+    let mut cfg = base_core(None);
+    cfg.intent_audit_enabled = true;
+    cfg.positions.daily_pnl_path = Some(daily_path.to_string_lossy().to_string());
+    cfg.db_path = Some(db_path.clone());
+    cfg.manual_ops_audit_path = Some(dir.join("manual-ops.jsonl").to_string_lossy().to_string());
+    cfg.unified_ledger_path = Some(dir.join("unified.json").to_string_lossy().to_string());
+    cfg.risk_state_path = Some(dir.join("risk.json").to_string_lossy().to_string());
+    cfg.strategy_state_path = Some(dir.join("strat.json").to_string_lossy().to_string());
+    cfg.execution_policy_audit_path =
+        Some(dir.join("exec-policy.jsonl").to_string_lossy().to_string());
+    cfg.audit_log_path = Some(dir.join("reconcile.jsonl").to_string_lossy().to_string());
+    cfg.applied_log_path = Some(dir.join("applied.jsonl").to_string_lossy().to_string());
+    cfg.settlement_log_path = Some(dir.join("settlements.jsonl").to_string_lossy().to_string());
+    cfg.runtime_config_path = Some(dir.join("runtime.json").to_string_lossy().to_string());
+    cfg.env_file_path = Some(dir.join(".env").to_string_lossy().to_string());
+
+    let mut b = EventBacktester::new(
+        BacktestConfig {
+            core: cfg,
+            tick_ms: 50,
+            tail_ms: 0,
+            hot_params: Vec::new(),
+            progress: None,
+            mode: String::new(),
+        },
+        Box::new(VecSource::new(Vec::new())),
+    );
+    let _report = b.run().expect("empty replay succeeds");
+
+    let effective = b.core.config();
+    assert!(
+        !effective.intent_audit_enabled,
+        "backtester must disable intent_audit_enabled"
+    );
+    assert!(
+        effective.positions.daily_pnl_path.is_none(),
+        "backtester must clear positions.daily_pnl_path"
+    );
+    assert!(effective.db_path.is_none(), "backtester must clear db_path");
+    assert!(effective.manual_ops_audit_path.is_none());
+    assert!(effective.unified_ledger_path.is_none());
+    assert!(effective.risk_state_path.is_none());
+    assert!(effective.strategy_state_path.is_none());
+    assert!(effective.execution_policy_audit_path.is_none());
+    assert!(effective.audit_log_path.is_none());
+    assert!(effective.applied_log_path.is_none());
+    assert!(effective.settlement_log_path.is_none());
+    assert!(effective.runtime_config_path.is_none());
+    assert!(effective.env_file_path.is_none());
+    assert!(
+        !daily_path.exists(),
+        "replay must never create or touch daily-loss file on disk"
+    );
+    assert!(
+        !db_path.exists(),
+        "replay must never create or open sqlite db on disk"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

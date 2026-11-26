@@ -164,11 +164,7 @@ pub fn parse_trades_to_samples(rows: &[Value], market_filter: Option<&str>) -> V
         }
         let raw_size = val_f64(row, &["size", "shares"]);
         let usdc = val_f64(row, &["usdcSize"]);
-        let size_usd = if usdc > 0.0 {
-            usdc
-        } else {
-            raw_size * price
-        };
+        let size_usd = if usdc > 0.0 { usdc } else { raw_size * price };
         let mut ts = val_i64(row, &["timestamp", "ts"]);
         if ts > 10_000_000_000 {
             ts /= 1000;

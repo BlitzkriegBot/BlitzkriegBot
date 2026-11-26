@@ -11,6 +11,7 @@ blitzkrieg-data-model = { path = "../../core/data_model" }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 rust_decimal = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }

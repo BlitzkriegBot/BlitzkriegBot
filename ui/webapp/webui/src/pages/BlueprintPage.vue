@@ -457,8 +457,8 @@ async function preloadPackage(name: string): Promise<void> {
       preloadError.value = '蓝图文档不是合法 JSON —— 拒绝预载。'
       return
     }
-    if (parsed.version !== 1 || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
-      preloadError.value = '蓝图文档不是 v1 版（内核只编译 v1）—— 拒绝预载。'
+    if ((parsed.version !== 1 && parsed.version !== 2) || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
+      preloadError.value = '蓝图文档版本不受支持（仅支持 v1 / v2）—— 拒绝预载。'
       return
     }
     // 画布元素 = 蓝图语义的投影：文档里的节点 id 就是画布 id（保存时原样
@@ -909,7 +909,7 @@ function exitSourceMode(): void {
           v-model="importText"
           class="h-40 w-full resize-y rounded-md border border-line bg-panel-2 p-2.5 font-mono text-[11.5px] leading-relaxed text-fg outline-none focus:border-primary"
           spellcheck="false"
-          placeholder='{ "version": 1, "name": "...", "nodes": [...], "edges": [...] }'
+          placeholder='{ "version": 2, "name": "...", "nodes": [...], "edges": [...] }'
         ></textarea>
         <div class="flex items-center gap-2">
           <Button variant="default" size="sm" :disabled="importing || importText.trim() === ''" @click="doImportApply">读入画布</Button>

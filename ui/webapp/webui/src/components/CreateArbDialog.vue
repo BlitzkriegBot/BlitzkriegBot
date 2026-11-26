@@ -517,10 +517,10 @@ function credLabel(leg: LegCredStatus | null): string {
 
 <template>
   <Teleport to="body">
+    <!-- 仅保留弹窗本体为交互触控区：禁用灰色遮罩点击关闭，避免误触丢失已填配置 -->
     <div
       v-if="open"
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      @click.self="close"
     >
       <div class="flex max-h-[85vh] w-full max-w-lg flex-col rounded-lg border border-line bg-panel-solid shadow-lg">
         <div class="flex items-center gap-2 border-b border-line px-4 py-3">

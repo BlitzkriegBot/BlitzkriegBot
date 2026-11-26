@@ -1093,11 +1093,12 @@ const journalOpen = ref(false)
             : 'linear-gradient(90deg, var(--primary), var(--primary-hi))',
         }"
       />
-      <div class="flex flex-wrap items-center gap-x-5 gap-y-3">
+      <div class="grid gap-4 lg:grid-cols-[1fr_auto_1fr] lg:items-center">
+        <!-- 左区：市场与轮次身份 -->
         <div class="min-w-0">
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
             <Badge variant="gold">{{ marketTypeText || '市场' }}</Badge>
-            <span class="truncate text-[13px] font-semibold">{{ marketName ?? '等待行情接入' }}</span>
+            <span class="truncate text-[13.5px] font-semibold">{{ marketName ?? '等待行情接入' }}</span>
             <a
               v-if="roundHref"
               class="label-micro"
@@ -1108,32 +1109,19 @@ const journalOpen = ref(false)
             <span v-else class="label-micro">#{{ roundIdDisplay ?? '—' }}</span>
           </div>
           <div class="mt-1.5 flex items-center gap-2 text-[11.5px] text-faint-fg">
-            <Clock class="size-3.5" />
+            <Clock class="size-3.5 shrink-0" />
             <!--
               The age lives in a fixed four-digit slot so the status to its right
-              cannot move. Two separate motions used to happen here: proportional
-              figures gave `1111s 已过` and `1000s 已过` widths 7.95px apart at the
-              same character count, and each extra digit added ~14px more, so
-              TRADING/WAITING slid back and forth on every tick. The slot is
-              `tabular-nums` so its `ch` matches the digits it reserves, and
-              overflow grows leftward (text-right) past four digits — up to
-              9999s ≈ 2.8h, beyond any round this market runs.
+              cannot move.
             -->
             <span class="inline-flex items-baseline">
-              <!--
-                `tabular-nums` on the slot itself, not just inside: the `ch` unit
-                is resolved against THIS element's font, so without it the
-                reserved width is the proportional "0" and drifts ~0.04px per
-                place from the tabular cells it is reserving for.
-              -->
               <span class="inline-block w-[4ch] text-right tabular-nums">
                 <RollingNumber :value="roundDisplay?.ageSec ?? '—'" :duration="320" />
               </span>
               <span class="ml-0.5">s 已过</span>
             </span>
             <span class="opacity-40">·</span>
-            <!-- issue 943：倒计时随冻结停走 —— 状态词必须说为什么停，只剩
-                 TRADING/WAITING 会把冻结读成等待。FROZEN 优先于其他两态。 -->
+            <!-- issue 943：倒计时随冻结停走 —— FROZEN 优先于其他两态。 -->
             <span
               v-if="frozenClock"
               class="font-semibold text-down"
@@ -1145,92 +1133,30 @@ const journalOpen = ref(false)
           </div>
         </div>
 
-        <div class="mx-auto text-center">
+        <!-- 中区：数学严格居中的倒计时主读数 -->
+        <div class="rounded-md border border-line/60 bg-panel-2/40 px-4 py-3 text-center lg:border-0 lg:bg-transparent lg:p-0">
           <!--
             320ms roll on a 1s countdown, so the digits settle well before the
-            next tick. `stat-num`'s tracking is dropped deliberately: the digit
-            cells are fixed-width, so tracking cannot apply (see RollingNumber).
+            next tick.
           -->
           <RollingNumber
             :value="leftText"
             :duration="320"
-            class="stat-num text-[42px] leading-none"
+            class="stat-num text-[40px] leading-none sm:text-[44px]"
             :class="urgent ? 'text-down' : 'grad-gold'"
           />
-          <div class="label-micro mt-1">剩余时间</div>
+          <div class="label-micro mt-1.5">剩余时间</div>
           <div
             v-if="healMsg"
-            class="label-micro mt-1 max-w-[28ch] text-balance text-down"
+            class="label-micro mx-auto mt-1 max-w-[28ch] text-balance text-down"
             role="status"
           >{{ healMsg }}</div>
         </div>
 
-        <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
-          <!-- 轮次时间周期切换（2026-10-24 操作者指令：入口从设置 · 通用 挪到
-               倒计时卡 —— 盯盘时切周期不离开监视语境；与设置卡共享
-               lib/round-duration.ts 同一份读数与写路径）。点选档位即写入
-               （有仓先确认、无仓直接秒切秒换）；显式启动参数在管
-               （flagLocked）时写入不赢，title 里如实说明。 -->
-          <!-- 2026-10-26：档位集合按当前账户 venue 的插件声明筛（与账户卡
-               同一 supportedRoundSecs 声明面）。声明唯一档的交易所无档可切，
-               切换器退化为静态档位标签（switcherLocked）。 -->
-          <Tooltip
-            v-if="!switcherLocked"
-            :content="roundSwitch.flagLocked.value
-              ? `轮次由启动参数（--round-sec / BK_ROUND_SEC）显式指定，面板切换不会赢。当前档位 ${roundDurLabel}。`
-              : `轮次周期坐标系：切换立即撤单该账户在途单、按市价真实强平其仓位，再切入新网格；其他账户的周期族在账户卡配置。`"
-          >
-            <div class="flex items-center gap-1.5">
-              <Timer class="size-3.5 text-faint-fg" />
-              <SegmentedControl
-                :model-value="roundSwitch.value.value"
-                :segments="switcherSegments"
-                size="sm"
-                :disabled="roundSwitch.busy.value || roundSwitch.flagLocked.value"
-                @update:model-value="onPickRound"
-              />
-            </div>
-          </Tooltip>
-          <Tooltip
-            v-else
-            :content="`该交易所（${activeVenue}）只支持 ${roundDurLabel} 轮次，已锁定 —— 轮次网格与账户实时周期族由声明面决定，无档可切。`"
-          >
-            <div class="flex items-center gap-1.5">
-              <Timer class="size-3.5 text-faint-fg" />
-              <span class="text-[12px] font-medium tabular-nums text-faint-fg">{{ roundDurLabel }}</span>
-            </div>
-          </Tooltip>
-          <Button
-            v-if="!roundSwitch.flagLocked.value"
-            size="sm"
-            :disabled="roundSwitch.busy.value || roundSwitch.doc.value?.perAccount?.[store.activeAccount ?? 'default'] === undefined"
-            title="清除该账户的轮次设置，回落 default 网格；立即撤单该账户在途单、按市价真实强平其仓位（有在途仓位时先弹此确认）"
-            @click="doClearRound"
-          >
-            <RefreshCw class="size-3.5" />清除
-          </Button>
-
-          <!-- 写入与清除共用同一确认门：有在途仓位时必弹，N 仓位 + 滑点警告 +
-               挂单一并撤销；kind 区分 set/reset 文案；账户 id 冻结进确认态。 -->
-          <ConfirmWordDialog
-            v-model:open="hftRoundConfirmOpen"
-            word="YES"
-            :title="hftRoundConfirmKind === 'set' ? '立即切换轮次' : '清除轮次设置'"
-            :lines="[
-              `将立即撤单该账户全部在途挂单，并平掉 ${hftRoundConfirmN} 个在途仓位（账户 ${hftRoundConfirmAccount}），`,
-              hftRoundConfirmKind === 'set'
-                ? `随后按 ${roundSwitch.roundLabel(hftRoundConfirmSec)}s 开新轮；`
-                : '随后回落 default 网格；',
-              '强平按市价成交，可能产生滑点损失；已成交部分如实入账，不静默。',
-            ]"
-            :action-label="hftRoundConfirmKind === 'set' ? '确认立即切换' : '确认清除并强平'"
-            :busy="roundSwitch.busy.value"
-            :error="roundSwitch.err.value"
-            @confirm="writeRound(hftRoundConfirmKind, hftRoundConfirmAccount)"
-          />
-
+        <!-- 右区：引擎启停与提示音控制（统一 sm / h-8 等高） -->
+        <div class="flex items-center gap-2 lg:justify-end">
           <Tooltip :content="sound ? '关闭提示音' : '开启提示音'">
-            <Button variant="ghost" size="icon" @click="toggleSound">
+            <Button variant="outline" size="icon-sm" class="shrink-0" @click="toggleSound">
               <Bell v-if="sound" /><BellOff v-else class="opacity-60" />
             </Button>
           </Tooltip>
@@ -1238,14 +1164,10 @@ const journalOpen = ref(false)
             Exactly one of these carries the next move. While the engine runs
             that is 停止, so it takes the solid deep fill and 启动 goes pale and
             inert; when the engine is down the pair swaps.
-
-            Enabled state comes from `control`, not from reachability alone: the
-            gateway may refuse the verbs outright (`--manage` absent) or be
-            unable to stop an adopted core. A control that cannot act is disabled
-            with the reason in its `title`, so hovering explains the refusal
-            rather than leaving the user to discover it by clicking.
           -->
           <Button
+            size="sm"
+            class="flex-1 lg:flex-none"
             :variant="control.canStart ? 'up' : 'idle'"
             :disabled="busy || !control.canStart"
             :title="startHint"
@@ -1254,6 +1176,8 @@ const journalOpen = ref(false)
             <Play class="size-3.5" />启动
           </Button>
           <Button
+            size="sm"
+            class="flex-1 lg:flex-none"
             :variant="control.canStop ? 'danger-solid' : 'idle'"
             :disabled="busy || !control.canStop"
             :title="stopHint"
@@ -1262,6 +1186,74 @@ const journalOpen = ref(false)
             <Square class="size-3.5" />停止
           </Button>
         </div>
+      </div>
+
+      <!-- 底栏：轮次周期切换与清除（与主读数分区，全控件严格 h-8 等高） -->
+      <div class="mt-3.5 flex flex-wrap items-center justify-between gap-2 border-t border-line/60 pt-3">
+        <!-- 轮次时间周期切换（2026-10-24 操作者指令：入口从设置 · 通用 挪到
+             倒计时卡 —— 盯盘时切周期不离开监视语境；与设置卡共享
+             lib/round-duration.ts 同一份读数与写路径）。 -->
+        <Tooltip
+          v-if="!switcherLocked"
+          :content="roundSwitch.flagLocked.value
+            ? `轮次由启动参数（--round-sec / BK_ROUND_SEC）显式指定，面板切换不会赢。当前档位 ${roundDurLabel}。`
+            : `轮次周期坐标系：切换立即撤单该账户在途单、按市价真实强平其仓位，再切入新网格；其他账户的周期族在账户卡配置。`"
+        >
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="hidden items-center gap-1.5 text-[11.5px] text-faint-fg sm:inline-flex">
+              <Timer class="size-3.5" />
+              <span class="label-micro">轮次周期</span>
+            </span>
+            <SegmentedControl
+              :model-value="roundSwitch.value.value"
+              :segments="switcherSegments"
+              size="sm"
+              :disabled="roundSwitch.busy.value || roundSwitch.flagLocked.value"
+              @update:model-value="onPickRound"
+            />
+          </div>
+        </Tooltip>
+        <Tooltip
+          v-else
+          :content="`该交易所（${activeVenue}）只支持 ${roundDurLabel} 轮次，已锁定 —— 轮次网格与账户实时周期族由声明面决定，无档可切。`"
+        >
+          <div class="flex items-center gap-1.5">
+            <Timer class="size-3.5 text-faint-fg" />
+            <span class="label-micro">轮次周期</span>
+            <span class="text-[12px] font-medium tabular-nums text-faint-fg">{{ roundDurLabel }}</span>
+          </div>
+        </Tooltip>
+
+        <Button
+          v-if="!roundSwitch.flagLocked.value"
+          variant="outline"
+          size="sm"
+          class="shrink-0"
+          :disabled="roundSwitch.busy.value || roundSwitch.doc.value?.perAccount?.[store.activeAccount ?? 'default'] === undefined"
+          title="清除该账户的轮次设置，回落 default 网格；立即撤单该账户在途单、按市价真实强平其仓位（有在途仓位时先弹此确认）"
+          @click="doClearRound"
+        >
+          <RefreshCw class="size-3.5" />清除
+        </Button>
+
+        <!-- 写入与清除共用同一确认门：有在途仓位时必弹，N 仓位 + 滑点警告 +
+             挂单一并撤销；kind 区分 set/reset 文案；账户 id 冻结进确认态。 -->
+        <ConfirmWordDialog
+          v-model:open="hftRoundConfirmOpen"
+          word="YES"
+          :title="hftRoundConfirmKind === 'set' ? '立即切换轮次' : '清除轮次设置'"
+          :lines="[
+            `将立即撤单该账户全部在途挂单，并平掉 ${hftRoundConfirmN} 个在途仓位（账户 ${hftRoundConfirmAccount}），`,
+            hftRoundConfirmKind === 'set'
+              ? `随后按 ${roundSwitch.roundLabel(hftRoundConfirmSec)}s 开新轮；`
+              : '随后回落 default 网格；',
+            '强平按市价成交，可能产生滑点损失；已成交部分如实入账，不静默。',
+          ]"
+          :action-label="hftRoundConfirmKind === 'set' ? '确认立即切换' : '确认清除并强平'"
+          :busy="roundSwitch.busy.value"
+          :error="roundSwitch.err.value"
+          @confirm="writeRound(hftRoundConfirmKind, hftRoundConfirmAccount)"
+        />
       </div>
 
       <!--

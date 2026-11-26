@@ -10,7 +10,7 @@ const base = computed(() => (props.dense || props.solid ? 'glass-dense' : 'glass
 </script>
 
 <template>
-  <section v-bind="attrs" :class="cn(base, 'card-pad', props.class)">
+  <section v-bind="attrs" :class="cn(base, 'card-pad min-w-0', props.class)">
     <slot />
   </section>
 </template>

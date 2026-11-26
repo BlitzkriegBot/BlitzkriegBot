@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
- * Segmented control (Apple-style) — a sliding gold pill behind the active
- * segment. Keyboard-navigable; the indicator moves with a spring ease.
+ * Segmented control — height-locked to Button, Input, and Select
+ * (sm = h-8 / 32px, default = h-9 / 36px). Keyboard-navigable with a sliding
+ * gold indicator.
  */
 import { computed } from 'vue'
 import { cn } from '@/lib/utils'
@@ -18,8 +19,7 @@ const props = withDefaults(
     segments: Segment[]
     size?: 'sm' | 'default'
     class?: string
-    /** When true, inner tab buttons do not emit. A fallthrough `disabled` on
-     *  the root div would be a no-op — the 轮次切换档位靠这个门挡住写入. */
+    /** When true, inner tab buttons do not emit. */
     disabled?: boolean
   }>(),
   { size: 'default', disabled: false },
@@ -33,7 +33,8 @@ const count = computed(() => Math.max(1, props.segments.length))
 <template>
   <div
     :class="cn(
-      'relative inline-grid items-center gap-0.5 rounded-full border border-line bg-panel-2 p-1 backdrop-blur-md min-w-0',
+      'relative inline-grid items-center gap-0.5 rounded-md border border-line bg-panel-2 p-0.5 backdrop-blur-md min-w-0',
+      props.size === 'sm' ? 'h-8' : 'h-9',
       props.disabled && 'pointer-events-none opacity-60',
       props.class,
     )"
@@ -42,10 +43,10 @@ const count = computed(() => Math.max(1, props.segments.length))
   >
     <!-- sliding indicator -->
     <span
-      class="pointer-events-none absolute top-1 bottom-1 rounded-full btn-gold transition-[left] duration-300 ease-[var(--ease-spring)]"
+      class="pointer-events-none absolute top-0.5 bottom-0.5 rounded-[5px] btn-gold transition-[left] duration-300 ease-[var(--ease-spring)]"
       :style="{
-        left: `calc(${activeIndex} * (100% - 8px) / ${count} + 4px)`,
-        width: `calc((100% - 8px) / ${count})`,
+        left: `calc(${activeIndex} * (100% - 4px) / ${count} + 2px)`,
+        width: `calc((100% - 4px) / ${count})`,
       }"
     />
     <button
@@ -56,9 +57,9 @@ const count = computed(() => Math.max(1, props.segments.length))
       :aria-selected="s.id === props.modelValue"
       :disabled="props.disabled"
       :class="cn(
-        'relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full font-semibold whitespace-nowrap',
+        'relative z-10 inline-flex h-full items-center justify-center gap-1.5 rounded-[5px] font-semibold whitespace-nowrap',
         'transition-colors duration-200 focus-visible:outline-none',
-        props.size === 'sm' ? 'h-6.5 px-3 text-[11.5px]' : 'h-7.5 px-4 text-[12.5px]',
+        props.size === 'sm' ? 'px-3 text-[12px]' : 'px-3.5 text-[12.5px]',
         s.id === props.modelValue ? 'text-primary-ink' : 'text-muted-fg hover:text-fg',
       )"
       @click="!props.disabled && emit('update:modelValue', s.id)"

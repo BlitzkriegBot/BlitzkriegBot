@@ -17,6 +17,7 @@ import { Plus, ShieldCheck } from 'lucide-vue-next'
 import { api, type PluginCredentialRowDoc } from '@/api/client'
 import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
+import Select from '@/components/ui/select/Select.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
 
 const props = defineProps<{
@@ -144,29 +145,28 @@ async function submit(): Promise<void> {
 
 <template>
   <Teleport to="body">
+    <!-- 仅保留弹窗本体为交互触控区：禁用灰色遮罩点击关闭，避免移动端误触丢失已填表单内容 -->
     <div
       v-if="open"
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      @click.self="close"
     >
-      <div class="w-full max-w-md rounded-lg border border-line bg-panel-solid shadow-lg">
+      <div class="flex max-h-[88dvh] w-full max-w-md flex-col rounded-lg border border-line bg-panel-solid shadow-lg">
         <div class="flex items-center gap-2 border-b border-line px-4 py-3">
           <Plus class="size-4 text-primary" />
           <h3 class="text-[13.5px] font-semibold">添加账户</h3>
         </div>
 
-        <div class="space-y-3 px-4 py-3">
+        <div class="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
           <!-- 第一步：选交易所（必选）。可选项 = 已注册的行情插件。 -->
           <div>
             <label class="label-micro" for="add-acct-venue">交易所（必选）</label>
-            <select
+            <Select
               id="add-acct-venue"
               v-model="venue"
-              class="policy-select mt-1"
+              class="mt-1"
+              :options="venues.map((v) => ({ value: v, label: v }))"
               :disabled="busy"
-            >
-              <option v-for="v in venues" :key="v" :value="v">{{ v }}</option>
-            </select>
+            />
             <p class="mt-1 text-[11px] text-faint-fg">
               一个交易所一个账户；绑定后该账户只能交易所选交易所（绑定即启用）。
             </p>

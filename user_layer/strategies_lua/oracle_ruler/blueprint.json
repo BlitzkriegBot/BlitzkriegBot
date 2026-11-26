@@ -1,0 +1,61 @@
+{
+  "version": 2,
+  "name": "oracle_ruler",
+  "meta": {
+    "description": "Execution calibration probe blueprint: passive maker bid at touch.",
+    "holds_to_settlement": false,
+    "entry_maker": true,
+    "once_per_round": true,
+    "thesis_death": false
+  },
+  "nodes": [
+    {
+      "id": "c_px_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": ">=",
+        "value": 0.1
+      }
+    },
+    {
+      "id": "c_tl_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.time_left_sec",
+        "op": ">=",
+        "value": 60
+      }
+    },
+    {
+      "id": "act_buy",
+      "type": "action_buy",
+      "params": {
+        "maker": true,
+        "budget_ratio": 0.02
+      }
+    },
+    {
+      "id": "gate_and",
+      "type": "logic_and",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "c_px_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_tl_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "gate_and",
+      "to": "act_buy",
+      "when": true
+    }
+  ]
+}

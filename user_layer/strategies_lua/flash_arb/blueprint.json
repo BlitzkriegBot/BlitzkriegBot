@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "name": "flash_arb",
+  "meta": {
+    "description": "Spot-to-venue lag catcher: strong spot return >= 25 bps while venue leg remains underpriced <= 0.75.",
+    "holds_to_settlement": false,
+    "entry_maker": false,
+    "once_per_round": true,
+    "thesis_death": true
+  },
+  "nodes": [
+    {
+      "id": "c_spot",
+      "type": "condition",
+      "params": {
+        "field": "tick.spot_return_bps",
+        "op": ">=",
+        "value": 25
+      }
+    },
+    {
+      "id": "c_px_max",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": "<=",
+        "value": 0.75
+      }
+    },
+    {
+      "id": "c_tl_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.time_left_sec",
+        "op": ">=",
+        "value": 60
+      }
+    },
+    {
+      "id": "act_buy",
+      "type": "action_buy",
+      "params": {
+        "budget_ratio": 0.1
+      }
+    },
+    {
+      "id": "gate_and",
+      "type": "logic_and",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "c_spot",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_max",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_tl_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "gate_and",
+      "to": "act_buy",
+      "when": true
+    }
+  ]
+}

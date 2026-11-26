@@ -45,5 +45,6 @@ export function useAccountBalance(
     },
     net,
     0,
+    row.equity ?? null,
   )
 }

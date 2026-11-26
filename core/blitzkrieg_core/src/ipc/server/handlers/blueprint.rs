@@ -70,6 +70,9 @@ pub(crate) async fn handle_blueprint(
             })
             .await
         }
+        method::BLUEPRINT_SCHEMA => {
+            Ok(serde_json::to_value(crate::blueprint::schema()).unwrap_or(Value::Null))
+        }
         // Routed here only from `handle_line`'s dispatch, which sends exactly
         // this family's verbs; `&str` matching needs the exhaustive arm.
         _ => unreachable!("family handler called with a verb of another family"),
@@ -303,7 +306,10 @@ fn blueprint_save(
     // exported into the manifest (with ±half-magnitude domains), which is
     // what registers the package as EVOLVABLE (#393 shape: the loader's
     // specs_from_tunables needs an explicit domain to declare a knob).
-    let (lua, tunables) = crate::blueprint::compile_with_tunables(&p.json)?;
+    let compiled = crate::blueprint::compile_full(&p.json)?;
+    let lua = compiled.lua;
+    let tunables = compiled.tunables;
+    let meta = compiled.meta;
 
     let root = blueprint_strategy_root(core_cfg);
     let pkg = std::path::Path::new(&root).join(&name);
@@ -337,6 +343,13 @@ fn blueprint_save(
             }),
         );
     }
+    let description = meta.description.clone().unwrap_or_else(|| {
+        format!(
+            "Blueprint-compiled strategy from blueprint.json (name {name:?}); every \
+             decision is the whitelisted node graph it declares — the kernel \
+             adjudicates, sizes and gates every intent."
+        )
+    });
     let mut manifest = serde_json::json!({
         "name": name,
         "version": "1.0.0",
@@ -344,11 +357,7 @@ fn blueprint_save(
         "entry": "strategy.lua",
         "sha256": digest,
         "author": "BlitzkriegBot",
-        "description": format!(
-            "Blueprint-compiled strategy from blueprint.json (name {name:?}); every \
-             decision is the whitelisted node graph it declares — the kernel \
-             adjudicates, sizes and gates every intent."
-        ),
+        "description": description,
         "modes": [
             {
                 "market_type": "prediction",
@@ -356,6 +365,15 @@ fn blueprint_save(
             }
         ],
     });
+    if meta.holds_to_settlement {
+        manifest["holds_to_settlement"] = Value::Bool(true);
+    }
+    if meta.entry_maker {
+        manifest["entry_maker"] = Value::Bool(true);
+    }
+    if let Some(ge) = &meta.gate_exemptions {
+        manifest["gate_exemptions"] = serde_json::to_value(ge).unwrap_or(Value::Null);
+    }
     if !tunables_map.is_empty() {
         manifest["tunables"] = Value::Object(tunables_map);
     }

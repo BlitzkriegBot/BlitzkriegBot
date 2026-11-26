@@ -1,0 +1,88 @@
+{
+  "version": 2,
+  "name": "smart_money_reverse",
+  "meta": {
+    "description": "Crash rebound catcher: leg saw >= 0.55 earlier in round and pulled back into [0.20, 0.45].",
+    "holds_to_settlement": false,
+    "entry_maker": false,
+    "once_per_round": true,
+    "thesis_death": false
+  },
+  "nodes": [
+    {
+      "id": "c_peak",
+      "type": "condition",
+      "params": {
+        "field": "tick.round_max_price",
+        "op": ">=",
+        "value": 0.55
+      }
+    },
+    {
+      "id": "c_px_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": ">=",
+        "value": 0.2
+      }
+    },
+    {
+      "id": "c_px_max",
+      "type": "condition",
+      "params": {
+        "field": "tick.price",
+        "op": "<=",
+        "value": 0.45
+      }
+    },
+    {
+      "id": "c_tl_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.time_left_sec",
+        "op": ">=",
+        "value": 90
+      }
+    },
+    {
+      "id": "act_buy",
+      "type": "action_buy",
+      "params": {
+        "budget_ratio": 0.1
+      }
+    },
+    {
+      "id": "gate_and",
+      "type": "logic_and",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "c_peak",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_max",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_tl_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "gate_and",
+      "to": "act_buy",
+      "when": true
+    }
+  ]
+}

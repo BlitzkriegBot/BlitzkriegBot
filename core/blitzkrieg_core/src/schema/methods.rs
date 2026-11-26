@@ -409,6 +409,9 @@ pub mod method {
     /// 回（sha256 重算进 manifest，装载器照常验证）。`overwrite` 显式，与
     /// `blueprint.save` 同一裁决 —— 静默覆盖可能换掉操作员正在启用的策略。
     pub const BLUEPRINT_SAVE_SOURCE: &str = "blueprint.saveSource";
+    /// Single-source schema of whitelisted blueprint fields, operators, and node
+    /// types (served dynamically to the WebUI blueprint canvas).
+    pub const BLUEPRINT_SCHEMA: &str = "blueprint.schema";
 
     // ── 跨所套利弹窗 v2 — the arb leg-configuration surface ──────────────────
     /// Write the cross-venue arbitrage leg configuration (`arb.config.set`):

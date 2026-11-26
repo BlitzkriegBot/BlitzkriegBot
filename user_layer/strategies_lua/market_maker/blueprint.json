@@ -1,0 +1,89 @@
+{
+  "version": 2,
+  "name": "market_maker",
+  "meta": {
+    "description": "Passive spread harvester: maker bid in [0.20, 0.80] when spread >= 0.02.",
+    "holds_to_settlement": false,
+    "entry_maker": true,
+    "once_per_round": false,
+    "thesis_death": false
+  },
+  "nodes": [
+    {
+      "id": "c_spread",
+      "type": "condition",
+      "params": {
+        "field": "tick.spread",
+        "op": ">=",
+        "value": 0.02
+      }
+    },
+    {
+      "id": "c_px_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.mid_price",
+        "op": ">=",
+        "value": 0.2
+      }
+    },
+    {
+      "id": "c_px_max",
+      "type": "condition",
+      "params": {
+        "field": "tick.mid_price",
+        "op": "<=",
+        "value": 0.8
+      }
+    },
+    {
+      "id": "c_tl_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.time_left_sec",
+        "op": ">=",
+        "value": 90
+      }
+    },
+    {
+      "id": "act_buy",
+      "type": "action_buy",
+      "params": {
+        "maker": true,
+        "budget_ratio": 0.05
+      }
+    },
+    {
+      "id": "gate_and",
+      "type": "logic_and",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "c_spread",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_px_max",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_tl_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "gate_and",
+      "to": "act_buy",
+      "when": true
+    }
+  ]
+}

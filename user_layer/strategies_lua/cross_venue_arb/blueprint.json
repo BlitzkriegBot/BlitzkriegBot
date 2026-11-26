@@ -1,0 +1,61 @@
+{
+  "version": 2,
+  "name": "cross_venue_arb",
+  "meta": {
+    "description": "Cross-venue pair collector blueprint: enters paired legs when combined ask <= 0.97.",
+    "holds_to_settlement": true,
+    "entry_maker": false,
+    "once_per_round": true,
+    "thesis_death": false
+  },
+  "nodes": [
+    {
+      "id": "c_pair",
+      "type": "condition",
+      "params": {
+        "field": "tick.pair_ask_sum",
+        "op": "<=",
+        "value": 0.97
+      }
+    },
+    {
+      "id": "c_tl_min",
+      "type": "condition",
+      "params": {
+        "field": "tick.time_left_sec",
+        "op": ">=",
+        "value": 60
+      }
+    },
+    {
+      "id": "act_pair",
+      "type": "action_buy_pair",
+      "params": {
+        "maker": false,
+        "budget_ratio": 0.1
+      }
+    },
+    {
+      "id": "gate_and",
+      "type": "logic_and",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": "c_pair",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "c_tl_min",
+      "to": "gate_and",
+      "when": true
+    },
+    {
+      "from": "gate_and",
+      "to": "act_pair",
+      "when": true
+    }
+  ]
+}

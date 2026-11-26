@@ -41,6 +41,18 @@ description: 独立交易者的 TradingOS —— Market-Agnostic Core、Risk-Fir
   <p class="bb-card-foot">数字来自结算真值回放，不是实盘。每个市场只用最新 200 笔成交，卖价按打印加最多 1 美分，每笔 10 股。实盘结果会不同。进程的 <code>DRY_RUN</code> 默认是 true；启用 <code>late_favorite</code> 不会把它关掉。先在 dry-run 里打开：<code>--enable-strategy late_favorite</code>。详见 <a href="./late-favorite">late_favorite</a>。</p>
 </section>
 
+<section class="bb-sec" id="smart-trading">
+  <p class="bb-eyebrow">New in v0.4.3 · Smart Money Reverse-to-Strategy</p>
+  <h2 class="bb-h2">智能交易 · 聪明钱逆向工作台</h2>
+  <p class="bb-card-lead">不直接跟单，规避 5m / 15m 轮次的链上延迟与二手盘口滑点。通过「雷达扫榜 → 行为指纹逆向 → 蓝图策略合成 → 样本外带滑点回测验真」四步闭环，把头部地址的可复现交易逻辑转化为你自己的策略包。</p>
+  <ul class="bb-list">
+    <li><strong>聪明钱雷达（Polymarket Data API v2）</strong>：按 5m / 15m 轮次与时间窗口 6 并发扫榜，自动过滤非加密涨跌噪声市场</li>
+    <li><strong>行为指纹与原型归类</strong>：提取入场价带（p25–p90）、剩余时间窗（p10–p90）、双边配对率与持有到期率，按纪律拒收不可逆向样本</li>
+    <li><strong>蓝图合成与样本外验真</strong>：一键落盘 Blueprint JSON、进入蓝图画布可视化编辑，并直接以 <code>verify + 1 tick 滑点</code> 跑样本外回测验真</li>
+  </ul>
+  <p class="bb-card-foot">智能交易只生成与验证策略包，不自动开启实盘。详见 <a href="./smart-trading">智能交易使用指南</a>。</p>
+</section>
+
 <section class="bb-sec bb-brands">
   <p class="bb-eyebrow">The stack</p>
   <h2 class="bb-h2">三件法宝</h2>

@@ -426,6 +426,7 @@ export const usePanelStore = defineStore('panel', () => {
           reserved?: string
           seededTotal?: string | number
           cumulativeNetPnl?: number | null
+          equity?: string | number
         }>
       } | undefined
       if (!doc) return '网关未返回账户数据'
@@ -447,6 +448,7 @@ export const usePanelStore = defineStore('panel', () => {
         reserved: a.reserved ?? '',
         seededTotal: a.seededTotal,
         cumulativeNetPnl: a.cumulativeNetPnl ?? null,
+        equity: a.equity,
       }))
       // issue 561：镜像只供行数据与显示兜底 —— display 账户优先读快照
       // （内核事实），报文的 displayAccount 在场也采纳（快照未到的一拍）；

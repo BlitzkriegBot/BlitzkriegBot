@@ -318,5 +318,13 @@ check('the rules fire on the shapes they name, and skip comments', () => {
   }
 })
 
+check('panel store refreshAccounts forwards AccountView.equity verbatim', () => {
+  const panelSrc = readFileSync(join(WEBUI, 'src', 'stores', 'panel.ts'), 'utf8')
+  assert.ok(
+    /equity:\s*a\.equity\b/.test(panelSrc),
+    'stores/panel.ts refreshAccounts() must forward `equity: a.equity` into PanelAccountRow, otherwise Overview/HFT render 「—」',
+  )
+})
+
 console.log(`\nRESULT: ${failures === 0 ? 'PASS' : `FAIL (${failures})`}`)
 process.exit(failures === 0 ? 0 : 1)

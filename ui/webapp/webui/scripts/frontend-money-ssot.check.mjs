@@ -57,12 +57,19 @@ const snapshotBalance = (over) => ({ balance: 0, reserved: 0, available: 0, seed
 
 console.log('A. balanceView — equity is never composed')
 
-check('equity is null even when a seed and a net are both present', () => {
+check('equity is null when backend omits it, even when a seed and a net are both present', () => {
   // The exact case the old code composed: the live book's 2026-11-08 state.
   const v = balanceView(snapshotBalance({ balance: 1000, available: 1000, seed: 1000 }), -3.08, 1.86)
   assert.equal(v.equity, null, 'no equity on the wire → none to report')
   assert.equal(v.net, -3.08, 'the ledger net is passed through untouched')
   assert.equal(v.cash, 1000, 'the ledger cash is passed through untouched')
+})
+
+check('backend-shipped AccountView.equity is passed through verbatim (including 0)', () => {
+  const funded = balanceView(snapshotBalance({ balance: 980, available: 980 }), 12.5, 0, '1012.50')
+  assert.equal(funded.equity, 1012.5, 'kernel equity crosses the wire verbatim')
+  const zero = balanceView(snapshotBalance({ balance: 0, available: 0 }), 0, 0, '0')
+  assert.equal(zero.equity, 0, 'zero equity is a real fact, not null')
 })
 
 check('equity stays null for every combination of seed and net', () => {

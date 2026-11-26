@@ -91,12 +91,19 @@ export function balanceView(
   balance: Snapshot['balance'] | null | undefined,
   net: number | null,
   fees: number,
+  equity?: string | number | null,
 ): BalanceView {
   const cash = Number(balance?.balance ?? 0)
   const reserved = Number(balance?.reserved ?? 0)
   const available = Number(balance?.available ?? 0)
   const realized = net === null || net === undefined ? null : Number(net) || 0
   const paidFees = Number(fees) || 0
+  const parsedEquity =
+    equity === null || equity === undefined || equity === ''
+      ? null
+      : Number.isFinite(Number(equity))
+        ? Number(equity)
+        : null
 
   return {
     net: realized,
@@ -104,9 +111,9 @@ export function balanceView(
     // Two real inputs on the trade-fold basis (fees are an expense already
     // deducted from net); explicitly labelled 成交口径 wherever it is rendered.
     gross: realized === null ? null : realized + paidFees,
-    // No equity on the wire → no equity to show. See the header: composing
-    // `seed + net` is the wrong identity (issue #179, R7.1 L5).
-    equity: null,
+    // Kernel SSOT pass-through: render the authoritative equity shipped by
+    // AccountView.equity, never compose `seed + net` on the client.
+    equity: parsedEquity,
     cash,
     reserved,
     available,

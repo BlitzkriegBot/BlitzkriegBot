@@ -88,6 +88,39 @@ const ROW_DEFS: RiskRowDef[] = [
       ? { value: String(riskDoc.value.sizePct), source: Number(riskDoc.value.sizePct) > 0 ? 'flag' : 'default' }
       : undefined,
   },
+  {
+    field: 'maxPositions',
+    label: '最大并发持仓',
+    unit: '笔',
+    group: '账户',
+    int: true,
+    hint: '账户同时持有的未到期持仓上限（0 = 关闭/不限；修改后立即生效并持久化）',
+    bound: () => riskDoc.value?.maxPositions !== undefined
+      ? { value: String(riskDoc.value.maxPositions), source: riskDoc.value.maxPositions > 0 ? 'flag' : 'default' }
+      : undefined,
+  },
+  {
+    field: 'minShares',
+    label: '单笔最小份额',
+    unit: '股',
+    group: '账户',
+    int: false,
+    hint: '单笔下单份额下限（需 ≤ 单笔最大份额；修改后立即生效并持久化）',
+    bound: () => riskDoc.value?.minShares !== undefined
+      ? { value: String(riskDoc.value.minShares), source: Number(riskDoc.value.minShares) > 0 ? 'flag' : 'default' }
+      : undefined,
+  },
+  {
+    field: 'maxShares',
+    label: '单笔最大份额',
+    unit: '股',
+    group: '账户',
+    int: false,
+    hint: '单笔下单份额上限（必须 > 0 且 ≥ 单笔最小份额；例：10、100、500）',
+    bound: () => riskDoc.value?.maxShares !== undefined
+      ? { value: String(riskDoc.value.maxShares), source: Number(riskDoc.value.maxShares) > 0 ? 'flag' : 'default' }
+      : undefined,
+  },
 ]
 
 // ── 编辑缓冲 + 保存（risk.setSystemic，只发改动项）──
@@ -108,8 +141,8 @@ function syncBuffers(d: RiskLimitsDoc): void {
 }
 
 /** 只发改动过的字段；空串=保持不变。非法输入就地拒绝保存。 */
-function buildPatch(): Record<string, string> | string {
-  const patch: Record<string, string> = {}
+function buildPatch(): Record<string, string | number> | string {
+  const patch: Record<string, string | number> = {}
   for (const r of ROW_DEFS) {
     const raw = (editBufs.value[r.field] ?? '').trim()
     if (raw === '') continue // 空串 = 这一行不动
@@ -117,9 +150,10 @@ function buildPatch(): Record<string, string> | string {
     if (raw === cur) continue
     const n = Number(raw)
     if (!Number.isFinite(n) || n < 0) return `${r.label}：必须是 ≥ 0 的数字（0 = 关闭）`
+    if (r.field === 'maxShares' && n <= 0) return `${r.label}：必须 > 0`
     if (r.max !== undefined && n > r.max) return `${r.label}：不能超过 ${r.max}`
     if (r.int && !Number.isInteger(n)) return `${r.label}：必须是整数`
-    patch[r.field] = raw
+    patch[r.field] = r.field === 'maxPositions' ? n : raw
   }
   return patch
 }

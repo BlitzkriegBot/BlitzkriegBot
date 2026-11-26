@@ -100,6 +100,9 @@ fn family_03_risk_limits_result() {
             strategy_exit_maker_first: true,
         },
         size_pct: None,
+        max_positions: None,
+        min_shares: None,
+        max_shares: None,
     };
     // §4.4: a Bound crosses the wire as {"value":"<decimal string>","source":
     // "<provenance>"}; Decimal-as-string everywhere else (camelCase).

@@ -280,6 +280,54 @@ impl Core {
             });
         }
 
+        if let Some(to) = patch.max_positions {
+            changes.push(SystemicLimitChange {
+                field: "maxPositions",
+                from: self.config.positions.max_positions.to_string(),
+                to: to.to_string(),
+                effect: "live",
+            });
+        }
+
+        if let Some(to) = patch.min_shares {
+            if to < Decimal::ZERO {
+                return Err(CoreError::new(
+                    CoreErrorCode::InvalidParams,
+                    format!("minShares must be >= 0, got {to}; nothing was applied"),
+                ));
+            }
+            changes.push(SystemicLimitChange {
+                field: "minShares",
+                from: self.config.min_shares.to_string(),
+                to: to.to_string(),
+                effect: "live",
+            });
+        }
+
+        if let Some(to) = patch.max_shares {
+            if to <= Decimal::ZERO {
+                return Err(CoreError::new(
+                    CoreErrorCode::InvalidParams,
+                    format!("maxShares must be > 0, got {to}; nothing was applied"),
+                ));
+            }
+            changes.push(SystemicLimitChange {
+                field: "maxShares",
+                from: self.config.max_shares.to_string(),
+                to: to.to_string(),
+                effect: "live",
+            });
+        }
+
+        let new_min_shares = patch.min_shares.unwrap_or(self.config.min_shares);
+        let new_max_shares = patch.max_shares.unwrap_or(self.config.max_shares);
+        if (patch.min_shares.is_some() || patch.max_shares.is_some()) && new_min_shares > new_max_shares {
+            return Err(CoreError::new(
+                CoreErrorCode::InvalidParams,
+                format!("minShares {new_min_shares} exceeds maxShares {new_max_shares}; nothing was applied"),
+            ));
+        }
+
         if changes.is_empty() {
             return Err(CoreError::new(
                 CoreErrorCode::InvalidParams,
@@ -292,7 +340,7 @@ impl Core {
         // plan/persist orchestration only.
         let risk_changes: Vec<SystemicLimitChange> = changes
             .iter()
-            .filter(|c| c.field != "sizePct")
+            .filter(|c| !matches!(c.field, "sizePct" | "maxPositions" | "minShares" | "maxShares"))
             .cloned()
             .collect();
         let row = if !risk_changes.is_empty() {
@@ -317,6 +365,19 @@ impl Core {
             self.config.size_pct = to;
             if let Some(engine) = self.engine.as_mut() {
                 engine.set_size_pct(to);
+            }
+        }
+
+        if let Some(to) = patch.max_positions {
+            self.config.positions.max_positions = to;
+            self.positions.set_config(self.config.positions.clone());
+        }
+
+        if patch.min_shares.is_some() || patch.max_shares.is_some() {
+            self.config.min_shares = new_min_shares;
+            self.config.max_shares = new_max_shares;
+            if let Some(engine) = self.engine.as_mut() {
+                engine.set_share_band(new_min_shares, new_max_shares);
             }
         }
 
@@ -352,6 +413,61 @@ impl Core {
                     )
                 })?;
             persisted = true;
+        }
+        if let Some(store) = self.store.as_deref() {
+            let scope_id = crate::account::AccountId::from(target.as_str());
+            let scope = crate::store::AccountScope::new(&scope_id);
+            if let Some(to) = patch.max_positions {
+                store
+                    .put_setting(
+                        scope,
+                        crate::risk::account_store::MAX_POSITIONS_SETTING,
+                        Some(&to.to_string()),
+                    )
+                    .map_err(|e| {
+                        CoreError::new(
+                            CoreErrorCode::Internal,
+                            format!(
+                                "maxPositions NOT applied: the account_settings store write failed ({e})"
+                            ),
+                        )
+                    })?;
+                persisted = true;
+            }
+            if let Some(to) = patch.min_shares {
+                store
+                    .put_setting(
+                        scope,
+                        crate::risk::account_store::MIN_SHARES_SETTING,
+                        Some(&to.to_string()),
+                    )
+                    .map_err(|e| {
+                        CoreError::new(
+                            CoreErrorCode::Internal,
+                            format!(
+                                "minShares NOT applied: the account_settings store write failed ({e})"
+                            ),
+                        )
+                    })?;
+                persisted = true;
+            }
+            if let Some(to) = patch.max_shares {
+                store
+                    .put_setting(
+                        scope,
+                        crate::risk::account_store::MAX_SHARES_SETTING,
+                        Some(&to.to_string()),
+                    )
+                    .map_err(|e| {
+                        CoreError::new(
+                            CoreErrorCode::Internal,
+                            format!(
+                                "maxShares NOT applied: the account_settings store write failed ({e})"
+                            ),
+                        )
+                    })?;
+                persisted = true;
+            }
         }
         for c in &changes {
             tracing::info!(

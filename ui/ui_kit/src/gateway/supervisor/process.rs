@@ -100,9 +100,11 @@ pub struct SupervisorConfig {
     pub round_sec: Option<u64>,
     pub min_round_age: u64,
     pub min_time_left: u64,
-    pub max_positions: u64,
-    pub min_shares: u64,
-    pub max_shares: u64,
+    /// `Some(n)` = launcher explicitly overrides `--max-positions` / share band.
+    /// `None` = stay silent so the kernel default / Risk panel settings stay in charge.
+    pub max_positions: Option<u64>,
+    pub min_shares: Option<u64>,
+    pub max_shares: Option<u64>,
     /// Extra raw args appended verbatim (e.g. `--no-position-log`).
     pub extra_args: Vec<String>,
     /// Working directory for the child (core writes relative `data/` paths here).
@@ -115,19 +117,21 @@ impl SupervisorConfig {
     /// `HFT_ROUND_SEC`, `HFT_MIN_SHARES`, `HFT_MAX_SHARES`) — those variable
     /// names survive the runner's deletion and are read here directly.
     pub fn from_env(socket_path: String) -> Self {
-        let env_num = |k: &str, d: u64| -> u64 {
+        let env_opt = |k: &str| -> Option<u64> {
             std::env::var(k)
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
-                .unwrap_or(d)
         };
         let assets = std::env::var("HFT_ASSETS")
             .ok()
             .filter(|s| !s.trim().is_empty())
             .map(|s| s.split(',').map(|a| a.trim().to_uppercase()).collect())
             .unwrap_or_else(|| vec!["BTC".into(), "ETH".into(), "SOL".into(), "XRP".into()]);
-        let max_shares = env_num("HFT_MAX_SHARES", 10);
-        let min_shares = env_num("HFT_MIN_SHARES", 10).min(max_shares);
+        let max_shares = env_opt("HFT_MAX_SHARES");
+        let min_shares = match (env_opt("HFT_MIN_SHARES"), max_shares) {
+            (Some(min), Some(max)) => Some(min.min(max)),
+            (min, _) => min,
+        };
         let dry = std::env::var("DRY_RUN")
             .map(|v| v != "false")
             .unwrap_or(true);
@@ -162,7 +166,7 @@ impl SupervisorConfig {
                 .and_then(|v| v.trim().parse().ok()),
             min_round_age: 30,
             min_time_left: 180,
-            max_positions: 2,
+            max_positions: env_opt("HFT_MAX_POSITIONS"),
             min_shares,
             max_shares,
             extra_args,
@@ -191,17 +195,24 @@ impl SupervisorConfig {
             a.push("--round-sec".into());
             a.push(sec.to_string());
         }
+        if let Some(mp) = self.max_positions {
+            a.push("--max-positions".into());
+            a.push(mp.to_string());
+        }
+        if let Some(min) = self.min_shares {
+            a.push("--min-shares".into());
+            a.push(min.to_string());
+        }
+        if let Some(max) = self.max_shares {
+            a.push("--max-shares".into());
+            a.push(max.to_string());
+        }
         a.extend([
             "--min-round-age".into(),
             self.min_round_age.to_string(),
             "--min-time-left".into(),
             self.min_time_left.to_string(),
-            "--max-positions".into(),
-            self.max_positions.to_string(),
-            "--min-shares".into(),
-            self.min_shares.to_string(),
-            "--max-shares".into(),
-            self.max_shares.to_string(),
+
         ]);
         a.extend(self.extra_args.iter().cloned());
         a
@@ -829,6 +840,30 @@ fn silent_max_order_notional_leaves_core_and_risk_panel_in_charge() {
         .position(|a| a == "--max-order-notional")
         .unwrap();
     assert_eq!(args[i + 1], "25.00");
+}
+
+#[test]
+fn silent_max_positions_and_shares_leave_risk_panel_in_charge() {
+    std::env::remove_var("HFT_MAX_POSITIONS");
+    std::env::remove_var("HFT_MIN_SHARES");
+    std::env::remove_var("HFT_MAX_SHARES");
+    let cfg = SupervisorConfig::from_env("/tmp/x.sock".into());
+    assert!(cfg.max_positions.is_none());
+    assert!(cfg.min_shares.is_none());
+    assert!(cfg.max_shares.is_none());
+    let args = cfg.to_args();
+    assert!(!args.contains(&"--max-positions".to_string()));
+    assert!(!args.contains(&"--min-shares".to_string()));
+    assert!(!args.contains(&"--max-shares".to_string()));
+
+    let mut explicit = cfg;
+    explicit.max_positions = Some(20);
+    explicit.min_shares = Some(5);
+    explicit.max_shares = Some(200);
+    let args = explicit.to_args();
+    assert_eq!(args[args.iter().position(|a| a == "--max-positions").unwrap() + 1], "20");
+    assert_eq!(args[args.iter().position(|a| a == "--min-shares").unwrap() + 1], "5");
+    assert_eq!(args[args.iter().position(|a| a == "--max-shares").unwrap() + 1], "200");
 }
 
 #[test]

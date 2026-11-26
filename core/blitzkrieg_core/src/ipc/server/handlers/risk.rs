@@ -127,6 +127,9 @@ pub(crate) async fn handle_risk(
                 &c.config().positions.exit,
             );
             doc.size_pct = Some(c.config().size_pct);
+            doc.max_positions = Some(c.config().positions.max_positions);
+            doc.min_shares = Some(c.config().min_shares);
+            doc.max_shares = Some(c.config().max_shares);
             if let Some(vars) = &file {
                 crate::cockpit::overlay_risk_limits(vars, &mut doc.exit, &mut doc.account);
             }
@@ -218,7 +221,7 @@ pub(crate) async fn handle_risk(
                             let changes: Vec<(&str, String)> = update
                                 .applied
                                 .iter()
-                                .filter(|c| c.field != "sizePct")
+                                .filter(|c| !matches!(c.field, "sizePct" | "maxPositions" | "minShares" | "maxShares"))
                                 .map(|c| (c.field, c.to.clone()))
                                 .collect();
                             let persisted = if update.persisted {

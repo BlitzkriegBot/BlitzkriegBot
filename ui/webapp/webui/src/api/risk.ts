@@ -58,6 +58,11 @@ export interface RiskLimitsDoc {
   exit: RiskExitView
   /** 单笔权益比例（`BK_SIZE_PCT`，百分比 0..=100，0 = 关闭）。 */
   sizePct?: string | number
+  /** 最大并发持仓数（0 = 关闭/不限）。 */
+  maxPositions?: number
+  /** 单笔最小/最大份额。 */
+  minShares?: string | number
+  maxShares?: string | number
   error?: string
 }
 
@@ -74,6 +79,9 @@ export interface RiskSetSystemicBody {
   cooldownMinutes?: string | number
   maxOrderNotionalUsd?: string | number
   sizePct?: string | number
+  maxPositions?: number
+  minShares?: string | number
+  maxShares?: string | number
   reason?: string
 }
 

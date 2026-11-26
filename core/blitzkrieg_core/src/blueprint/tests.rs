@@ -726,3 +726,35 @@ fn logic_or_blueprint_json() -> String {
     })
     .to_string()
 }
+
+#[test]
+fn smart_money_synthesized_blueprint_compiles_with_evolvable_tunables() {
+    use blitzkrieg_onchain_pull::reverse::{FillSample, StrategyArchetype, analyze_fills};
+    let samples: Vec<FillSample> = (0..30)
+        .map(|i| {
+            let end = 1_795_670_000 + (i as i64) * 300;
+            FillSample {
+                condition_id: format!("0xcond{i}"),
+                asset: "BTC".into(),
+                duration_sec: 300,
+                end_ts_sec: end,
+                fill_ts_sec: end - (20 + (i % 5) as i64 * 10),
+                side: "BUY".into(),
+                outcome_index: 0,
+                price: 0.88 + (i % 8) as f64 * 0.01,
+                size_usd: 10.0,
+                winning_outcome: Some(0),
+            }
+        })
+        .collect();
+    let analysis = analyze_fills("0xdeadbeef00112233445566778899aabbccddeeff", &samples);
+    assert_eq!(analysis.archetype, StrategyArchetype::LateFavorite);
+    let bp = analysis.blueprint.expect("must synthesize blueprint");
+    let (lua, tunables) = compile_with_tunables(&bp.to_string()).expect("must compile cleanly");
+    assert!(lua.contains("function bk_evaluate()"));
+    assert!(lua.contains("declare_modes()"));
+    assert!(
+        tunables.len() >= 4,
+        "synthesized blueprint must export evolvable tunables: {tunables:?}"
+    );
+}

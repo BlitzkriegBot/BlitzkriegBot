@@ -56,7 +56,16 @@ const flag = (name) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 
-const tradesPath = resolve(ROOT, flag('--trades') ?? 'data/trades/trades.jsonl');
+// Trades now live in SQLite v4 — data/trades/trades.jsonl is obsolete.
+// Require an explicit --trades so this script never silently reads the stale
+// JSONL (an unreadable/obsolete ledger must not render as an empty book).
+const tradesArg = flag('--trades');
+const tradesPath = tradesArg ? resolve(ROOT, tradesArg) : null;
+if (!tradesPath) {
+  console.error('--trades is required: trade ledger moved to SQLite v4');
+  console.error('data/trades/trades.jsonl is obsolete; read trades from the kernel / SQLite');
+  process.exit(1);
+}
 const ordersPath = resolve(ROOT, flag('--orders') ?? 'data/orders/orders.jsonl');
 const rewardsPath = resolve(ROOT, flag('--rewards') ?? 'data/rewards/rewards.jsonl');
 const evolutionDir = resolve(ROOT, flag('--evolution-dir') ?? 'data/evolution');

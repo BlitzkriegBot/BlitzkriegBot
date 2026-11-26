@@ -701,6 +701,9 @@ async fn handle_line(
         method::BLUEPRINT_SAVE_SOURCE => {
             handlers::blueprint::handle_blueprint(method, core, params).await
         }
+        method::BLUEPRINT_SCHEMA => {
+            handlers::blueprint::handle_blueprint(method, core, params).await
+        }
         method::SMART_MONEY_SCAN => handlers::smart_money::handle_smart_money(method, params).await,
         method::SMART_MONEY_ANALYZE => {
             handlers::smart_money::handle_smart_money(method, params).await

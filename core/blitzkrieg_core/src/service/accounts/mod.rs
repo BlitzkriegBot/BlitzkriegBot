@@ -688,6 +688,20 @@ impl Core {
                 // the same projected balance both places, is the whole point of
                 // the single-truth rule (#1277 / #1063).
                 let cumulative_net_pnl = crate::ledger::cumulative_net_pnl(balance, opening_equity);
+                let open_positions_value: Decimal = if unfunded_live {
+                    Decimal::ZERO
+                } else {
+                    self.positions
+                        .open_positions()
+                        .iter()
+                        .filter(|p| &p.account_id == id)
+                        .map(|p| match p.price_state.price() {
+                            Some(mark) => mark * p.shares,
+                            None => p.cost_usd,
+                        })
+                        .sum()
+                };
+                let equity = balance + open_positions_value;
                 crate::schema::AccountView {
                     id: id.as_str().to_string(),
                     name: a.name.clone(),
@@ -710,6 +724,7 @@ impl Core {
                     day_realized_usd,
                     seeded_total: ledger.seeded_total(),
                     cumulative_net_pnl,
+                    equity,
                     updated_at_ms: a.updated_at_ms,
                 }
             })

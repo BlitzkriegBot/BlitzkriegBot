@@ -244,6 +244,7 @@ WebUI 画布产出蓝图 JSON，一切碰盘的动作都请内核做——UI 永
 | `blueprint.load` | `{ name }` | `{ name, blueprintPath, json }` —— #393 存档包的蓝图文档原样读回（编辑器 preload），只读；名字过 save 同款闸门（读不出策略根） |
 | `blueprint.loadSource` | `{ name }` | `{ name, packageDir, luaPath, manifestPath, lua, sha256, manifest }` —— 手写包「在蓝图中打开」（用户裁决：编辑入口必须能开所有 Lua 包）：入口文件原样 + manifest 元数据（`modes`/`author`/`description` 走原样 JSON 供往返）；`sha256` 是当前入口文件的 manifest 摘要 |
 | `blueprint.saveSource` | `{ name, lua, overwrite? }` —— 目标包必须**已存在**（编辑不创建，创建走 blueprint.save）；`overwrite` 显式，与 save 同裁决 | `{ name, packageDir, luaPath, manifestPath, luaSha256, bytes: [lua, manifest] }` —— 写回后 sha256 现场重算进 manifest（装载器照常验字节） |
+| `blueprint.schema` | `{}` | `{ supportedVersions, defaultVersion, fields[], operators[], nodes[] }` —— 策略蓝图单一真源 schema（只读，供 WebUI 画布动态拉取白名单字段、运算符和节点类型） |
 
 ### 2.14 自更新与交易环境重置（#379 / #458，2026-10-26 补册）
 

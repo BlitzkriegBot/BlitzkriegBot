@@ -699,6 +699,11 @@ pub struct AccountView {
     /// equity），面板须显示「未知」，禁止回退到成交折叠。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cumulative_net_pnl: Option<Decimal>,
+    /// 账户总权益（SSOT，内核权威口径 = 账本现金 balance + 在途持仓市值）。
+    /// 持仓已观测盘口价时按 `mark * shares` 计价，未观测时按 `cost_usd` 计价；
+    /// 空仓时等于 `balance`。面板原样透传，不再自行拼接或显示「—」。
+    #[serde(default, with = "crate::decimal")]
+    pub equity: Decimal,
     pub updated_at_ms: i64,
 }
 

@@ -276,6 +276,7 @@ pub const METHODS: &[MethodSpec] = &[
     write(method::EXECUTION_POLICY_RESET),
     write(method::BLUEPRINT_SAVE),
     write(method::BLUEPRINT_SAVE_SOURCE),
+    read(method::BLUEPRINT_SCHEMA),
     write(method::ARB_CONFIG_SET),
     // ── Ingest: refused today, relaxation argument in the module docs ──────
     ingest_refused(method::BOOK_SNAPSHOT),

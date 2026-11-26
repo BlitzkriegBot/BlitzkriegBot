@@ -14,6 +14,7 @@
 use crate::fetch::{DATA_API_BASE, JsonFetcher};
 use crate::request::parse_round_slug;
 use crate::reverse::{FillSample, ReverseAnalysis, StrategyArchetype, analyze_fills};
+use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -241,11 +242,9 @@ pub async fn scan_leaderboard(
         .or_else(|| raw.as_array())
         .ok_or_else(|| "unexpected /v2/leaderboard response shape".to_string())?;
 
-    let mut candidates = Vec::new();
-    let mut scanned = 0usize;
     let min_fills = req.min_buy_fills.max(1);
-
-    for row in entries.iter().take(limit) {
+    let mut targets: Vec<(usize, String, String, f64, f64)> = Vec::new();
+    for (idx, row) in entries.iter().take(limit).enumerate() {
         let Some(wallet) = val_str(
             row,
             &[
@@ -262,44 +261,58 @@ pub async fn scan_leaderboard(
         if !wallet.starts_with("0x") || wallet.len() != 42 {
             continue;
         }
-        scanned += 1;
         let label = val_str(row, &["user_name", "userName", "name", "pseudonym"])
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}…{}", &wallet[..6], &wallet[wallet.len() - 4..]));
         let pnl = val_f64(row, &["pnl", "profit", "net_pnl", "netPnl"]);
         let vol = val_f64(row, &["volume", "vol"]);
-
-        let Ok(analysis) = analyze_wallet_trades(fetcher, wallet, req.market.as_deref()).await
-        else {
-            continue;
-        };
-        let fp = &analysis.fingerprint;
-        if fp.buy_fills < min_fills || analysis.archetype == StrategyArchetype::Unclassifiable {
-            continue;
-        }
-        candidates.push(RadarCandidate {
-            wallet: wallet.to_string(),
-            label,
-            leaderboard_pnl_usd: (pnl * 100.0).round() / 100.0,
-            leaderboard_vol_usd: (vol * 100.0).round() / 100.0,
-            archetype: analysis.archetype,
-            reason: analysis.reason,
-            buy_fills: fp.buy_fills,
-            unique_conditions: fp.unique_conditions,
-            assets: fp.assets.clone(),
-            durations_sec: fp.durations_sec.clone(),
-            entry_px_p25: fp.entry_px_p25,
-            entry_px_p50: fp.entry_px_p50,
-            entry_px_p90: fp.entry_px_p90,
-            time_left_p10: fp.time_left_p10,
-            time_left_p50: fp.time_left_p50,
-            time_left_p90: fp.time_left_p90,
-            pair_ratio: fp.pair_ratio,
-            hold_to_settlement_ratio: fp.hold_to_settlement_ratio,
-            avg_notional_usd: fp.avg_notional_usd,
-            blueprint: analysis.blueprint,
-        });
+        targets.push((idx, wallet.to_string(), label, pnl, vol));
     }
+    let scanned = targets.len();
+    let market = req.market.as_deref();
+
+    // Fan out per-wallet trade fetches with bounded concurrency (6 in-flight)
+    // instead of 30 sequential round-trips, cutting scan wall time ~6x while
+    // preserving leaderboard rank order.
+    let mut ranked: Vec<(usize, RadarCandidate)> = stream::iter(targets)
+        .map(|(idx, wallet, label, pnl, vol)| async move {
+            let analysis = analyze_wallet_trades(fetcher, &wallet, market).await.ok()?;
+            let fp = &analysis.fingerprint;
+            if fp.buy_fills < min_fills || analysis.archetype == StrategyArchetype::Unclassifiable {
+                return None;
+            }
+            Some((
+                idx,
+                RadarCandidate {
+                    wallet,
+                    label,
+                    leaderboard_pnl_usd: (pnl * 100.0).round() / 100.0,
+                    leaderboard_vol_usd: (vol * 100.0).round() / 100.0,
+                    archetype: analysis.archetype,
+                    reason: analysis.reason,
+                    buy_fills: fp.buy_fills,
+                    unique_conditions: fp.unique_conditions,
+                    assets: fp.assets.clone(),
+                    durations_sec: fp.durations_sec.clone(),
+                    entry_px_p25: fp.entry_px_p25,
+                    entry_px_p50: fp.entry_px_p50,
+                    entry_px_p90: fp.entry_px_p90,
+                    time_left_p10: fp.time_left_p10,
+                    time_left_p50: fp.time_left_p50,
+                    time_left_p90: fp.time_left_p90,
+                    pair_ratio: fp.pair_ratio,
+                    hold_to_settlement_ratio: fp.hold_to_settlement_ratio,
+                    avg_notional_usd: fp.avg_notional_usd,
+                    blueprint: analysis.blueprint,
+                },
+            ))
+        })
+        .buffer_unordered(6)
+        .filter_map(|x| async move { x })
+        .collect()
+        .await;
+    ranked.sort_by_key(|(idx, _)| *idx);
+    let candidates: Vec<RadarCandidate> = ranked.into_iter().map(|(_, c)| c).collect();
 
     Ok(RadarScanResult {
         scanned_wallets: scanned,

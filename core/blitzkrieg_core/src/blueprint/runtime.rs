@@ -242,18 +242,18 @@ pub struct UnifiedTickView {
     pub mid_price: Option<f64>,
     pub best_bid: Option<f64>,
     pub best_ask: Option<f64>,
-    pub spread: f64,
-    pub obi: f64,
+    pub spread: Option<f64>,
+    pub obi: Option<f64>,
     pub time_left_sec: f64,
-    pub elapsed_pct: f64,
-    pub pair_ask_sum: f64,
-    pub pair_bid_sum: f64,
+    pub elapsed_pct: Option<f64>,
+    pub pair_ask_sum: Option<f64>,
+    pub pair_bid_sum: Option<f64>,
     pub round_min_price: f64,
     pub round_max_price: f64,
     pub consensus_aligned: bool,
-    pub trend_confirmed: bool,
-    pub spot_return_bps: f64,
-    pub available_balance: f64,
+    pub trend_confirmed: Option<bool>,
+    pub spot_return_bps: Option<f64>,
+    pub available_balance: Option<f64>,
 }
 
 impl UnifiedTickView {
@@ -264,20 +264,20 @@ impl UnifiedTickView {
             "tick.mid_price" => self.mid_price.map(FieldVal::Num),
             "tick.best_bid" => self.best_bid.map(FieldVal::Num),
             "tick.best_ask" => self.best_ask.map(FieldVal::Num),
-            "tick.spread" => Some(FieldVal::Num(self.spread)),
-            "tick.obi" => Some(FieldVal::Num(self.obi)),
+            "tick.spread" => self.spread.map(FieldVal::Num),
+            "tick.obi" => self.obi.map(FieldVal::Num),
             "tick.time_left_sec" => Some(FieldVal::Num(self.time_left_sec)),
-            "tick.elapsed_pct" => Some(FieldVal::Num(self.elapsed_pct)),
+            "tick.elapsed_pct" => self.elapsed_pct.map(FieldVal::Num),
             "tick.asset" => Some(FieldVal::Str(self.asset.clone())),
             "tick.side_label" => Some(FieldVal::Str(self.side_label.clone())),
-            "tick.pair_ask_sum" => Some(FieldVal::Num(self.pair_ask_sum)),
-            "tick.pair_bid_sum" => Some(FieldVal::Num(self.pair_bid_sum)),
+            "tick.pair_ask_sum" => self.pair_ask_sum.map(FieldVal::Num),
+            "tick.pair_bid_sum" => self.pair_bid_sum.map(FieldVal::Num),
             "tick.round_min_price" => Some(FieldVal::Num(self.round_min_price)),
             "tick.round_max_price" => Some(FieldVal::Num(self.round_max_price)),
             "tick.consensus_aligned" => Some(FieldVal::Bool(self.consensus_aligned)),
-            "tick.trend_confirmed" => Some(FieldVal::Bool(self.trend_confirmed)),
-            "tick.spot_return_bps" => Some(FieldVal::Num(self.spot_return_bps)),
-            "account.available_balance" => Some(FieldVal::Num(self.available_balance)),
+            "tick.trend_confirmed" => self.trend_confirmed.map(FieldVal::Bool),
+            "tick.spot_return_bps" => self.spot_return_bps.map(FieldVal::Num),
+            "account.available_balance" => self.available_balance.map(FieldVal::Num),
             _ => None,
         }
     }
@@ -655,7 +655,7 @@ impl EngineStrategy for BlueprintStrategy {
                         / self.round_duration_sec)
                         .clamp(0.0, 1.0)
                 } else {
-                    0.0
+                    f64::NAN
                 };
 
                 let tick = UnifiedTickView {
@@ -665,27 +665,31 @@ impl EngineStrategy for BlueprintStrategy {
                     mid_price: mid,
                     best_bid: bid,
                     best_ask: ask,
-                    spread: b.spread.to_f64().unwrap_or_else(|| match (ask, bid) {
-                        (Some(a), Some(bi)) => (a - bi).max(0.0),
-                        _ => 0.0,
+                    spread: b.spread.to_f64().or_else(|| match (ask, bid) {
+                        (Some(a), Some(bi)) => Some((a - bi).max(0.0)),
+                        _ => None,
                     }),
-                    obi: b.obi.to_f64().unwrap_or(0.0),
+                    obi: b.obi.to_f64(),
                     time_left_sec: ctx.time_left_sec() as f64,
-                    elapsed_pct: elapsed,
+                    elapsed_pct: if elapsed.is_finite() {
+                        Some(elapsed)
+                    } else {
+                        None
+                    },
                     pair_ask_sum: match (ask, oask) {
-                        (Some(a), Some(oa)) => a + oa,
-                        _ => 2.0,
+                        (Some(a), Some(oa)) => Some(a + oa),
+                        _ => None,
                     },
                     pair_bid_sum: match (bid, obid) {
-                        (Some(bi), Some(obi)) => bi + obi,
-                        _ => 2.0,
+                        (Some(bi), Some(obi)) => Some(bi + obi),
+                        _ => None,
                     },
                     round_min_price: mn,
                     round_max_price: mx,
                     consensus_aligned: consensus == Some(side_label),
-                    trend_confirmed: false,
-                    spot_return_bps: 0.0,
-                    available_balance: 0.0,
+                    trend_confirmed: None,
+                    spot_return_bps: None,
+                    available_balance: None,
                 };
 
                 if !self.eval_graph(&tick) {

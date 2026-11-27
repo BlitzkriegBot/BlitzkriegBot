@@ -348,3 +348,88 @@ fn reset_trading_clears_the_strategy_pnl_counters() {
         "no strategy counter may survive the wipe: {post:?}"
     );
 }
+
+#[test]
+fn reset_trading_revokes_persisted_strategies_across_restart() {
+    // Gitea #285 Option B: reset_trading permanently revokes the target
+    // account's strategies in SQLite `account_settings.strategies` so a
+    // subsequent boot stays disarmed rather than silently re-arming.
+    let dir = reset_audit_dir("reset-revokes-strategies");
+    let db_path = dir.join("store.sqlite");
+    let audit_path = dir.join("manual-ops.jsonl");
+    let log = |name: &str| Some(dir.join(name).to_string_lossy().into_owned());
+
+    let db = crate::risk::account_store::AccountRiskDb::open(&db_path).expect("open risk db");
+    db.save_setting(
+        "default",
+        crate::risk::account_store::STRATEGIES_SETTING,
+        Some(r#"["late_favorite"]"#),
+    )
+    .expect("seed strategies");
+
+    let cfg = CoreConfig {
+        manual_ops_audit_path: Some(audit_path.to_string_lossy().into_owned()),
+        db_path: Some(db_path.clone()),
+        trade_log_path: log("trades.jsonl"),
+        order_log_path: log("orders.jsonl"),
+        position_log_path: log("positions.jsonl"),
+        ..CoreConfig::default()
+    };
+    let mut c = Core::new(cfg.clone());
+    c.account_risk_db = Some(db.clone());
+    c.accounts
+        .set_strategies(
+            &crate::model::default_account_id(),
+            vec!["late_favorite".into()],
+            1,
+        )
+        .expect("seed in-memory strategies");
+
+    c.reset_trading(&reset_params("RESET"), "uid:t", 3)
+        .expect("reset succeeds");
+
+    // 1. Persisted SQLite setting is explicitly revoked to "[]".
+    let settings = db.load_settings().expect("load settings");
+    let persisted = settings
+        .get("default")
+        .and_then(|m| m.get(crate::risk::account_store::STRATEGIES_SETTING))
+        .map(String::as_str);
+    assert_eq!(
+        persisted,
+        Some("[]"),
+        "reset_trading must persist revoked strategies as [] in SQLite"
+    );
+    // 2. In-memory account book matches SQLite.
+    let in_mem = c
+        .accounts
+        .account(&crate::model::default_account_id())
+        .map(|a| a.strategies.clone())
+        .unwrap_or_default();
+    assert!(
+        in_mem.is_empty(),
+        "in-memory account strategies must be empty after reset: {in_mem:?}"
+    );
+
+    // 3. Simulated restart: a fresh Core reading the same SQLite DB must boot
+    //    with 0 strategies armed for `default`.
+    let db2 = crate::risk::account_store::AccountRiskDb::open(&db_path).expect("reopen risk db");
+    let mut c2 = Core::new(cfg);
+    c2.account_risk_db = Some(db2.clone());
+    let settings2 = db2.load_settings().expect("reload settings after restart");
+    let reloaded = settings2
+        .get("default")
+        .and_then(|m| m.get(crate::risk::account_store::STRATEGIES_SETTING))
+        .map(String::as_str);
+    assert_eq!(reloaded, Some("[]"));
+    let parsed: Vec<String> = serde_json::from_str(reloaded.unwrap_or("[]")).unwrap();
+    c2.accounts
+        .set_strategies(&crate::model::default_account_id(), parsed, 4)
+        .expect("hydrate strategies on restart");
+    let boot_armed = c2
+        .apply_account_strategy_assignments_at_boot()
+        .expect("boot assignment succeeds");
+    assert!(
+        boot_armed.is_empty(),
+        "restart after reset_trading must keep the account disarmed: {boot_armed:?}"
+    );
+}

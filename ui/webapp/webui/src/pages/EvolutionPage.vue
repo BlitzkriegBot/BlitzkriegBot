@@ -345,19 +345,27 @@ function metricsRows(b: EvolutionMetricsRow, v: EvolutionMetricsRow): MetricRow[
   const netB = isKnownPnl(b) ? Number(b.netPnlUsd) : NaN
   const netV = isKnownPnl(v) ? Number(v.netPnlUsd) : NaN
   const netKnown = Number.isFinite(netB) && Number.isFinite(netV)
-  const pfB = Number(b.profitFactor) || 0
-  const pfV = Number(v.profitFactor) || 0
-  const poB = Number(b.payoff) || 0
-  const poV = Number(v.payoff) || 0
+  const pfBRaw = Number(b.profitFactor)
+  const pfVRaw = Number(v.profitFactor)
+  const pfKnown = b.profitFactor != null && v.profitFactor != null && Number.isFinite(pfBRaw) && Number.isFinite(pfVRaw)
+  const poBRaw = Number(b.payoff)
+  const poVRaw = Number(v.payoff)
+  const poKnown = b.payoff != null && v.payoff != null && Number.isFinite(poBRaw) && Number.isFinite(poVRaw)
   return [
     deltaRow('平仓笔数', num(b.closed ?? 0), num(v.closed ?? 0),
       `${(v.closed ?? 0) - (b.closed ?? 0)}`, null),
     deltaRow('胜率', `${wrB.toFixed(1)}%`, `${wrV.toFixed(1)}%`,
       `${wrV - wrB >= 0 ? '+' : ''}${(wrV - wrB).toFixed(1)}pp`, wrV > wrB),
-    deltaRow('盈亏比', poB.toFixed(2), poV.toFixed(2),
-      `${poV - poB >= 0 ? '+' : ''}${(poV - poB).toFixed(2)}`, poV > poB),
-    deltaRow('盈利因子', pfB.toFixed(2), pfV.toFixed(2),
-      `${pfV - pfB >= 0 ? '+' : ''}${(pfV - pfB).toFixed(2)}`, pfV > pfB),
+    deltaRow('盈亏比',
+      poKnown ? poBRaw.toFixed(2) : '未知',
+      poKnown ? poVRaw.toFixed(2) : '未知',
+      poKnown ? `${poVRaw - poBRaw >= 0 ? '+' : ''}${(poVRaw - poBRaw).toFixed(2)}` : '—',
+      poKnown ? poVRaw > poBRaw : null),
+    deltaRow('盈利因子',
+      pfKnown ? pfBRaw.toFixed(2) : '未知',
+      pfKnown ? pfVRaw.toFixed(2) : '未知',
+      pfKnown ? `${pfVRaw - pfBRaw >= 0 ? '+' : ''}${(pfVRaw - pfBRaw).toFixed(2)}` : '—',
+      pfKnown ? pfVRaw > pfBRaw : null),
     deltaRow('净 PnL',
       netKnown ? signedMoney(netB) : '未知',
       netKnown ? signedMoney(netV) : '未知',

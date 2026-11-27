@@ -64,20 +64,16 @@ fn generated_package_carries_the_evaluate_bridge() {
         "the collector must be package-local (not a sandbox global): {lua}"
     );
     assert!(
-        lua.contains("return { entries = __orders, exits = {}, breaks = {} }"),
-        "the evaluate return must be the §6.5 intent-table shape: {lua}"
+        lua.contains("return { entries = __orders, exits = __exits, breaks = {} }"),
+        "the evaluate return must be the §6.5 intent-table shape with live exits: {lua}"
     );
-    // The bk.* surface speaks decimal STRINGS while generated guards
-    // compare numbers — without the tonumber coercion every guard on a
-    // numeric field would error the evaluation (live-proven: a string
-    // `<=` a number raises and the entries come back empty).
     assert!(
         lua.contains("t.price = tonumber(b.best_ask) or tonumber(b.mid)"),
         "price must be coerced to a number: {lua}"
     );
     assert!(
-        lua.contains("t.available_balance = tonumber(a and (a.available or a.balance)) or 0"),
-        "balance must be coerced and nil-safe for budget_ratio math: {lua}"
+        lua.contains("t.available_balance = tonumber(a and (a.available or a.balance))"),
+        "balance must be coerced without fabricating 0 when absent (#276): {lua}"
     );
     // The loop iterates BOTH legs; each tick must carry the leg's own
     // token and book, not unconditionally the up-token's.
@@ -153,11 +149,136 @@ fn logic_gates_join_conditions_into_a_parenthesised_guard() {
     let lua = compile(&bp).expect("gate blueprint compiles");
     assert!(
         lua.contains(
-            "if (tick.mid_price > __param(\"c1_value\", 0.8) and tick.time_left_sec < __param(\"c2_value\", 60)) then"
+            "if ((tick.mid_price ~= nil and tick.mid_price > __param(\"c1_value\", 0.8)) and (tick.time_left_sec ~= nil and tick.time_left_sec < __param(\"c2_value\", 60))) then"
         ),
         "and-gate guard: {lua}"
     );
-    assert!(lua.contains("side = \"sell\""), "sell side: {lua}");
+    // #275 behavior check: execute compiled action_sell Lua in a real LuaSandbox
+    // and verify `bk_evaluate()` emits a real exit intent (not an empty exits table).
+    let sb = blitzkrieg_lua_runtime::sandbox::LuaSandbox::new().expect("sandbox builds");
+    let vm = sb.lua();
+    vm.load(r#"
+      bk = {
+        params = function() return {} end,
+        round = function() return { slot = 10, time_left_sec = 30, duration_sec = 300 } end,
+        account = function() return { id = "default", available = "100" } end,
+        markets = function() return { { asset = "BTC", condition_id = "c1", up_token = "tok-up", down_token = "tok-dn" } } end,
+        holdings = function() return {} end,
+        book = function(t)
+          if t == "tok-up" then return { fresh = true, best_ask = "0.88", best_bid = "0.86", mid = "0.87" } end
+          return { fresh = true, best_ask = "0.14", best_bid = "0.12", mid = "0.13" }
+        end,
+      }
+    "#).exec().expect("seed bk stub");
+    vm.load(&lua).exec().expect("load compiled sell lua");
+    let n: usize = vm
+        .load("local r = bk_evaluate(); return #r.exits")
+        .eval()
+        .unwrap();
+    let tok: String = vm
+        .load("local r = bk_evaluate(); return r.exits[1].token")
+        .eval()
+        .unwrap();
+    let rsn: String = vm
+        .load("local r = bk_evaluate(); return r.exits[1].reason")
+        .eval()
+        .unwrap();
+    assert_eq!(n, 1, "action_sell must emit a real exit intent");
+    assert_eq!(tok, "tok-up");
+    assert_eq!(rsn, "blueprint-sell");
+}
+
+#[test]
+fn budget_ratio_and_missing_market_data_behave_honestly_at_runtime() {
+    // #274: budget_ratio compiles to budget_usd and place_order translates it
+    // into concrete `shares` proportional to budget_ratio.
+    let make_bp = |ratio: f64| {
+        json!({
+            "version": 2, "name": "budget_test",
+            "nodes": [
+                { "id": "c1", "type": "condition", "params": { "field": "tick.price", "op": "<=", "value": 0.90 } },
+                { "id": "a1", "type": "action_buy", "params": { "budget_ratio": ratio } }
+            ],
+            "edges": [{ "from": "c1", "to": "a1" }]
+        })
+        .to_string()
+    };
+    let run_shares = |bp_json: &str| -> f64 {
+        let lua = compile(bp_json).expect("compiles");
+        let sb = blitzkrieg_lua_runtime::sandbox::LuaSandbox::new().expect("sandbox builds");
+        let vm = sb.lua();
+        vm.load(r#"
+          bk = {
+            params = function() return {} end,
+            round = function() return { slot = 1, time_left_sec = 45, duration_sec = 300 } end,
+            account = function() return { id = "default", available = "200" } end,
+            markets = function() return { { asset = "BTC", condition_id = "c1", up_token = "tok-up", down_token = "tok-dn" } } end,
+            holdings = function() return {} end,
+            book = function(t)
+              if t == "tok-up" then return { fresh = true, best_ask = "0.50", best_bid = "0.48", mid = "0.49" } end
+              return { fresh = false }
+            end,
+          }
+        "#).exec().unwrap();
+        vm.load(&lua).exec().unwrap();
+        let n: usize = vm
+            .load("local r = bk_evaluate(); return #r.entries")
+            .eval()
+            .unwrap();
+        assert_eq!(n, 1);
+        let sh: String = vm
+            .load("local r = bk_evaluate(); return r.entries[1].shares")
+            .eval()
+            .expect("shares emitted from budget_usd");
+        sh.parse::<f64>().unwrap()
+    };
+    let s_small = run_shares(&make_bp(0.05)); // 200 * 0.05 / 0.50 = 20
+    let s_large = run_shares(&make_bp(0.20)); // 200 * 0.20 / 0.50 = 80
+    assert!(
+        (s_small - 20.0).abs() < 1e-6,
+        "expected 20 shares, got {s_small}"
+    );
+    assert!(
+        (s_large - 80.0).abs() < 1e-6,
+        "expected 80 shares, got {s_large}"
+    );
+
+    // #276: missing opposite leg must leave pair_ask_sum nil (NOT 2.0), so
+    // `pair_ask_sum > 1.01` does NOT falsely fire.
+    let bp_missing = json!({
+        "version": 2, "name": "missing_pair_test",
+        "nodes": [
+            { "id": "c1", "type": "condition", "params": { "field": "tick.pair_ask_sum", "op": ">", "value": 1.01 } },
+            { "id": "a1", "type": "action_buy" }
+        ],
+        "edges": [{ "from": "c1", "to": "a1" }]
+    })
+    .to_string();
+    let lua = compile(&bp_missing).expect("compiles");
+    let sb = blitzkrieg_lua_runtime::sandbox::LuaSandbox::new().expect("sandbox builds");
+    let vm = sb.lua();
+    vm.load(r#"
+      bk = {
+        params = function() return {} end,
+        round = function() return { slot = 1, time_left_sec = 45, duration_sec = 300 } end,
+        account = function() return { id = "default", available = "200" } end,
+        markets = function() return { { asset = "BTC", condition_id = "c1", up_token = "tok-up", down_token = "tok-dn" } } end,
+        holdings = function() return {} end,
+        book = function(t)
+          if t == "tok-up" then return { fresh = true, best_ask = "0.55", best_bid = "0.53", mid = "0.54" } end
+          return nil
+        end,
+      }
+    "#).exec().unwrap();
+    vm.load(&lua).exec().unwrap();
+    let n: usize = vm
+        .load("local r = bk_evaluate(); return #r.entries")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        n, 0,
+        "missing opposite leg must not fabricate pair_ask_sum=2.0"
+    );
 }
 
 #[test]
@@ -183,7 +304,7 @@ fn logic_or_and_an_inverted_edge_compile_to_not_or() {
     // c2's edge carries when=false → negated at the join; c1 passes as-is.
     assert!(
         lua.contains(
-            "if (tick.obi > __param(\"c1_value\", 0.5) or not (tick.trend_confirmed != true)) then"
+            "if ((tick.obi ~= nil and tick.obi > __param(\"c1_value\", 0.5)) or not ((tick.trend_confirmed ~= nil and tick.trend_confirmed ~= true))) then"
         ),
         "or-gate with one inverted edge: {lua}"
     );

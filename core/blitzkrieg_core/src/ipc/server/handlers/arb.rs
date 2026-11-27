@@ -255,9 +255,16 @@ pub(crate) async fn handle_arb(
                         });
                     let mut effective_cfg = cfg.clone();
                     effective_cfg.round_duration_sec = effective_round_sec;
+                    let spread_open_pct = c
+                        .strategy_params_readout(crate::service::ARB_STRATEGY)
+                        .tunables
+                        .into_iter()
+                        .find(|t| t.name == "spread_open_pct")
+                        .and_then(|t| Decimal::from_str_exact(&t.value).ok())
+                        .unwrap_or_else(|| Decimal::from(2));
                     let scanner = c
                         .engine()
-                        .map(|e| e.arb_scanner_snapshot(&effective_cfg, now))
+                        .map(|e| e.arb_scanner_snapshot(&effective_cfg, now, spread_open_pct))
                         .unwrap_or_default();
 
                     let acc_a = c
@@ -361,6 +368,7 @@ pub(crate) async fn handle_arb(
                         "legASupportedRounds": leg_a_rounds,
                         "legBSupportedRounds": leg_b_rounds,
                         "lockedByVenue": locked_by,
+                        "spreadOpenPct": spread_open_pct.to_string(),
                     });
                     (cfg_val, checks, scanner)
                 }

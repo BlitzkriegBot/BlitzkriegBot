@@ -24,8 +24,8 @@ core/blitzkrieg_core/src/execution_policy/rules.rs:298 file-direct crate::jsonl:
 core/blitzkrieg_core/src/hedge/audit.rs:67 file-direct if !crate::jsonl::append(path, rec) {
 core/blitzkrieg_core/src/ipc/server/handlers/blueprint.rs:270 file-direct std::fs::write(&lua_path, p.lua.as_bytes())
 core/blitzkrieg_core/src/ipc/server/handlers/blueprint.rs:282 file-direct std::fs::write(&manifest_path, manifest_body.as_bytes())
-core/blitzkrieg_core/src/ipc/server/handlers/blueprint.rs:445 file-direct std::fs::File::create(&temp).map_err(|e| format!("cannot stage {temp:?}: {e}"))?;
-core/blitzkrieg_core/src/ipc/server/handlers/blueprint.rs:468 file-direct let _ = std::fs::write(tgt, old);
+core/blitzkrieg_core/src/ipc/server/handlers/blueprint.rs:446 file-direct std::fs::File::create(&temp).map_err(|e| format!("cannot stage {temp:?}: {e}"))?;
+core/blitzkrieg_core/src/ipc/server/handlers/blueprint.rs:469 file-direct let _ = std::fs::write(tgt, old);
 core/blitzkrieg_core/src/ipc/version.rs:1046 file-direct crate::jsonl::append(&std::path::PathBuf::from("data/update/audit.jsonl"), value);
 core/blitzkrieg_core/src/ipc/version.rs:597 file-direct std::fs::write(&tmp, &bytes)?;
 core/blitzkrieg_core/src/ipc/version.rs:600 file-direct std::fs::write(&sums_tmp, &sums)?;

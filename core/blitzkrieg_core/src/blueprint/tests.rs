@@ -1062,3 +1062,86 @@ fn smart_money_synthesized_blueprint_compiles_with_evolvable_tunables() {
         "synthesized blueprint must export evolvable tunables: {tunables:?}"
     );
 }
+
+#[test]
+fn native_blueprint_honors_account_id_and_live_hot_params() {
+    use crate::model::{CryptoMarket, OrderbookSnapshot};
+    use crate::registry::ParamRegistry;
+    use crate::strategies::{EngineStrategy, StrategyCtx};
+    use rust_decimal_macros::dec;
+    use std::sync::Arc;
+    use strategy_logic::params::{KnobSpec, StrategyParams};
+
+    let raw = r#"{
+        "version": 2,
+        "name": "hot_bp",
+        "nodes": [
+            {"id": "c_px", "type": "condition", "params": {"field": "tick.price", "op": ">=", "value": 0.90}},
+            {"id": "a_buy", "type": "action_buy", "params": {"price": 0.92}}
+        ],
+        "edges": [
+            {"from": "c_px", "to": "a_buy", "when": true}
+        ]
+    }"#;
+
+    let mut strat = BlueprintStrategy::from_json(raw)
+        .expect("parse")
+        .with_account_id("kalshi-acct")
+        .with_knobs(vec![KnobSpec::new(
+            "c_px_value",
+            dec!(0.90),
+            dec!(0.50),
+            dec!(0.99),
+        )]);
+    assert_eq!(strat.instance_account(), "kalshi-acct");
+    assert_eq!(strat.evolvable_knobs().len(), 1);
+
+    let m = CryptoMarket {
+        asset: "BTC".into(),
+        condition_id: "0xcond".into(),
+        question_id: "0xcond".into(),
+        up_token_id: "tok_up".into(),
+        down_token_id: "tok_dn".into(),
+        up_price: dec!(0.85),
+        down_price: dec!(0.15),
+        expires_at_ms: 1_000_000,
+        round_slot: 1,
+        round_duration_sec: 300,
+        archive_verdict: false,
+        venue: "polymarket".into(),
+        neg_risk: false,
+        question: String::new(),
+    };
+    let book_up = OrderbookSnapshot {
+        token_id: "tok_up".into(),
+        bids: vec![],
+        asks: vec![],
+        best_bid: dec!(0.84),
+        best_ask: dec!(0.85),
+        mid_price: dec!(0.845),
+        spread: dec!(0.01),
+        spread_pct: dec!(0.01),
+        obi: dec!(0.10),
+        bid_depth: dec!(100),
+        ask_depth: dec!(100),
+        timestamp: 900_000,
+    };
+    let markets = [m];
+    let book_fn = |tok: &str| (tok == "tok_up").then(|| book_up.clone());
+    let ctx = StrategyCtx::new(&markets, 1, 120, 900_000, &book_fn);
+
+    // At literal threshold 0.90, ask 0.85 must NOT fire.
+    assert!(strat.find_candidates(&ctx).is_empty());
+
+    // Lower threshold via live ParamRegistry to 0.80 -> must fire with scoped account_id.
+    let reg = Arc::new(ParamRegistry::new());
+    let mut bag = StrategyParams::new();
+    bag.set("c_px_value", dec!(0.80));
+    reg.publish("hot_bp", bag);
+    strat.set_hot_params(Some(reg));
+
+    let sigs = strat.find_candidates(&ctx);
+    assert_eq!(sigs.len(), 1);
+    assert_eq!(sigs[0].account_id, "kalshi-acct");
+    assert_eq!(sigs[0].price, dec!(0.92));
+}

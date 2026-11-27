@@ -837,8 +837,19 @@ pub(super) fn build_lua_scope(
     name: &str,
     account: &str,
 ) -> Option<Box<dyn crate::strategies::EngineStrategy>> {
-    use crate::strategy_engine::lua_loader::{LuaEngineAdapter, load_lua_package};
+    use crate::strategy_engine::lua_loader::{
+        LuaEngineAdapter, load_lua_package, try_load_native_blueprint_package,
+    };
     let source = sources.get(name)?;
+    if let Some(dir) = source.strip_prefix("blueprint:") {
+        let loaded = try_load_native_blueprint_package(std::path::Path::new(dir))?.ok()?;
+        if loaded.name != name {
+            return None;
+        }
+        return Some(Box::new(
+            loaded.strategy.with_account_id(account.to_string()),
+        ));
+    }
     let dir = source.strip_prefix("lua:")?;
     let loaded = load_lua_package(std::path::Path::new(dir)).ok()?;
     if loaded.name != name {

@@ -41,6 +41,18 @@ description: 独立交易者的 TradingOS —— Market-Agnostic Core、Risk-Fir
   <p class="bb-card-foot">数字来自结算真值回放，不是实盘。每个市场只用最新 200 笔成交，卖价按打印加最多 1 美分，每笔 10 股。实盘结果会不同。进程的 <code>DRY_RUN</code> 默认是 true；启用 <code>late_favorite</code> 不会把它关掉。先在 dry-run 里打开：<code>--enable-strategy late_favorite</code>。详见 <a href="./late-favorite">late_favorite</a>。</p>
 </section>
 
+<section class="bb-sec" id="arbitrage">
+  <p class="bb-eyebrow">Cross-Venue Arbitrage Workbench</p>
+  <h2 class="bb-h2">跨所套利 · 独立双腿工作台</h2>
+  <p class="bb-card-lead">跨越两家交易所账户、自动锁定双方共同支持的时间轮次交集。实时核算双腿 Taker 手续费后的真实净套利空间，统一呈现运行就绪体检、PairBook 活跃配对与双腿合并盈亏。</p>
+  <ul class="bb-list">
+    <li><strong>共同轮次自动锁定</strong>：自动求取 A/B 交易所支持周期交集（如跟随单周期场地锁定 <code>15m</code>），杜绝跨周期错配</li>
+    <li><strong>6 项就绪体检与扣费扫盘</strong>：实时展示双腿盘口、毛空间与扣费净空间，并严格对照 <code>spread_open_pct</code> 阈值标示可触发机会</li>
+    <li><strong>双腿合并账务与原子预占</strong>：跨 A/B 账户聚合 PairBook、委托与历史成交，双腿原子预占额度避免单腿裸奔</li>
+  </ul>
+  <p class="bb-card-foot">套利工作台位于 <code>策略 → 套利</code>，与单交易所策略、智能交易平级。详见 <a href="./arbitrage">跨所套利使用指南</a>。</p>
+</section>
+
 <section class="bb-sec" id="smart-trading">
   <p class="bb-eyebrow">New in v0.4.3 · Smart Money Reverse-to-Strategy</p>
   <h2 class="bb-h2">智能交易 · 聪明钱逆向工作台</h2>

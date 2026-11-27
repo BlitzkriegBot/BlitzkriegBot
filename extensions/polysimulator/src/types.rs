@@ -195,14 +195,18 @@ pub struct PmTradeRow {
     /// `shares · 0.07 · p · (1−p)`, maker 0 — see
     /// `executor::official_taker_fee_usd`), and the kernel's charge path
     /// books from that role.
+    #[serde(default, deserialize_with = "deserialize_opt_i64_or_string")]
     pub fee_rate_bps: Option<i64>,
     pub maker_orders: Option<Vec<String>>,
     pub taker_order_id: Option<String>,
     pub transaction_hash: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_i64_or_string")]
     pub bucket_index: Option<i64>,
-    /// Last update, epoch millis as a bare integer.
+    /// Last update, epoch millis as integer or decimal string.
+    #[serde(default, deserialize_with = "deserialize_opt_i64_or_string")]
     pub last_update: Option<i64>,
-    /// Match time, epoch millis as a bare integer.
+    /// Match time, epoch millis as integer or decimal string.
+    #[serde(default, deserialize_with = "deserialize_opt_i64_or_string")]
     pub match_time: Option<i64>,
     pub owner: Option<String>,
     pub status: Option<String>,
@@ -591,5 +595,87 @@ mod tests {
                 "makerAmount": "2175000", "takerAmount": "5000000"
             }})
         );
+    }
+}
+
+/// Deserialize an optional `i64` that may arrive either as a JSON integer
+/// (`0`, `1730000000`) or as a JSON string (`"0"`, `"1730000000"`, `""`),
+/// matching Polymarket / Polysimulator `/v1/data/trades` wire responses.
+fn deserialize_opt_i64_or_string<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct OptI64Visitor;
+    impl<'de> serde::de::Visitor<'de> for OptI64Visitor {
+        type Value = Option<i64>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an optional i64 or numeric string")
+        }
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Self::Value, D2::Error> {
+            d.deserialize_any(OptI64Visitor)
+        }
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            i64::try_from(v).map(Some).map_err(E::custom)
+        }
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            trimmed
+                .parse::<i64>()
+                .map(Some)
+                .map_err(|_| E::invalid_value(serde::de::Unexpected::Str(v), &self))
+        }
+    }
+    deserializer.deserialize_option(OptI64Visitor)
+}
+
+#[cfg(test)]
+mod pm_trade_row_string_i64_tests {
+    use super::*;
+
+    #[test]
+    fn parses_string_and_integer_i64_fields_in_trades_envelope() {
+        let raw = r#"{
+            "data": [
+                {
+                    "id": "t-1",
+                    "market": "0xcond",
+                    "fee_rate_bps": "0",
+                    "bucket_index": "0",
+                    "last_update": "1730000001000",
+                    "match_time": "1730000000000"
+                },
+                {
+                    "id": "t-2",
+                    "market": "0xcond",
+                    "fee_rate_bps": 0,
+                    "bucket_index": 1,
+                    "last_update": 1730000002000,
+                    "match_time": null
+                }
+            ]
+        }"#;
+        let env: PmTradesEnvelope = serde_json::from_str(raw).expect("envelope parses");
+        let rows = env.data.expect("data");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].fee_rate_bps, Some(0));
+        assert_eq!(rows[0].bucket_index, Some(0));
+        assert_eq!(rows[0].last_update, Some(1730000001000));
+        assert_eq!(rows[0].match_time, Some(1730000000000));
+        assert_eq!(rows[1].fee_rate_bps, Some(0));
+        assert_eq!(rows[1].bucket_index, Some(1));
+        assert_eq!(rows[1].last_update, Some(1730000002000));
+        assert_eq!(rows[1].match_time, None);
     }
 }

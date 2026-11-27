@@ -200,14 +200,15 @@ impl CoreConfig {
                 );
             }
         }
-        // ④ 统一映射：install_engine 换掉了整个 Engine（插件切换、进化重
-        // 注册），Engine 内存里的 confirmed 映射会一起丢 —— 账本是唯一真值
-        // 源，每次安装后把 confirmed 事件回灌一遍。revocation 走
-        // `unified.revoke`（service 层同步删 Engine 条目），Engine 自身只有
-        // put 语义。
+        // ④ 统一映射 + 跨所套利腿配置：install_engine 换掉了整个 Engine（启动、
+        // 插件切换、进化重注册），Engine 内存里的 confirmed 映射与 arb_leg_config
+        // 会一起丢 —— Core 持有的账本/配置是唯一真值源，每次安装后回灌一遍。
         if let Some(e) = core.engine.as_mut() {
             for event in core.unified_ledger.events() {
                 e.put_unified_mapping(event.clone());
+            }
+            if core.arb_leg_config.is_some() {
+                e.set_arb_leg_config(core.arb_leg_config.clone());
             }
         }
         self.strategy_startup_self_check(core)

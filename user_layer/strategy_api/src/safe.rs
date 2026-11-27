@@ -90,6 +90,7 @@ pub struct MarketInfo {
     pub down_token: String,
     pub expires_at_ms: i64,
     pub slot: i64,
+    pub round_duration_sec: i64,
     pub neg_risk: bool,
     /// #427: the listing venue, pure DATA (empty = undeclared). The C ABI
     /// default keeps every existing producer compiling unchanged.
@@ -696,6 +697,7 @@ macro_rules! export_strategy {
                                 down_token: unsafe { cstr(m.down_token) }.unwrap_or_default(),
                                 expires_at_ms: m.expires_at_ms,
                                 slot: m.slot,
+                                round_duration_sec: 0,
                                 neg_risk: m.neg_risk != 0,
                                 venue: unsafe { cstr(m.venue) }.unwrap_or_default(),
                             })

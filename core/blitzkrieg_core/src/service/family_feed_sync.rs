@@ -12,7 +12,7 @@ impl Core {
     /// — two accounts on the same (venue, family) share one subscription.
     pub fn sync_family_feed_from_accounts(&self) {
         let default_dur = self.config.round_duration_sec;
-        let users: Vec<(String, String, i64)> = self
+        let mut users: Vec<(String, String, i64)> = self
             .accounts
             .account_list()
             .into_iter()
@@ -26,6 +26,36 @@ impl Core {
                 (format!("account:{}", a.id.as_str()), a.venue.clone(), dur)
             })
             .collect();
+        // Cross-venue arb: ensure BOTH leg venues keep live orderbooks for the
+        // union of both leg accounts' anchored round durations (e.g. when leg A
+        // is kalshi@900s and leg B is polymarket@300s, polymarket also keeps
+        // 900s live so the two venues share a tradable 900s pair).
+        if let Some(arb) = &self.arb_leg_config {
+            let dur_a = self
+                .config
+                .account_round_durations
+                .get(arb.leg_a_account.as_str())
+                .copied()
+                .unwrap_or(default_dur);
+            let dur_b = self
+                .config
+                .account_round_durations
+                .get(arb.leg_b_account.as_str())
+                .copied()
+                .unwrap_or(default_dur);
+            let mut arb_durs = vec![dur_a];
+            if dur_b != dur_a {
+                arb_durs.push(dur_b);
+            }
+            for dur in arb_durs {
+                if !arb.leg_a_venue.is_empty() {
+                    users.push((format!("arb:leg_a:{dur}"), arb.leg_a_venue.clone(), dur));
+                }
+                if !arb.leg_b_venue.is_empty() {
+                    users.push((format!("arb:leg_b:{dur}"), arb.leg_b_venue.clone(), dur));
+                }
+            }
+        }
         let venues: Vec<String> = users
             .iter()
             .map(|(_, v, _)| v.clone())

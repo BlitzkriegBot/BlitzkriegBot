@@ -14,6 +14,7 @@ fn market() -> MarketInfo {
         down_token: "0xdown".into(),
         expires_at_ms: 1_700_000_000_000,
         slot: 42,
+        round_duration_sec: 900,
         neg_risk: false,
         venue: "polymarket".into(),
     }

@@ -890,8 +890,9 @@ impl Engine {
                     // cache mid-round (the lua_momentum poisoning). Unbound
                     // instances keep the historic every-rollover dispatch,
                     // byte-identical.
-                    if Engine::instance_round_family_sec(&self.account_round_durations, s)
-                        .is_some_and(|f| f != feed_duration)
+                    if s.strategy.arb_leg_accounts().is_none()
+                        && Engine::instance_round_family_sec(&self.account_round_durations, s)
+                            .is_some_and(|f| f != feed_duration)
                     {
                         continue;
                     }
@@ -1298,7 +1299,13 @@ impl Engine {
                     // fall back to the whole table, or a 5m-anchored
                     // account would still see 15m markets and trip the
                     // admission conflict check.
-                    let (slot, tleft, markets_ref) =
+                    let (slot, tleft, markets_ref) = if leg_accounts.is_some() {
+                        // Cross-venue arb spans two leg accounts that may be
+                        // anchored to different round durations (e.g. 5m vs 15m):
+                        // expose the full scanner table so the strategy can pair
+                        // matching expiry windows across both venues.
+                        (round.slot, round.time_left_sec, self.scanner.markets())
+                    } else {
                         match Engine::instance_round_family_sec(&self.account_round_durations, s)
                             .and_then(|f| family_views.get(&f))
                         {
@@ -1306,7 +1313,8 @@ impl Engine {
                                 (clock.slot, clock.time_left_sec, &markets[..])
                             }
                             None => (round.slot, round.time_left_sec, self.scanner.markets()),
-                        };
+                        }
+                    };
                     let ctx = StrategyCtx::new(markets_ref, slot, tleft, now_ms, &fresh)
                         .with_positions(&held)
                         .with_unified_events(&unified_snapshot)

@@ -475,18 +475,43 @@ impl Core {
                 && *account_grid > 0
                 && market_decl != *account_grid
             {
-                return Err(CoreError::new(
-                    CoreErrorCode::RiskRejected,
-                    format!(
-                        "round duration conflict: market `{}` declares {market_decl}s \
-                         but account `{}` anchors on {account_grid}s — \
-                         refuse entry (fail-closed: align the account's \
-                         ACCOUNT_<ID>_ROUND_DURATION_SEC with the market's family)",
-                        req.token_id,
-                        req.account_id,
-                        account_grid = *account_grid
-                    ),
-                ));
+                // Cross-venue arb spans two leg accounts that may anchor on
+                // different round durations (e.g. polymarket 300s + kalshi 900s).
+                // Admit the leg when it is a configured atomic cross-venue arb
+                // leg and the market's duration matches the partner leg's grid.
+                let arb_partner_grid_ok = engine.strategy_atomic_batch(&req.strategy)
+                    && self.arb_leg_config.as_ref().is_some_and(|arb| {
+                        let acct = req.account_id.as_str();
+                        arb.leg_account_for_venue(&market.venue) == Some(acct) && {
+                            let partner = if acct == arb.leg_a_account.trim() {
+                                arb.leg_b_account.trim()
+                            } else {
+                                arb.leg_a_account.trim()
+                            };
+                            let partner_grid = self
+                                .config
+                                .account_round_durations
+                                .get(partner)
+                                .copied()
+                                .filter(|d| *d > 0)
+                                .unwrap_or(self.config.default_round_duration_sec);
+                            partner_grid == market_decl
+                        }
+                    });
+                if !arb_partner_grid_ok {
+                    return Err(CoreError::new(
+                        CoreErrorCode::RiskRejected,
+                        format!(
+                            "round duration conflict: market `{}` declares {market_decl}s \
+                             but account `{}` anchors on {account_grid}s — \
+                             refuse entry (fail-closed: align the account's \
+                             ACCOUNT_<ID>_ROUND_DURATION_SEC with the market's family)",
+                            req.token_id,
+                            req.account_id,
+                            account_grid = *account_grid
+                        ),
+                    ));
+                }
             }
             // The pair-cost cap: a BUY whose condition already has a
             // counterpart position may not push the pair's PER-SHARE cost

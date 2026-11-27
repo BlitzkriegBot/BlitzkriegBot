@@ -144,6 +144,26 @@ impl Core {
                 .unwrap_or_default();
             families.push((venue, duration_sec));
         }
+        if let Some(arb) = &self.arb_leg_config {
+            let dur_a = cfg
+                .account_round_durations
+                .get(arb.leg_a_account.as_str())
+                .copied()
+                .unwrap_or(cfg.default_round_duration_sec);
+            let dur_b = cfg
+                .account_round_durations
+                .get(arb.leg_b_account.as_str())
+                .copied()
+                .unwrap_or(cfg.default_round_duration_sec);
+            for dur in [dur_a, dur_b] {
+                if !arb.leg_a_venue.is_empty() {
+                    families.push((arb.leg_a_venue.clone(), dur));
+                }
+                if !arb.leg_b_venue.is_empty() {
+                    families.push((arb.leg_b_venue.clone(), dur));
+                }
+            }
+        }
         if let Some(engine) = self.engine.as_mut() {
             engine.set_scanner_grids(families);
         }

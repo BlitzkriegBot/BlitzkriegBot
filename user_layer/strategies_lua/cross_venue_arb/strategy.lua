@@ -367,37 +367,79 @@ end
 
 -- ── per-asset pairing ───────────────────────────────────────────────────────
 
---- The two legs of ONE asset across the configured venues: exactly one
---- bk.markets() row per leg venue (a duplicated venue row is ambiguous —
---- `nil`), both rows' UP books quoting fresh; the CHEAPER UP ask wins the
---- UP leg, the other row is the DOWN leg (the #427 blueprint: venue
---- identity is data, the ordering is by price). `nil` unless both leg rows
---- exist and both UP books quote — the asset then simply does not pair
---- this cycle.
+--- The two legs of ONE asset across the configured venues: collect all
+--- bk.markets() rows for leg A's venue and leg B's venue, and match pairs
+--- that share the same expiry window (within 60s, or both 0 in legacy
+--- fixtures where each side has one row). Multi-family tables (e.g. a venue
+--- listing both 5m and 15m rows for BTC) are handled cleanly instead of
+--- returning nil on the second row. Among matched pairs with fresh UP asks,
+--- pick the best (lowest) UP+DOWN ask sum; the CHEAPER UP ask wins the UP
+--- leg, the other row is the DOWN leg.
 local function pair_for_asset(asset, legs)
-  local row_a, row_b
+  local rows_a, rows_b = {}, {}
   for _, m in ipairs(bk.markets()) do
     if m.venue ~= nil and type(m.asset) == "string" and string.upper(m.asset) == asset then
       if m.venue == legs.a_venue then
-        if row_a ~= nil then return nil end
-        row_a = m
+        rows_a[#rows_a + 1] = m
       elseif m.venue == legs.b_venue then
-        if row_b ~= nil then return nil end
-        row_b = m
+        rows_b[#rows_b + 1] = m
       end
     end
   end
-  if row_a == nil or row_b == nil then return nil end
-  local ask_a = book_ask(row_a.up_token)
-  local ask_b = book_ask(row_b.up_token)
-  if ask_a == nil or ask_b == nil then return nil end
-  local up_row, up_ask, down_row
-  if dec_cmp(ask_a, ask_b) <= 0 then
-    up_row, up_ask, down_row = row_a, ask_a, row_b
-  else
-    up_row, up_ask, down_row = row_b, ask_b, row_a
+  if #rows_a == 0 or #rows_b == 0 then return nil end
+
+  local best = nil
+  local best_sum = nil
+  for _, a in ipairs(rows_a) do
+    local ea = type(a.expires_at_ms) == "number" and a.expires_at_ms or 0
+    local da = type(a.round_duration_sec) == "number" and a.round_duration_sec or 0
+    -- Ambiguous duplicate on leg A within the same (round_duration_sec, expiry) window -> skip.
+    local dup_a = 0
+    for _, a2 in ipairs(rows_a) do
+      local ea2 = type(a2.expires_at_ms) == "number" and a2.expires_at_ms or 0
+      local da2 = type(a2.round_duration_sec) == "number" and a2.round_duration_sec or 0
+      local same_dur_a = (da == 0 or da2 == 0 or da == da2)
+      if same_dur_a and ((ea > 0 and ea2 > 0 and math.abs(ea - ea2) <= 60000) or (ea == 0 and ea2 == 0)) then
+        dup_a = dup_a + 1
+      end
+    end
+    if dup_a == 1 then
+      local matched_b = {}
+      for _, b in ipairs(rows_b) do
+        local eb = type(b.expires_at_ms) == "number" and b.expires_at_ms or 0
+        local db = type(b.round_duration_sec) == "number" and b.round_duration_sec or 0
+        local same_dur = (da == 0 or db == 0 or da == db)
+        local same_window = same_dur and (
+          (ea > 0 and eb > 0 and math.abs(ea - eb) <= 60000)
+          or (ea == 0 and eb == 0 and #rows_a == 1 and #rows_b == 1)
+        )
+        if same_window then
+          matched_b[#matched_b + 1] = b
+        end
+      end
+      -- Exactly one leg-B row may match this expiry window (no ambiguity).
+      if #matched_b == 1 then
+        local b = matched_b[1]
+        local ask_a = book_ask(a.up_token)
+        local ask_b = book_ask(b.up_token)
+        if ask_a ~= nil and ask_b ~= nil then
+          local up_row, up_ask, down_row
+          if dec_cmp(ask_a, ask_b) <= 0 then
+            up_row, up_ask, down_row = a, ask_a, b
+          else
+            up_row, up_ask, down_row = b, ask_b, a
+          end
+          local down_ask = book_ask(down_row.down_token)
+          local sum = down_ask and dec_add(up_ask, down_ask) or nil
+          if best == nil or (sum ~= nil and (best_sum == nil or dec_cmp(sum, best_sum) < 0)) then
+            best = { up_row = up_row, up_ask = up_ask, down_row = down_row }
+            best_sum = sum
+          end
+        end
+      end
+    end
   end
-  return { up_row = up_row, up_ask = up_ask, down_row = down_row }
+  return best
 end
 
 -- ── the pair-book view helpers (issue 568 阶段一) ──────────────────────────
@@ -456,7 +498,7 @@ function bk_evaluate()
   if round == nil then
     return { entries = entries, exits = exits, breaks = {} }
   end
-  local slot = round.slot
+  local default_slot = round.slot
 
   -- The leg configuration. Unconfigured (no `arb_*` keys in the bag — the
   -- kernel merges them only once `arb.config.set` has landed) or malformed
@@ -466,10 +508,6 @@ function bk_evaluate()
   if legs == nil then
     return { entries = entries, exits = exits, breaks = {} }
   end
-
-  -- A new round retires every attempt: the kernel-side PairBook is the
-  -- state (retire_before 闭账旧轮), the strategy keeps no latch of its own.
-  local paired = paired_tokens(slot)
 
   -- Fail-closed fee schedule: both the entry economics AND the release
   -- verdict price BOTH legs' fees. No schedule → no suggestions at all.
@@ -495,6 +533,15 @@ function bk_evaluate()
   for _, asset in ipairs(legs.pairs) do
     local pair = pair_for_asset(asset, legs)
     if pair then
+      local slot = (type(pair.up_row.slot) == "number" and pair.up_row.slot > 0)
+        and pair.up_row.slot or default_slot
+      local paired = paired_tokens(slot)
+      local pair_time_left_sec = round.time_left_sec
+      if slot ~= default_slot
+        and type(pair.up_row.expires_at_ms) == "number" and pair.up_row.expires_at_ms > 0
+        and type(round.now_ms) == "number" and round.now_ms > 0 then
+        pair_time_left_sec = (pair.up_row.expires_at_ms - round.now_ms) // 1000
+      end
       -- Both legs' full book views (ask + depth): the pair economics and
       -- the capacity are computed from the SAME quotes the entries carry.
       local up_leg = book_leg(pair.up_row.up_token)
@@ -536,7 +583,7 @@ function bk_evaluate()
               end
             end
           elseif dec_cmp(cost, open_ceiling) <= 0
-            and round.time_left_sec >= cfg.min_time_left_sec then
+            and pair_time_left_sec >= cfg.min_time_left_sec then
             -- 价差开仓, per direction: each UNHELD leg of the open pair is
             -- offered its entry — capacity = the SMALLER leg's visible ask
             -- depth (the pair is as good as its thinner leg, issue #427),

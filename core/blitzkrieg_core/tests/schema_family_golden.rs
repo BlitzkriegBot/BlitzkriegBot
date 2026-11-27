@@ -103,6 +103,7 @@ fn family_03_risk_limits_result() {
         max_positions: None,
         min_shares: None,
         max_shares: None,
+        persistence_fault: None,
     };
     // §4.4: a Bound crosses the wire as {"value":"<decimal string>","source":
     // "<provenance>"}; Decimal-as-string everywhere else (camelCase).

@@ -804,6 +804,22 @@ impl Core {
     /// behind (which no cancel path would ever release: a Filled order never gets
     /// cancelled).
     pub(crate) fn apply_delta_effects(&mut self, d: FillDelta, now_ms: i64) {
+        // #277: persist the applied-fill idempotency journal BEFORE mutating
+        // the ledger or position book. Without a durable idempotency key, a
+        // restart would re-book the same venue fill twice — fail-closed by
+        // refusing to book this fill and latching the durability fault so all
+        // subsequent entries are rejected.
+        if !self.persist_applied_journal() {
+            let msg = format!(
+                "applied-fill idempotency log write failed for order {} (account {}) — \
+                 fill booking refused (fail-closed, #277)",
+                d.order_id,
+                d.account_id.as_str()
+            );
+            tracing::error!("{msg}");
+            self.emit_risk_alert(CoreErrorCode::RiskRejected, msg);
+            return;
+        }
         let px = d.price;
         // RFC 568 阶段一：配对簿的成交事实喂入（观察者、非判定输入）。
         // FillDelta 不携带 internal_key —— 经 ome.get 取 TrackedOrder 的
@@ -1015,9 +1031,6 @@ impl Core {
         }
         self.project_fill_delta(&d, fee_usd, maker_rebate_usd, now_ms);
         self.emit_fill(d);
-        // The idempotency table changed with this fill; get it on disk before the
-        // next event can arrive (issue #178).
-        self.persist_applied_journal();
     }
 
     /// Keep the position book in sync with fills: BUY opens/averages-in, SELL

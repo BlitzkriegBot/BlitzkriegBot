@@ -479,11 +479,13 @@ impl Core {
             "tops": self.stats.tops,
             "spots": self.stats.spots,
             "rounds": self.stats.rounds,
-            // #1274: JSONL append failure count — durable writes that were
-            // dropped. Trading never stops on this (fail-open); it is purely
-            // an observability signal, readable via `engine.stats` and the
-            // panel's `/api/ping` probe.
+            // #1274 / #277: JSONL append failure count + structured durability
+            // fault status. When any persistence carrier (ledger journal, order
+            // log, applied-fill idempotency log) latches a write failure, new
+            // entries are refused fail-closed with `RiskRejected` while exits
+            // keep flowing.
             "jsonlWriteFailures": crate::jsonl::append_failures(),
+            "persistenceFault": self.persistence_fault_stats_json(),
             // issue #1199 R2: is the OPEN database an empty one? `true` = the
             // store is open and carries NO data (zero `account_risk` rows, no
             // `import_v1` marker) — the panel's reads and writes are landing

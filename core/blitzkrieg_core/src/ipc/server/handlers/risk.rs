@@ -169,6 +169,7 @@ pub(crate) async fn handle_risk(
                     .copied()
                     .unwrap_or(c.config().max_shares),
             );
+            doc.persistence_fault = Some(c.persistence_fault_view(&target_account));
             if let Some(vars) = &file {
                 crate::cockpit::overlay_risk_limits(vars, &mut doc.exit, &mut doc.account);
             }

@@ -55,10 +55,29 @@ export function exchangeUpdownUrl(
   asset: string,
   durationSec: number,
   roundId: number,
+  venue?: string | null,
+  conditionId?: string | null,
 ): string | null {
-  const label = durationLabel(durationSec)
-  const id = venueRoundId(roundId, durationSec)
-  const name = asset.trim().toLowerCase()
-  if (!label || id < VENUE_TS_FLOOR || !name) return null
-  return `https://polymarket.com/zh/event/${name}-updown-${label}-${id}`
+  const v = (venue ?? "").trim().toLowerCase()
+  if (!v) return null
+  if (v === "polymarket") {
+    const label = durationLabel(durationSec)
+    const id = venueRoundId(roundId, durationSec)
+    const name = asset.trim().toLowerCase()
+    if (!label || id < VENUE_TS_FLOOR || !name) return null
+    return `https://polymarket.com/zh/event/${name}-updown-${label}-${id}`
+  }
+  if (v === "kalshi") {
+    const cond = (conditionId ?? "").trim()
+    const series = cond ? cond.split("-")[0].trim().toLowerCase() : ""
+    if (series && /^kx[a-z0-9]+$/.test(series)) {
+      return `https://kalshi.com/markets/${series}`
+    }
+    const name = asset.trim().toLowerCase()
+    if (durationSec === 900 && name) {
+      return `https://kalshi.com/markets/kx${name}15m`
+    }
+    return null
+  }
+  return null
 }

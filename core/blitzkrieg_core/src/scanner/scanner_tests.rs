@@ -881,6 +881,52 @@ fn daily_et_noon_end_is_kept_while_still_open() {
     );
 }
 
+#[test]
+fn short_5m_round_scales_15m_timing_guards_so_100s_left_is_trading() {
+    let mut s = Scanner::new(ScannerConfig {
+        round_duration_sec: 900,
+        min_round_age_sec: 30,
+        min_time_left_sec: 180,
+        ..Default::default()
+    });
+    // 5m round: 1_700_000_100_000 end, 300s long (starts at 1_699_999_800_000).
+    let end_ms = 1_700_000_100_000i64;
+    let mut m5 = gate_market(end_ms, "polymarket");
+    m5.round_duration_sec = 300;
+    m5.round_slot = end_ms / 1000 / 300;
+    s.set_markets(vec![m5.clone()]);
+
+    // 100s remaining (200s elapsed): must be TRADING (scaled floor = 60s),
+    // not blocked by the 15m 180s floor.
+    let at_100s_left = end_ms - 100_000;
+    s.observe_end_time_for("polymarket", 300, end_ms, at_100s_left);
+    assert!(
+        s.can_trade_reason_for(&m5, at_100s_left).is_ok(),
+        "5m round with 100s left must be TRADING: {:?}",
+        s.can_trade_reason_for(&m5, at_100s_left)
+    );
+
+    // 50s remaining (< 60s scaled floor): still blocked.
+    let at_50s_left = end_ms - 50_000;
+    assert_eq!(
+        s.can_trade_reason_for(&m5, at_50s_left),
+        Err(TimingBlock::TooCloseToExpiry {
+            time_left_sec: 50,
+            min_time_left_sec: 60,
+        })
+    );
+
+    // 5s elapsed (< 10s scaled age): still TooYoung.
+    let at_5s_age = end_ms - 295_000;
+    assert_eq!(
+        s.can_trade_reason_for(&m5, at_5s_age),
+        Err(TimingBlock::TooYoung {
+            age_sec: 5,
+            min_age_sec: 10,
+        })
+    );
+}
+
 /// `target = "engine"` events for the grid-pool refusal line.
 #[derive(Clone)]
 struct OffPoolLogCapture(Arc<Mutex<Vec<tracing::Level>>>);

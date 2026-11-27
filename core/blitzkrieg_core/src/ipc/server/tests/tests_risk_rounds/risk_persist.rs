@@ -724,3 +724,256 @@ async fn non_default_account_risk_set_systemic_takes_effect_immediately_on_order
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Issue #277 close conditions:
+/// 1. Ledger journal append failure latches `journal_write_failed()`, refuses
+///    new entries with `RiskRejected`, keeps exits flowing, and surfaces via
+///    `risk.limits` + `engine.stats`.
+/// 2. Order log append failure latches `OrderDb::write_failed()`, refuses new
+///    entries with `RiskRejected`, and surfaces via `risk.limits` + `engine.stats`.
+/// 3. Applied-fill idempotency log append failure refuses booking the fill
+///    (fail-closed: no ledger/position mutation), latches `write_failed()`,
+///    refuses subsequent entries with `RiskRejected`, and surfaces via
+///    `risk.limits` + `engine.stats`.
+#[tokio::test]
+async fn issue_277_persistence_write_failures_fail_closed_and_surface_in_risk_and_stats() {
+    use crate::model::{Fill, FillPolicy, FillStatus, OrderRequest, Side};
+    use blitzkrieg_market_api::{AccountId, CoreErrorCode};
+    use rust_decimal_macros::dec;
+
+    let make_entry = |key: &str, tok: &str| OrderRequest {
+        token_id: tok.into(),
+        condition_id: "cond_277".into(),
+        side: Side::Buy,
+        mode: FillPolicy::Taker,
+        price: dec!(0.50),
+        size: dec!(2),
+        internal_key: key.into(),
+        strategy: "probe_277".into(),
+        asset: "BTC".into(),
+        direction: "up".into(),
+        round_slot: 1_795_751_700,
+        account_id: AccountId::from("default"),
+    };
+    let make_close = |key: &str, tok: &str| OrderRequest {
+        token_id: tok.into(),
+        condition_id: "cond_277".into(),
+        side: Side::Sell,
+        mode: FillPolicy::Taker,
+        price: dec!(0.50),
+        size: dec!(2),
+        internal_key: format!("exit:{key}"),
+        strategy: "probe_277".into(),
+        asset: "BTC".into(),
+        direction: "up".into(),
+        round_slot: 1_795_751_700,
+        account_id: AccountId::from("default"),
+    };
+
+    let now_ms = 1_795_751_760_000i64;
+    let registry = crate::market::registry::MarketPluginRegistry::new();
+    let peer = PeerAuth::SameUid { uid: own_uid() };
+
+    // ── 1. Ledger journal write failure ───────────────────────────────────
+    {
+        let dir = std::env::temp_dir().join(format!("bk-277-journal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bad_journal_dir = dir.join("ledger");
+        // Pre-create the exact journal file path as a directory so append fails deterministically.
+        std::fs::create_dir_all(bad_journal_dir.join("default.journal.dry.jsonl")).unwrap();
+
+        let cfg = CoreConfig {
+            dry_seed_balance: dec!(100),
+            trade_log_path: None,
+            order_log_path: None,
+            position_log_path: None,
+            ledger_journal_dir: Some(bad_journal_dir.to_string_lossy().into_owned()),
+            allowed_round_secs: crate::account::config::TEST_ALLOWED_ROUNDS.to_vec(),
+            ..Default::default()
+        };
+        let mut c = Core::new(cfg);
+        c.set_balance(dec!(100));
+        // Trigger a journal write (first place_pending reserves cash and appends to journal).
+        let _ = c.place_pending(make_entry("k1", "tok1"), now_ms);
+        assert!(
+            c.ledger().journal_write_failed(),
+            "ledger journal write failure must latch"
+        );
+        // Next entry must be refused fail-closed with RiskRejected.
+        let err = c
+            .place_pending(make_entry("k2", "tok2"), now_ms + 1)
+            .expect_err("new entry must fail-closed after journal write failure");
+        assert_eq!(err.code, CoreErrorCode::RiskRejected);
+        assert!(
+            err.message.contains("ledger journal") && err.message.contains("non-durable"),
+            "diagnostic error message expected, got: {}",
+            err.message
+        );
+        // Exits must NOT be blocked by persistence fault.
+        assert!(
+            c.account_gate_permits(&make_close("k1", "tok1"), now_ms + 1)
+                .is_ok(),
+            "exits must keep flowing under persistence fault"
+        );
+
+        let stats = c.engine_stats();
+        assert_eq!(stats["persistenceFault"]["active"], serde_json::json!(true));
+        assert_eq!(
+            stats["persistenceFault"]["journalWriteFailed"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            stats["persistenceFault"]["faultedAccounts"],
+            serde_json::json!(["default"])
+        );
+
+        let core = Arc::new(AsyncMutex::new(c));
+        let limits = rpc(
+            &core,
+            &registry,
+            &peer,
+            r#"{"jsonrpc":"2.0","id":1,"method":"risk.limits","params":{"accountId":"default"}}"#
+                .to_string(),
+        )
+        .await;
+        assert_eq!(
+            limits["result"]["persistenceFault"]["active"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            limits["result"]["persistenceFault"]["journalWriteFailed"],
+            serde_json::json!(true)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 2. Order log write failure ────────────────────────────────────────
+    {
+        let dir = std::env::temp_dir().join(format!("bk-277-orderdb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bad_order_log = dir.join("orders.jsonl");
+        std::fs::create_dir_all(&bad_order_log).unwrap();
+
+        let cfg = CoreConfig {
+            dry_seed_balance: dec!(100),
+            trade_log_path: None,
+            order_log_path: Some(bad_order_log.to_string_lossy().into_owned()),
+            position_log_path: None,
+            allowed_round_secs: crate::account::config::TEST_ALLOWED_ROUNDS.to_vec(),
+            ..Default::default()
+        };
+        let mut c = Core::new(cfg);
+        c.set_balance(dec!(100));
+        let _ = c.place_pending(make_entry("ok1", "otok1"), now_ms);
+
+        let err = c
+            .place_pending(make_entry("ok2", "otok2"), now_ms + 1)
+            .expect_err("new entry must fail-closed after order log write failure");
+        assert_eq!(err.code, CoreErrorCode::RiskRejected);
+        assert!(
+            err.message.contains("order log"),
+            "error must name order log: {}",
+            err.message
+        );
+        assert_eq!(
+            c.engine_stats()["persistenceFault"]["orderLogWriteFailed"],
+            serde_json::json!(true)
+        );
+        let core = Arc::new(AsyncMutex::new(c));
+        let limits = rpc(
+            &core,
+            &registry,
+            &peer,
+            r#"{"jsonrpc":"2.0","id":2,"method":"risk.limits","params":{"accountId":"default"}}"#
+                .to_string(),
+        )
+        .await;
+        assert_eq!(
+            limits["result"]["persistenceFault"]["orderLogWriteFailed"],
+            serde_json::json!(true)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 3. Applied-fill idempotency log write failure ─────────────────────
+    {
+        let dir = std::env::temp_dir().join(format!("bk-277-applied-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bad_applied_log = dir.join("applied-fills.jsonl");
+        std::fs::create_dir_all(&bad_applied_log).unwrap();
+
+        let cfg = CoreConfig {
+            dry_seed_balance: dec!(100),
+            trade_log_path: None,
+            order_log_path: None,
+            applied_log_path: Some(bad_applied_log.to_string_lossy().into_owned()),
+            position_log_path: None,
+            allowed_round_secs: crate::account::config::TEST_ALLOWED_ROUNDS.to_vec(),
+            ..Default::default()
+        };
+        let mut c = Core::new(cfg);
+        c.set_balance(dec!(100));
+        let (order_id, _) = c
+            .place_pending(make_entry("ak1", "atok1"), now_ms)
+            .expect("first entry places before applied-fill fault");
+        let bal_before = c.ledger().balance();
+
+        c.ingest_fill(
+            Fill {
+                order_id: order_id.clone(),
+                trade_id: Some("trade-277-1".into()),
+                token_id: "atok1".into(),
+                side: Side::Buy,
+                price: dec!(0.50),
+                size: dec!(2),
+                status: FillStatus::Confirmed,
+                ts_ms: now_ms + 10,
+                tx_hash: None,
+                maker: Some(false),
+                account_id: AccountId::from("default"),
+            },
+            now_ms + 10,
+        )
+        .expect("ingest_fill runs fail-closed handler");
+
+        // Fill booking must be refused when idempotency log write fails:
+        // no open position created and ledger balance untouched.
+        assert!(
+            c.positions().open_positions().is_empty(),
+            "position must NOT be opened when applied-fill idempotency log write fails"
+        );
+        assert_eq!(
+            c.ledger().balance(),
+            bal_before,
+            "ledger balance must NOT move when applied-fill idempotency log write fails"
+        );
+        // Subsequent entries must be rejected with RiskRejected.
+        let err = c
+            .place_pending(make_entry("ak2", "atok2"), now_ms + 20)
+            .expect_err("next entry must fail-closed after applied-fill log write failure");
+        assert_eq!(err.code, CoreErrorCode::RiskRejected);
+        assert!(
+            err.message.contains("applied-fill idempotency log"),
+            "error must name applied-fill idempotency log: {}",
+            err.message
+        );
+        assert_eq!(
+            c.engine_stats()["persistenceFault"]["appliedFillLogWriteFailed"],
+            serde_json::json!(true)
+        );
+        let core = Arc::new(AsyncMutex::new(c));
+        let limits = rpc(
+            &core,
+            &registry,
+            &peer,
+            r#"{"jsonrpc":"2.0","id":3,"method":"risk.limits","params":{"accountId":"default"}}"#
+                .to_string(),
+        )
+        .await;
+        assert_eq!(
+            limits["result"]["persistenceFault"]["appliedFillLogWriteFailed"],
+            serde_json::json!(true)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

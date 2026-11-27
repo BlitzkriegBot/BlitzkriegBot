@@ -35,18 +35,18 @@ core/blitzkrieg_core/src/jsonl.rs:56 file-direct let mut f = std::fs::File::crea
 core/blitzkrieg_core/src/ledger.rs:259 file-direct && !crate::jsonl::append(&path, &entry)
 core/blitzkrieg_core/src/ledger.rs:697 json-direct if !crate::jsonl::rewrite_atomic(&path, &bytes) {
 core/blitzkrieg_core/src/order_db.rs:43 file-direct if !crate::jsonl::append(&self.jsonl_path, order) {
-core/blitzkrieg_core/src/order_db.rs:78 json-direct crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes());
+core/blitzkrieg_core/src/order_db.rs:77 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes()) {
 core/blitzkrieg_core/src/position/mod.rs:585 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
 core/blitzkrieg_core/src/position/mod.rs:656 json-direct if !crate::jsonl::rewrite_atomic(std::path::Path::new(path), text.as_bytes()) {
 core/blitzkrieg_core/src/round_id_migrate.rs:286 file-direct let mut f = fs::File::create(tmp)?;
 core/blitzkrieg_core/src/runtime_config.rs:70 file-direct let mut f = std::fs::OpenOptions::new()
 core/blitzkrieg_core/src/service/accounts/audit.rs:365 file-direct crate::jsonl::append(std::path::Path::new(path), &value);
-core/blitzkrieg_core/src/service/config/records.rs:108 json-direct if !crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
-core/blitzkrieg_core/src/service/config/records.rs:62 file-direct if let Ok(mut f) = std::fs::OpenOptions::new()
+core/blitzkrieg_core/src/service/config/records.rs:115 json-direct if !crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
+core/blitzkrieg_core/src/service/config/records.rs:67 file-direct if let Ok(mut f) = std::fs::OpenOptions::new()
 core/blitzkrieg_core/src/service/risk_admission/persist.rs:129 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
 core/blitzkrieg_core/src/service/settlement_orders/closing.rs:338 file-direct && !crate::jsonl::append(path, &CloseCredentialLine::Consumed { trade_id: evicted })
 core/blitzkrieg_core/src/service/settlement_orders/closing.rs:347 file-direct && !crate::jsonl::append(
-core/blitzkrieg_core/src/service/settlement_orders/orders.rs:1277 file-direct && !crate::jsonl::append(
+core/blitzkrieg_core/src/service/settlement_orders/orders.rs:1290 file-direct && !crate::jsonl::append(
 core/blitzkrieg_core/src/settlement.rs:208 file-direct if !crate::jsonl::append(&self.path, line) {
 core/blitzkrieg_core/src/shadow/near_miss.rs:292 file-direct let mut f = std::fs::OpenOptions::new()
 core/blitzkrieg_core/src/shadow_evolution/audit.rs:85 file-direct crate::jsonl::append(&path, &rec);

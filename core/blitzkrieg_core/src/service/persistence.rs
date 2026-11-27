@@ -155,17 +155,87 @@ impl Core {
         (n, log.path().display().to_string())
     }
 
-    /// Append whatever the OME journalled since the last drain. Called after every
-    /// applied fill (the only thing that changes the table), so the file is
-    /// crash-consistent with the in-memory table at all times.
-    pub(super) fn persist_applied_journal(&mut self) {
+    /// Append whatever the OME journalled since the last drain. Returns `false`
+    /// (and latches `AppliedFillLog::write_failed`) when the disk append fails,
+    /// so `apply_delta_effects` can refuse booking the fill fail-closed (#277).
+    pub(super) fn persist_applied_journal(&mut self) -> bool {
         let records = self.ome.take_applied_journal();
         if records.is_empty() {
-            return;
+            return true;
         }
         if let Some(log) = self.applied_log.as_ref() {
-            log.append(&records);
+            return log.append(&records);
         }
+        true
+    }
+
+    /// #277: structured durability fault status for one account.
+    pub fn persistence_fault_view(&self, account_id: &str) -> crate::schema::PersistenceFaultView {
+        let journal_write_failed = self
+            .accounts
+            .ledger_of(&crate::account::AccountId::from(account_id))
+            .ok()
+            .is_some_and(|l| l.journal_write_failed());
+        let order_log_write_failed = self.order_db.as_ref().is_some_and(|db| db.write_failed());
+        let applied_fill_log_write_failed = self
+            .applied_log
+            .as_ref()
+            .is_some_and(|log| log.write_failed());
+        crate::schema::PersistenceFaultView {
+            active: journal_write_failed || order_log_write_failed || applied_fill_log_write_failed,
+            journal_write_failed,
+            order_log_write_failed,
+            applied_fill_log_write_failed,
+        }
+    }
+
+    /// #277: human-readable fault list for `account_gate_permits`, or `None`
+    /// when all persistence carriers for `account_id` are healthy.
+    pub(crate) fn persistence_fault_reason(&self, account_id: &str) -> Option<String> {
+        let v = self.persistence_fault_view(account_id);
+        if !v.active {
+            return None;
+        }
+        let mut parts: Vec<&'static str> = Vec::new();
+        if v.journal_write_failed {
+            parts.push("ledger journal");
+        }
+        if v.order_log_write_failed {
+            parts.push("order log");
+        }
+        if v.applied_fill_log_write_failed {
+            parts.push("applied-fill idempotency log");
+        }
+        Some(parts.join(", "))
+    }
+
+    /// #277: process-wide durability fault summary for `engine.stats`.
+    pub(crate) fn persistence_fault_stats_json(&self) -> serde_json::Value {
+        let faulted_accounts: Vec<String> = self
+            .accounts
+            .account_list()
+            .iter()
+            .filter(|a| {
+                self.accounts
+                    .ledger_of(&a.id)
+                    .ok()
+                    .is_some_and(|l| l.journal_write_failed())
+            })
+            .map(|a| a.id.as_str().to_string())
+            .collect();
+        let journal_write_failed = !faulted_accounts.is_empty();
+        let order_log_write_failed = self.order_db.as_ref().is_some_and(|db| db.write_failed());
+        let applied_fill_log_write_failed = self
+            .applied_log
+            .as_ref()
+            .is_some_and(|log| log.write_failed());
+        serde_json::json!({
+            "active": journal_write_failed || order_log_write_failed || applied_fill_log_write_failed,
+            "journalWriteFailed": journal_write_failed,
+            "orderLogWriteFailed": order_log_write_failed,
+            "appliedFillLogWriteFailed": applied_fill_log_write_failed,
+            "faultedAccounts": faulted_accounts,
+        })
     }
 
     /// Persist one order's current snapshot. The store write result is

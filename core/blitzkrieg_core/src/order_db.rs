@@ -73,9 +73,15 @@ impl OrderDb {
                 buf.push('\n');
             }
         }
-        // #463: atomic rewrite — the compact is the one full-file rewrite on
-        // the order log's recovery path.
-        crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes());
+        // #463 / #277: atomic rewrite — latch durability fault if rewrite fails.
+        if !crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes()) {
+            self.write_failed
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::error!(
+                path = %self.jsonl_path.display(),
+                "order jsonl compact failed — durability fault latched"
+            );
+        }
     }
 
     /// issue 561 账户维重置：从持久订单日志里丢掉 `account` 的全部行，其他

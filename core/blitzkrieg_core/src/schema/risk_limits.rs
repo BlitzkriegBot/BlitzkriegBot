@@ -38,6 +38,23 @@ pub struct RiskLimitsResult {
     pub min_shares: Option<Decimal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_shares: Option<Decimal>,
+    /// #277: durability fault state for the target account (ledger journal,
+    /// order log, applied-fill idempotency log). When `active == true`, new
+    /// entries are refused fail-closed with `RiskRejected` while exits keep
+    /// flowing. Additive optional field — omitted when `None` to keep the
+    /// frozen wire golden byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistence_fault: Option<PersistenceFaultView>,
+}
+
+/// #277: per-account persistence durability status exposed by `risk.limits`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistenceFaultView {
+    pub active: bool,
+    pub journal_write_failed: bool,
+    pub order_log_write_failed: bool,
+    pub applied_fill_log_write_failed: bool,
 }
 
 impl RiskLimitsResult {
@@ -72,6 +89,7 @@ impl RiskLimitsResult {
             max_positions: None,
             min_shares: None,
             max_shares: None,
+            persistence_fault: None,
         }
     }
 }

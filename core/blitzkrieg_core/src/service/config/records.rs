@@ -38,12 +38,12 @@ impl AppliedFillLog {
         &self.path
     }
 
-    /// Append the mutations. Best effort, like every other log here: a write
-    /// failure must never interrupt trading (the in-memory table stays
-    /// authoritative for this run, and the OME warns when its journal is full).
-    pub fn append(&self, records: &[AppliedFillRecord]) {
+    /// Append the mutations to disk. Fail-closed (#277): returns `false` and
+    /// latches `write_failed` if the file cannot be opened or written, so the
+    /// caller refuses booking the fill and blocks further entries.
+    pub fn append(&self, records: &[AppliedFillRecord]) -> bool {
         if records.is_empty() {
-            return;
+            return true;
         }
         if let Some(dir) = self.path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -55,7 +55,12 @@ impl AppliedFillLog {
                     buf.push_str(&line);
                     buf.push('\n');
                 }
-                Err(e) => tracing::warn!(error = %e, "cannot serialize applied-fill record"),
+                Err(e) => {
+                    self.write_failed
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    tracing::error!(error = %e, "cannot serialize applied-fill record — durability fault latched");
+                    return false;
+                }
             }
         }
         use std::io::Write as _;
@@ -68,11 +73,14 @@ impl AppliedFillLog {
                 self.write_failed
                     .store(true, std::sync::atomic::Ordering::Release);
                 tracing::error!(error = %e, path = %self.path.display(), "applied-fill log append failed — durability fault latched");
+                return false;
             }
+            true
         } else {
             self.write_failed
                 .store(true, std::sync::atomic::Ordering::Release);
             tracing::error!(path = %self.path.display(), "cannot open applied-fill log — durability fault latched");
+            false
         }
     }
 
@@ -103,10 +111,11 @@ impl AppliedFillLog {
                 Err(e) => tracing::warn!(error = %e, "cannot serialize applied-fill record"),
             }
         }
-        // #463: atomic rewrite — the compact runs right after a restore, which
-        // is exactly when a torn file would be trusted as the dedup table.
+        // #463 / #277: atomic rewrite — latch durability fault if rewrite fails.
         if !crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
-            tracing::warn!(path = %self.path.display(), "applied-fill log compact failed");
+            self.write_failed
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::error!(path = %self.path.display(), "applied-fill log compact failed — durability fault latched");
         }
     }
 }

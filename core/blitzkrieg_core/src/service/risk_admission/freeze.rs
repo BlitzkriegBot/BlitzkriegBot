@@ -408,6 +408,20 @@ impl Core {
             ));
         }
 
+        // #277: fail-closed on persistence faults (ledger journal / order log /
+        // applied-fill idempotency log write failure). New entries are refused
+        // with `RiskRejected` while exits keep flowing so held positions are
+        // never trapped.
+        if !is_close && let Some(fault) = self.persistence_fault_reason(account_id) {
+            return Err(CoreError::new(
+                CoreErrorCode::RiskRejected,
+                format!(
+                    "account `{account_id}` persistence fault ({fault} write failed) — \
+                     account marked non-durable; new entries refused (fail-closed, exits keep flowing)"
+                ),
+            ));
+        }
+
         // #187: venue 轴。执行 venue 被 halt → 只拒这个 venue 的入场，平仓
         // 照旧（halt 永远不是拆仓位）。
         if !is_close {

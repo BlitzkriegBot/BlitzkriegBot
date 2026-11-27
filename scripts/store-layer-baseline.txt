@@ -13,9 +13,51 @@
 # implementations. It is the exact list PR-1/PR-2 retire.
 # The session.rs .env watcher is a READ path — not a violation, and part of
 # the PR-2 retirement face (map §3.2 A2): do not delete it.
+core/blitzkrieg_core/src/arbitration/audit.rs:169 file-direct let appended = OpenOptions::new()
+core/blitzkrieg_core/src/backtest_jobs.rs:497 file-direct let _ = std::fs::write(report_path_for(&archive_sidecar), format!("{text}\n"));
+core/blitzkrieg_core/src/data_lock.rs:715 file-direct std::fs::write(&tmp, &bytes)?;
+core/blitzkrieg_core/src/data_source.rs:204 file-direct let file = OpenOptions::new().create(true).append(true).open(path)?;
+core/blitzkrieg_core/src/data_source.rs:323 file-direct match OpenOptions::new()
+core/blitzkrieg_core/src/data_source.rs:494 file-direct OpenOptions::new()
+core/blitzkrieg_core/src/data_source.rs:499 file-direct File::create(std::env::temp_dir().join("bk-archive-sink")).expect("temp sink")
+core/blitzkrieg_core/src/execution_policy/rules.rs:298 file-direct crate::jsonl::append(path, record)
+core/blitzkrieg_core/src/hedge/audit.rs:67 file-direct if !crate::jsonl::append(path, rec) {
+core/blitzkrieg_core/src/ipc/server/handlers/blueprint.rs:270 file-direct std::fs::write(&lua_path, p.lua.as_bytes())
+core/blitzkrieg_core/src/ipc/server/handlers/blueprint.rs:282 file-direct std::fs::write(&manifest_path, manifest_body.as_bytes())
+core/blitzkrieg_core/src/ipc/server/handlers/blueprint.rs:445 file-direct std::fs::File::create(&temp).map_err(|e| format!("cannot stage {temp:?}: {e}"))?;
+core/blitzkrieg_core/src/ipc/server/handlers/blueprint.rs:468 file-direct let _ = std::fs::write(tgt, old);
+core/blitzkrieg_core/src/ipc/version.rs:1046 file-direct crate::jsonl::append(&std::path::PathBuf::from("data/update/audit.jsonl"), value);
+core/blitzkrieg_core/src/ipc/version.rs:597 file-direct std::fs::write(&tmp, &bytes)?;
+core/blitzkrieg_core/src/ipc/version.rs:600 file-direct std::fs::write(&sums_tmp, &sums)?;
+core/blitzkrieg_core/src/ipc/version.rs:966 file-direct std::fs::write(&tmp, serde_json::to_vec_pretty(&doc)?)?;
+core/blitzkrieg_core/src/jsonl.rs:308 file-direct let ok = match std::fs::OpenOptions::new()
+core/blitzkrieg_core/src/jsonl.rs:56 file-direct let mut f = std::fs::File::create(&tmp)?;
+core/blitzkrieg_core/src/ledger.rs:255 file-direct && !crate::jsonl::append(&path, &entry)
 core/blitzkrieg_core/src/ledger.rs:692 json-direct if !crate::jsonl::rewrite_atomic(&path, &bytes) {
+core/blitzkrieg_core/src/order_db.rs:37 file-direct if !crate::jsonl::append(&self.jsonl_path, order) {
 core/blitzkrieg_core/src/order_db.rs:70 json-direct crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes());
 core/blitzkrieg_core/src/position/mod.rs:580 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
 core/blitzkrieg_core/src/position/mod.rs:651 json-direct if !crate::jsonl::rewrite_atomic(std::path::Path::new(path), text.as_bytes()) {
+core/blitzkrieg_core/src/round_id_migrate.rs:286 file-direct let mut f = fs::File::create(tmp)?;
+core/blitzkrieg_core/src/runtime_config.rs:70 file-direct let mut f = std::fs::OpenOptions::new()
+core/blitzkrieg_core/src/service/accounts/audit.rs:365 file-direct crate::jsonl::append(std::path::Path::new(path), &value);
+core/blitzkrieg_core/src/service/config/records.rs:60 file-direct if let Ok(mut f) = std::fs::OpenOptions::new()
 core/blitzkrieg_core/src/service/config/records.rs:98 json-direct if !crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
 core/blitzkrieg_core/src/service/risk_admission/persist.rs:129 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
+core/blitzkrieg_core/src/service/settlement_orders/closing.rs:338 file-direct && !crate::jsonl::append(path, &CloseCredentialLine::Consumed { trade_id: evicted })
+core/blitzkrieg_core/src/service/settlement_orders/closing.rs:347 file-direct && !crate::jsonl::append(
+core/blitzkrieg_core/src/service/settlement_orders/orders.rs:1277 file-direct && !crate::jsonl::append(
+core/blitzkrieg_core/src/settlement.rs:208 file-direct if !crate::jsonl::append(&self.path, line) {
+core/blitzkrieg_core/src/shadow/near_miss.rs:292 file-direct let mut f = std::fs::OpenOptions::new()
+core/blitzkrieg_core/src/shadow_evolution/audit.rs:85 file-direct crate::jsonl::append(&path, &rec);
+core/blitzkrieg_core/src/shadow_evolution/proposal.rs:335 file-direct if std::fs::write(&tmp, body).is_ok() {
+core/blitzkrieg_core/src/shadow_evolution/proposal.rs:347 file-direct crate::jsonl::append(&self.proposals_path(), &p);
+core/blitzkrieg_core/src/shadow_evolution/proposal.rs:408 file-direct crate::jsonl::append(&self.proposals_path(), p);
+core/blitzkrieg_core/src/shadow_evolution/proposal.rs:451 file-direct crate::jsonl::append(
+core/blitzkrieg_core/src/shadow_evolution/proposal.rs:476 file-direct crate::jsonl::append(
+core/blitzkrieg_core/src/shadow_evolution/proposal.rs:549 file-direct if std::fs::write(&tmp, format!("{line}\n")).is_ok() {
+core/blitzkrieg_core/src/strategy_state.rs:109 file-direct if let Err(e) = std::fs::write(&tmp, doc.to_string()) {
+core/blitzkrieg_launcher/src/bin_support/subcommands.rs:170 file-direct match std::fs::write(p, format!("{json}\n")) {
+core/blitzkrieg_launcher/src/bin_support/subcommands.rs:40 file-direct match std::fs::write(&out, &lua) {
+core/blitzkrieg_launcher/src/bin_support/subcommands.rs:87 file-direct let _ = std::fs::write(p, json + "\n");
+core/blitzkrieg_launcher/src/bin_support/subcommands.rs:96 file-direct let _ = std::fs::write(&md_path, render_markdown(&report));

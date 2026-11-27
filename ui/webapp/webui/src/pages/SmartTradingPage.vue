@@ -225,9 +225,8 @@ async function saveReverseBlueprint(): Promise<void> {
 function openInBlueprintCanvas(): void {
   if (savedStrategyName.value) {
     store.requestBlueprintPreload(savedStrategyName.value)
-  } else {
-    store.requestNav('blueprint')
   }
+  store.requestNav('blueprint')
 }
 
 // ── 样本外回测验真闭环（Stage 3） ────────────────────────────────────────────

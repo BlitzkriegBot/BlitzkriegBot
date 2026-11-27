@@ -265,12 +265,22 @@ async function saveAll(): Promise<void> {
       return
     }
     // 4. 一次性写入：系统限额、退出纪律、执行策略整段（参数 + 规则）
+    // issue 271: 显式携带当前显示账户 accountId，避免切换账户 B 时静默写入账户 A。
+    const targetAccountId = store.activeAccount ?? undefined
     if (keys.length > 0) {
-      const res = await api.riskSetSystemic({ ...limitsPatch, reason: 'webui 面板编辑（生效风控卡）' })
+      const res = await api.riskSetSystemic({
+        ...limitsPatch,
+        accountId: targetAccountId,
+        reason: 'webui 面板编辑（生效风控卡）',
+      })
       if (res.error) throw new Error(res.error)
     }
     if (exitKeys.length > 0) {
-      const res = await api.riskSetExit({ ...exitPatch, reason: 'webui 面板编辑（退出纪律）' })
+      const res = await api.riskSetExit({
+        ...exitPatch,
+        accountId: targetAccountId,
+        reason: 'webui 面板编辑（退出纪律）',
+      })
       if (res.error) throw new Error(res.error)
     }
     if (policySection.value) {

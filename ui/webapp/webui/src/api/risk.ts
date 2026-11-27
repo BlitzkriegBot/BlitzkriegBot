@@ -72,6 +72,8 @@ export interface RiskLimitsDoc {
  * issue #983：全部为账户级限额，无全局限额。
  */
 export interface RiskSetSystemicBody {
+  /** 目标账户 id（issue 271：显式传递面板当前显示账户，不隐式落回进程 active）。 */
+  accountId?: string
   maxSingleLossUsd?: string | number
   maxDailyDrawdownUsd?: string | number
   maxPositionSize?: string | number
@@ -118,6 +120,8 @@ export interface SystemicLimitUpdateDoc {
  * 校准值）。`reason` 进审计行。
  */
 export interface RiskSetExitBody {
+  /** 目标账户 id（issue 271：显式传递面板当前显示账户）。 */
+  accountId?: string
   stopLossPct?: string | number
   takeProfitPct?: string | number
   forceExitSec?: number

@@ -318,19 +318,21 @@ mod tests {
 
     #[test]
     fn allow_mode_and_two_layer_intersection() {
-        let mut tw = AccountTradingWindows::default();
-        tw.account = Some(TradingWindowPolicy {
-            enabled: true,
-            mode: TradingWindowMode::Allow,
-            tz_offset_min: 480,
-            timezone: Some("Asia/Shanghai".into()),
-            intervals: vec![TimeInterval {
-                start_min: 8 * 60,
-                end_min: 20 * 60,
-                weekdays: vec![],
-            }],
-            label: None,
-        });
+        let mut tw = AccountTradingWindows {
+            account: Some(TradingWindowPolicy {
+                enabled: true,
+                mode: TradingWindowMode::Allow,
+                tz_offset_min: 480,
+                timezone: Some("Asia/Shanghai".into()),
+                intervals: vec![TimeInterval {
+                    start_min: 8 * 60,
+                    end_min: 20 * 60,
+                    weekdays: vec![],
+                }],
+                label: None,
+            }),
+            ..Default::default()
+        };
         tw.strategies.insert(
             "consensus_favorite".into(),
             TradingWindowPolicy {

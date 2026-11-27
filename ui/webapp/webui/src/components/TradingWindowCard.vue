@@ -1,18 +1,20 @@
 <script setup lang="ts">
 /**
- * 交易时段风控卡 — 账户级 + 策略级交易时间窗口配置。
+ * 交易时段风控卡 — 账户级 + 时间策略组 + 策略级交易时间窗口配置。
  *
  * 设计契约：
- *  - 两层作用域（账户级全局安全网 + 策略级独立覆写），同时开启时取交集（Fail-Closed）；
+ *  - 三层作用域（账户级全局安全网 ∩ 所属时间策略组 ∩ 单策略独立覆写），同时开启时取交集（Fail-Closed）；
+ *  - 支持按金融盘面 IANA 时区（北京/东京/伦敦/纽约/UTC）自动处理美欧夏令时切换；
  *  - 仅拦截新开仓，绝不拦截平仓、止损、thesis_death_exit 与到期结算；
  *  - 保存后经 `risk.tradingWindows.set` 写入 SQLite 并热推送到内核，无需重启。
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import { Clock, Plus, Save, Trash2 } from 'lucide-vue-next'
+import { Clock, Layers, Plus, Save, Trash2 } from 'lucide-vue-next'
 import {
   api,
   type AccountTradingWindows,
   type TradingTimeInterval,
+  type TradingWindowGroup,
   type TradingWindowMode,
   type TradingWindowPolicy,
   type TradingWindowStatusDoc,
@@ -34,14 +36,17 @@ const flash = ref<string | null>(null)
 const statusDoc = ref<TradingWindowStatusDoc | null>(null)
 
 const acctPolicy = ref<TradingWindowPolicy>(defaultPolicy())
+const groupPolicies = ref<TradingWindowGroup[]>([])
 const strategyPolicies = ref<Array<{ name: string; policy: TradingWindowPolicy }>>([])
+const newGroupName = ref('')
 const newStrategyName = ref('')
 
 const TZ_OPTIONS = [
-  { offset: 480, label: '北京时间 (UTC+8)', tz: 'Asia/Shanghai' },
-  { offset: -300, label: '美东冬令时 (UTC-5)', tz: 'America/New_York' },
-  { offset: -240, label: '美东夏令时 (UTC-4)', tz: 'America/New_York' },
-  { offset: 0, label: 'UTC 标准时间 (UTC+0)', tz: 'UTC' },
+  { tz: 'Asia/Shanghai', offset: 480, label: '北京时间 (Asia/Shanghai · UTC+8)' },
+  { tz: 'Asia/Tokyo', offset: 540, label: '东京时间 (Asia/Tokyo · UTC+9)' },
+  { tz: 'Europe/London', offset: 0, label: '伦敦时间 (Europe/London · 自动夏令时)' },
+  { tz: 'America/New_York', offset: -300, label: '纽约时间 (America/New_York · 自动夏令时)' },
+  { tz: 'UTC', offset: 0, label: 'UTC 标准时间 (UTC+0)' },
 ]
 
 const WEEKDAY_LABELS = [
@@ -65,28 +70,52 @@ interface WindowPreset {
 
 const PRESETS: WindowPreset[] = [
   {
-    id: 'deny-us-open',
-    label: '避开美盘插针 (20:00-23:30)',
-    mode: 'deny',
-    tzOffsetMin: 480,
-    timezone: 'Asia/Shanghai',
-    intervals: [{ startMin: 20 * 60, endMin: 23 * 60 + 30, weekdays: [1, 2, 3, 4, 5] }],
-  },
-  {
     id: 'allow-asia',
-    label: '仅亚盘温和期 (08:00-16:00)',
+    label: '仅亚盘温和期 (08:00-16:00 北京)',
     mode: 'allow',
     tzOffsetMin: 480,
     timezone: 'Asia/Shanghai',
     intervals: [{ startMin: 8 * 60, endMin: 16 * 60, weekdays: [] }],
   },
   {
-    id: 'deny-night',
-    label: '夜间休眠 (23:00-07:00)',
+    id: 'allow-tokyo',
+    label: '仅东京盘 (09:00-15:00 东京)',
+    mode: 'allow',
+    tzOffsetMin: 540,
+    timezone: 'Asia/Tokyo',
+    intervals: [{ startMin: 9 * 60, endMin: 15 * 60, weekdays: [1, 2, 3, 4, 5] }],
+  },
+  {
+    id: 'allow-london',
+    label: '仅伦敦盘 (08:00-16:30 伦敦)',
+    mode: 'allow',
+    tzOffsetMin: 0,
+    timezone: 'Europe/London',
+    intervals: [{ startMin: 8 * 60, endMin: 16 * 60 + 30, weekdays: [1, 2, 3, 4, 5] }],
+  },
+  {
+    id: 'allow-ny',
+    label: '仅纽约盘 (09:30-16:00 纽约)',
+    mode: 'allow',
+    tzOffsetMin: -300,
+    timezone: 'America/New_York',
+    intervals: [{ startMin: 9 * 60 + 30, endMin: 16 * 60, weekdays: [1, 2, 3, 4, 5] }],
+  },
+  {
+    id: 'deny-ny-open',
+    label: '避开美盘开盘插针 (09:30-11:30 纽约)',
+    mode: 'deny',
+    tzOffsetMin: -300,
+    timezone: 'America/New_York',
+    intervals: [{ startMin: 9 * 60 + 30, endMin: 11 * 60 + 30, weekdays: [1, 2, 3, 4, 5] }],
+  },
+  {
+    id: 'deny-us-open-bj',
+    label: '避开晚盘插针 (20:00-23:30 北京)',
     mode: 'deny',
     tzOffsetMin: 480,
     timezone: 'Asia/Shanghai',
-    intervals: [{ startMin: 23 * 60, endMin: 7 * 60, weekdays: [] }],
+    intervals: [{ startMin: 20 * 60, endMin: 23 * 60 + 30, weekdays: [1, 2, 3, 4, 5] }],
   },
 ]
 
@@ -98,6 +127,28 @@ function defaultPolicy(): TradingWindowPolicy {
     timezone: 'Asia/Shanghai',
     intervals: [{ startMin: 20 * 60, endMin: 23 * 60 + 30, weekdays: [1, 2, 3, 4, 5] }],
     label: null,
+  }
+}
+
+function clonePolicy(pol?: TradingWindowPolicy | null): TradingWindowPolicy {
+  if (!pol) return defaultPolicy()
+  return {
+    ...defaultPolicy(),
+    ...pol,
+    timezone: pol.timezone ?? TZ_OPTIONS.find((t) => t.offset === pol.tzOffsetMin)?.tz ?? 'Asia/Shanghai',
+    intervals: (pol.intervals ?? []).map((iv) => ({
+      startMin: iv.startMin,
+      endMin: iv.endMin,
+      weekdays: [...(iv.weekdays ?? [])],
+    })),
+  }
+}
+
+function onTimezoneChange(pol: TradingWindowPolicy, tz: string): void {
+  pol.timezone = tz
+  const match = TZ_OPTIONS.find((t) => t.tz === tz)
+  if (match) {
+    pol.tzOffsetMin = match.offset
   }
 }
 
@@ -143,7 +194,7 @@ function toggleWeekday(iv: TradingTimeInterval, day: number): void {
 }
 
 function addInterval(pol: TradingWindowPolicy): void {
-  pol.intervals.push({ startMin: 20 * 60, endMin: 23 * 60 + 30, weekdays: [] })
+  pol.intervals.push({ startMin: 8 * 60, endMin: 16 * 60, weekdays: [] })
 }
 
 function removeInterval(pol: TradingWindowPolicy, idx: number): void {
@@ -152,12 +203,64 @@ function removeInterval(pol: TradingWindowPolicy, idx: number): void {
 
 const currentAccount = computed(() => store.activeAccount || 'default')
 
+const allStrategyNames = computed(() => {
+  const raw = (store.snapshot?.strategies ?? []) as Array<string | { name?: string }>
+  const fromSnap = raw.map((s) => (typeof s === 'string' ? s : s.name ?? '')).filter(Boolean)
+  const fromPolicies = strategyPolicies.value.map((s) => s.name)
+  const fromGroups = groupPolicies.value.flatMap((g) => g.strategies)
+  return Array.from(new Set([...fromSnap, ...fromPolicies, ...fromGroups])).sort()
+})
+
 const availableStrategies = computed(() => {
   const existing = new Set(strategyPolicies.value.map((s) => s.name))
-  const raw = (store.snapshot?.strategies ?? []) as Array<string | { name?: string }>
-  const list = raw.map((s) => (typeof s === 'string' ? s : s.name ?? '')).filter(Boolean)
-  return list.filter((n) => !existing.has(n))
+  return allStrategyNames.value.filter((n) => !existing.has(n))
 })
+
+function makeGroupId(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  const base = slug || 'group'
+  const existing = new Set(groupPolicies.value.map((g) => g.id))
+  if (!existing.has(base)) return base
+  let i = 2
+  while (existing.has(`${base}_${i}`)) i += 1
+  return `${base}_${i}`
+}
+
+function addGroup(preset?: WindowPreset): void {
+  const name = (newGroupName.value.trim() || preset?.label || `策略组 ${groupPolicies.value.length + 1}`)
+  const pol = defaultPolicy()
+  pol.enabled = true
+  if (preset) {
+    applyPreset(pol, preset)
+  } else {
+    pol.mode = 'allow'
+    pol.intervals = [{ startMin: 8 * 60, endMin: 16 * 60, weekdays: [] }]
+  }
+  groupPolicies.value.push({
+    id: makeGroupId(name),
+    name,
+    strategies: [],
+    policy: pol,
+  })
+  newGroupName.value = ''
+}
+
+function removeGroup(idx: number): void {
+  groupPolicies.value.splice(idx, 1)
+}
+
+function toggleGroupStrategy(group: TradingWindowGroup, stratName: string): void {
+  const idx = group.strategies.indexOf(stratName)
+  if (idx >= 0) {
+    group.strategies.splice(idx, 1)
+  } else {
+    group.strategies.push(stratName)
+  }
+}
 
 function addStrategyPolicy(): void {
   const name = newStrategyName.value.trim()
@@ -175,28 +278,16 @@ function removeStrategyPolicy(idx: number): void {
 
 function hydrate(doc: TradingWindowStatusDoc): void {
   statusDoc.value = doc
-  acctPolicy.value = doc.windows.account
-    ? {
-        ...defaultPolicy(),
-        ...doc.windows.account,
-        intervals: (doc.windows.account.intervals ?? []).map((iv) => ({
-          startMin: iv.startMin,
-          endMin: iv.endMin,
-          weekdays: [...(iv.weekdays ?? [])],
-        })),
-      }
-    : defaultPolicy()
+  acctPolicy.value = clonePolicy(doc.windows.account)
+  groupPolicies.value = (doc.windows.groups ?? []).map((g) => ({
+    id: g.id,
+    name: g.name,
+    strategies: [...(g.strategies ?? [])],
+    policy: clonePolicy(g.policy),
+  }))
   strategyPolicies.value = Object.entries(doc.windows.strategies ?? {}).map(([name, pol]) => ({
     name,
-    policy: {
-      ...defaultPolicy(),
-      ...pol,
-      intervals: (pol.intervals ?? []).map((iv) => ({
-        startMin: iv.startMin,
-        endMin: iv.endMin,
-        weekdays: [...(iv.weekdays ?? [])],
-      })),
-    },
+    policy: clonePolicy(pol),
   }))
 }
 
@@ -228,6 +319,12 @@ async function saveWindows(): Promise<void> {
     }
     const windows: AccountTradingWindows = {
       account: acctPolicy.value.enabled || acctPolicy.value.intervals.length > 0 ? acctPolicy.value : null,
+      groups: groupPolicies.value.map((g) => ({
+        id: g.id,
+        name: g.name.trim() || g.id,
+        strategies: g.strategies,
+        policy: g.policy,
+      })),
       strategies,
     }
     const doc = await api.setRiskTradingWindows({ account: currentAccount.value, windows })
@@ -255,7 +352,7 @@ onMounted(() => {
 
 <template>
   <Card dense class="mt-3.5">
-    <CardHeader label="交易时段风控（账户级 + 策略级）">
+    <CardHeader label="交易时段风控（账户级 + 时间策略组 + 单策略）">
       <template #action>
         <div class="flex items-center gap-2">
           <Badge
@@ -263,7 +360,7 @@ onMounted(() => {
             :variant="statusDoc.activeNow.accountAllowed ? 'up' : 'gold'"
             dot
           >
-            {{ statusDoc.activeNow.accountAllowed ? '当前允许开仓' : '当前禁开仓时段 · 平仓照放' }}
+            {{ statusDoc.activeNow.accountAllowed ? '账户当前允许开仓' : '账户禁开仓时段 · 平仓照放' }}
           </Badge>
           <Button variant="gold" size="sm" :disabled="saving || loading" @click="saveWindows">
             <Save class="size-3.5" />{{ saving ? '保存中…' : '保存时段规则' }}
@@ -273,7 +370,7 @@ onMounted(() => {
     </CardHeader>
 
     <p class="mb-3 text-[12px] text-muted-fg">
-      按传统金融盘面时段（亚盘/欧盘/美盘）限制新开仓，规避高波双向插针期。账户级与策略级同时开启时取交集；<strong class="font-semibold text-fg">绝不拦截平仓、止损与到期结算</strong>。
+      按金融盘面时区（北京/东京/伦敦/纽约自动夏令时）与时间策略组控制开仓窗口。账户级、所属策略组与单策略规则同时开启时取交集；<strong class="font-semibold text-fg">绝不拦截平仓、止损与到期结算</strong>。
     </p>
 
     <AlertBanner v-if="error" tone="error" title="时段风控操作失败" class="mb-3">
@@ -283,7 +380,7 @@ onMounted(() => {
       {{ flash }}
     </AlertBanner>
 
-    <!-- 账户级时段风控 -->
+    <!-- 1. 账户级时段风控 -->
     <div class="rounded-lg border border-line bg-panel-2 p-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="flex items-center gap-2">
@@ -306,11 +403,11 @@ onMounted(() => {
             <option value="allow">白名单（仅允许以下时段开仓）</option>
           </select>
           <select
-            v-model.number="acctPolicy.tzOffsetMin"
+            :value="acctPolicy.timezone || 'Asia/Shanghai'"
             class="h-7 rounded-md border border-line bg-panel px-2 text-[12px]"
-            @change="acctPolicy.timezone = TZ_OPTIONS.find((t) => t.offset === acctPolicy.tzOffsetMin)?.tz ?? 'UTC'"
+            @change="onTimezoneChange(acctPolicy, ($event.target as HTMLSelectElement).value)"
           >
-            <option v-for="t in TZ_OPTIONS" :key="t.offset" :value="t.offset">{{ t.label }}</option>
+            <option v-for="t in TZ_OPTIONS" :key="t.tz" :value="t.tz">{{ t.label }}</option>
           </select>
           <div class="flex flex-wrap items-center gap-1.5">
             <Button
@@ -374,10 +471,160 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 策略级独立时段风控 -->
+    <!-- 2. 时间策略组（多个策略共享同一盘面/时区窗口） -->
     <div class="mt-3 rounded-lg border border-line bg-panel-2 p-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <span class="text-[13px] font-semibold">策略级独立时段（覆盖单个策略）</span>
+        <div class="flex items-center gap-2">
+          <Layers class="size-4 text-primary" />
+          <span class="text-[13px] font-semibold">时间策略组（多策略共享同一盘面/时区窗口）</span>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <input
+            v-model="newGroupName"
+            type="text"
+            placeholder="输入策略组名称（如：亚盘温和组）"
+            class="h-7 w-52 rounded-md border border-line bg-panel px-2 text-[12px]"
+            @keyup.enter="addGroup()"
+          />
+          <Button variant="outline" size="sm" @click="addGroup()">
+            <Plus class="size-3.5" />新建策略组
+          </Button>
+        </div>
+      </div>
+
+      <div v-if="groupPolicies.length === 0" class="mt-2 text-[11.5px] text-faint-fg">
+        暂无时间策略组；可新建策略组并勾选多个策略，统一按指定时区（如亚盘、伦敦盘、纽约盘）运行。
+      </div>
+
+      <div v-else class="mt-2.5 space-y-2.5">
+        <div
+          v-for="(grp, gIdx) in groupPolicies"
+          :key="grp.id"
+          class="rounded-md border border-line bg-panel p-2.5"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <input
+                v-model="grp.name"
+                type="text"
+                class="h-7 rounded border border-line bg-panel-2 px-2 text-[12.5px] font-semibold"
+              />
+              <Badge variant="outline">已绑定 {{ grp.strategies.length }} 个策略</Badge>
+              <Badge
+                v-if="statusDoc?.activeNow.groups?.[grp.id]"
+                :variant="statusDoc.activeNow.groups[grp.id].allowed ? 'up' : 'gold'"
+              >
+                {{ statusDoc.activeNow.groups[grp.id].allowed ? '组内当前可开仓' : '组内当前禁开仓' }}
+              </Badge>
+            </div>
+            <div class="flex items-center gap-2">
+              <Switch v-model="grp.policy.enabled" />
+              <Button variant="ghost" size="icon-sm" @click="removeGroup(gIdx)">
+                <Trash2 class="size-3.5 text-down" />
+              </Button>
+            </div>
+          </div>
+
+          <!-- 组内策略多选 -->
+          <div class="mt-2 rounded border border-line bg-panel-2 p-2">
+            <div class="mb-1.5 text-[11.5px] text-muted-fg">点击选择属于该时间策略组的策略：</div>
+            <div class="flex flex-wrap gap-1.5">
+              <button
+                v-for="sName in allStrategyNames"
+                :key="sName"
+                type="button"
+                class="rounded px-2 py-0.5 font-mono text-[11.5px] transition-colors"
+                :class="
+                  grp.strategies.includes(sName)
+                    ? 'border border-primary/50 bg-primary/15 text-primary font-semibold'
+                    : 'border border-line bg-panel text-muted-fg hover:text-fg'
+                "
+                @click="toggleGroupStrategy(grp, sName)"
+              >
+                {{ grp.strategies.includes(sName) ? '✓ ' : '+ ' }}{{ sName }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="grp.policy.enabled" class="mt-2 space-y-2 border-t border-line pt-2">
+            <div class="flex flex-wrap items-center gap-2 text-[12px]">
+              <select
+                v-model="grp.policy.mode"
+                class="h-7 rounded-md border border-line bg-panel-2 px-2 text-[12px]"
+              >
+                <option value="allow">白名单（仅允许以下时段）</option>
+                <option value="deny">黑名单（禁止以下时段）</option>
+              </select>
+              <select
+                :value="grp.policy.timezone || 'Asia/Shanghai'"
+                class="h-7 rounded-md border border-line bg-panel-2 px-2 text-[12px]"
+                @change="onTimezoneChange(grp.policy, ($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="t in TZ_OPTIONS" :key="t.tz" :value="t.tz">{{ t.label }}</option>
+              </select>
+              <Button
+                v-for="p in PRESETS"
+                :key="p.id"
+                variant="outline"
+                size="sm"
+                @click="applyPreset(grp.policy, p)"
+              >
+                {{ p.label }}
+              </Button>
+            </div>
+
+            <div
+              v-for="(iv, idx) in grp.policy.intervals"
+              :key="idx"
+              class="flex flex-wrap items-center gap-2 rounded border border-line bg-panel-2 px-2 py-1 text-[12px]"
+            >
+              <input
+                type="time"
+                class="figures h-7 rounded border border-line bg-panel px-1.5 text-[12px]"
+                :value="minToTime(iv.startMin)"
+                @change="iv.startMin = timeToMin(($event.target as HTMLInputElement).value, iv.startMin)"
+              />
+              <span class="text-faint-fg">至</span>
+              <input
+                type="time"
+                class="figures h-7 rounded border border-line bg-panel px-1.5 text-[12px]"
+                :value="minToTime(iv.endMin)"
+                @change="iv.endMin = timeToMin(($event.target as HTMLInputElement).value, iv.endMin)"
+              />
+              <span v-if="iv.startMin > iv.endMin" class="text-[11px] text-primary">跨午夜</span>
+              <div class="flex items-center gap-1">
+                <button
+                  v-for="wd in WEEKDAY_LABELS"
+                  :key="wd.id"
+                  type="button"
+                  class="h-6 w-6 rounded text-[11px] font-medium"
+                  :class="
+                    iv.weekdays.length === 0 || iv.weekdays.includes(wd.id)
+                      ? 'bg-primary/15 text-primary border border-primary/40'
+                      : 'bg-panel text-faint-fg border border-line'
+                  "
+                  @click="toggleWeekday(iv, wd.id)"
+                >
+                  {{ wd.label }}
+                </button>
+              </div>
+              <Button variant="ghost" size="icon-sm" class="ml-auto" @click="removeInterval(grp.policy, idx)">
+                <Trash2 class="size-3.5 text-down" />
+              </Button>
+            </div>
+
+            <Button variant="outline" size="sm" @click="addInterval(grp.policy)">
+              <Plus class="size-3.5" />添加时间段
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. 策略级独立时段风控 -->
+    <div class="mt-3 rounded-lg border border-line bg-panel-2 p-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <span class="text-[13px] font-semibold">单策略独立时段（微调覆盖单个策略）</span>
         <div class="flex items-center gap-2">
           <select
             v-model="newStrategyName"
@@ -393,7 +640,7 @@ onMounted(() => {
       </div>
 
       <div v-if="strategyPolicies.length === 0" class="mt-2 text-[11.5px] text-faint-fg">
-        暂无策略级独立规则；未单独配置的策略将直接沿用上方账户级时段设置。
+        暂无单策略独立规则；未单独配置的策略将沿用账户级与所属时间策略组的设置。
       </div>
 
       <div v-else class="mt-2.5 space-y-2.5">
@@ -430,11 +677,11 @@ onMounted(() => {
                 <option value="allow">白名单（仅允许以下时段）</option>
               </select>
               <select
-                v-model.number="item.policy.tzOffsetMin"
+                :value="item.policy.timezone || 'Asia/Shanghai'"
                 class="h-7 rounded-md border border-line bg-panel-2 px-2 text-[12px]"
-                @change="item.policy.timezone = TZ_OPTIONS.find((t) => t.offset === item.policy.tzOffsetMin)?.tz ?? 'UTC'"
+                @change="onTimezoneChange(item.policy, ($event.target as HTMLSelectElement).value)"
               >
-                <option v-for="t in TZ_OPTIONS" :key="t.offset" :value="t.offset">{{ t.label }}</option>
+                <option v-for="t in TZ_OPTIONS" :key="t.tz" :value="t.tz">{{ t.label }}</option>
               </select>
               <Button
                 v-for="p in PRESETS"

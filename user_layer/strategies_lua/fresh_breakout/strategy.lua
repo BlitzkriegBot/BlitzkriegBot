@@ -286,8 +286,8 @@ function bk_evaluate()
     local hi = num_p(params, "max_px", 0.94)
     local t_min = int_p(params, "min_time_left", 45)
     local t_max = int_p(params, "max_time_left", 60)
-    local confirm_ms = int_p(params, "breakout_confirm_ms", 4000)
-    local min_spot_bps = num_p(params, "min_spot_buffer_bps", 10)
+    local confirm_ms = int_p(params, "breakout_confirm_ms", 2000)
+    local min_spot_bps = num_p(params, "min_spot_buffer_bps", 5)
     local now_ms = bk.now_ms and bk.now_ms() or nil
     local tl = round.time_left_sec
     local held = held_index()

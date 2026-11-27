@@ -246,7 +246,7 @@ function bk_evaluate()
     local params = bk.params()
     local maker = int_param(params, "maker_entry", 0) == 1
     local lo = num_param(params, "min_px", 0.85)
-    local hi = num_param(params, "max_px", 0.97)
+    local hi = num_param(params, "max_px", 0.95)
     local t_min = int_param(params, "min_time_left", 45)
     local t_max = int_param(params, "max_time_left", 60)
     local tl = round.time_left_sec

@@ -275,7 +275,7 @@ function bk_evaluate()
     local hi = num_p(params, "max_px", 0.94)
     local t_min = int_p(params, "min_time_left", 30)
     local t_max = int_p(params, "max_time_left", 90)
-    local min_cons = int_p(params, "min_consensus", 4)
+    local min_cons = int_p(params, "min_consensus", 3)
     local peer_th = num_p(params, "peer_min_px", 0.85)
     local min_spot_bps = num_p(params, "min_spot_buffer_bps", 8)
     local tl = round.time_left_sec

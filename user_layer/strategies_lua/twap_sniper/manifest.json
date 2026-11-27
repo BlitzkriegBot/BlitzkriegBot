@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "9b3c29bb00409a42d9bc6011d8a5e29bd0294ce1ae8150831a2de1ad2a311070",
+  "sha256": "55e96b22ab8310dfe7b2f202df35868b48ae6b79c13815e8622144854427aae6",
   "author": "BlitzkriegBot",
   "description": "Final-15s TWAP-lock sniper for 5m binary rounds. With 5-15s remaining, crosses asks inside 0.88-0.95 with >= min_spot_buffer_bps (default 5 bps) directional spot cushion beyond round open. Armed with bk_thesis_death exit at <= thesis_exit_bid (default 0.72) to cap tail reversals.",
   "holds_to_settlement": true,
@@ -16,7 +16,7 @@
   "tunables": {
     "min_px": {
       "type": "decimal",
-      "default": "0.88",
+      "default": "0.85",
       "min": "0.50",
       "max": "0.95"
     },

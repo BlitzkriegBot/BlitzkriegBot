@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "58b1575738532b709c09280600679198f5a1d621d529ed31781a59d7f26fb499",
+  "sha256": "9b3c29bb00409a42d9bc6011d8a5e29bd0294ce1ae8150831a2de1ad2a311070",
   "author": "BlitzkriegBot",
-  "description": "Final-15s TWAP-lock sniper for 5m binary rounds. With 5-15 seconds remaining (75%-92% of the 60s settlement TWAP locked in), crosses any lagging ask inside 0.90-0.96 as a taker (reason late-taker) and holds to settlement. One attempt per condition per round; low frequency, high PF, low drawdown.",
+  "description": "Final-15s TWAP-lock sniper for 5m binary rounds. With 5-15s remaining, crosses asks inside 0.88-0.95 with >= min_spot_buffer_bps (default 5 bps) directional spot cushion beyond round open. Armed with bk_thesis_death exit at <= thesis_exit_bid (default 0.72) to cap tail reversals.",
   "holds_to_settlement": true,
   "entry_maker": false,
   "gate_exemptions": {
@@ -16,13 +16,13 @@
   "tunables": {
     "min_px": {
       "type": "decimal",
-      "default": "0.90",
+      "default": "0.88",
       "min": "0.50",
       "max": "0.95"
     },
     "max_px": {
       "type": "decimal",
-      "default": "0.96",
+      "default": "0.95",
       "min": "0.55",
       "max": "0.99"
     },
@@ -43,6 +43,18 @@
       "default": "0",
       "min": "0",
       "max": "1"
+    },
+    "min_spot_buffer_bps": {
+      "type": "decimal",
+      "default": "5",
+      "min": "0",
+      "max": "100"
+    },
+    "thesis_exit_bid": {
+      "type": "decimal",
+      "default": "0.72",
+      "min": "0",
+      "max": "0.90"
     }
   }
 }

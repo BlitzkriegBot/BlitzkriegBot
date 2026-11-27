@@ -6,7 +6,7 @@
     "holds_to_settlement": true,
     "entry_maker": false,
     "once_per_round": true,
-    "thesis_death": false,
+    "thesis_death": true,
     "gate_exemptions": {
       "timing": true,
       "momentum": false,
@@ -56,7 +56,7 @@
       "params": {
         "field": "tick.price",
         "op": "<=",
-        "value": 0.97
+        "value": 0.94
       }
     },
     {

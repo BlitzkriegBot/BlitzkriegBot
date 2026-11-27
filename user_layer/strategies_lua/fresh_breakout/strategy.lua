@@ -9,11 +9,27 @@
 -- One attempt per condition per round; holds to settlement.
 --
 -- THESIS DEATH DECLARATION (#961)
---   entry thesis : fresh mid-round breakout favorite held for $1 redemption
---   enforcement  : bk_thesis_death returns false; no intra-round exit
+--   entry thesis : late-round favorite holds directional edge into settlement
+--   enforcement  : bk_thesis_death returns true when fresh best_bid (or mid)
+--                  collapses to <= thesis_exit_bid (default 0.72; 0 disables),
+--                  triggering runtime-injected full-taker thesis_death_exit.
 
-function bk_thesis_death(_h)
-    return false
+function bk_thesis_death(h)
+    local params = bk.params and bk.params() or {}
+    local exit_bid = tonumber(params["thesis_exit_bid"])
+    if exit_bid == nil then exit_bid = 0.72 end
+    if exit_bid <= 0 or h == nil or h.token_id == nil then
+        return false
+    end
+    local book = bk.book and bk.book(h.token_id) or nil
+    if book == nil or book.fresh ~= true then
+        return false
+    end
+    local px = tonumber(book.best_bid)
+    if px == nil or px <= 0 then
+        px = tonumber(book.mid)
+    end
+    return px ~= nil and px > 0 and px <= exit_bid
 end
 
 -- BEGIN common/decimal.lua
@@ -185,6 +201,31 @@ local seen_low = {}
 local breakout_since = {}
 local slot_seen = nil
 
+local spot_open = {}
+
+local function observe_spot(asset)
+    if asset == nil or bk.spot == nil then return nil, nil end
+    local sp = tonumber(bk.spot(asset))
+    if sp == nil or sp <= 0 then return nil, nil end
+    if spot_open[asset] == nil then
+        spot_open[asset] = sp
+    end
+    return sp, spot_open[asset]
+end
+
+local function spot_buffer_ok(asset, is_up, min_bps)
+    if min_bps <= 0 then return true end
+    local sp, so = observe_spot(asset)
+    if sp == nil or so == nil or so <= 0 then
+        -- If no spot stream is attached (e.g. offline book-only replay), do not
+        -- fabricate a rejection; enforce strictly whenever spot is present.
+        return true
+    end
+    local bps = is_up and ((sp - so) / so * 10000) or ((so - sp) / so * 10000)
+    return bps >= min_bps
+end
+
+
 local function int_p(params, name, fallback)
     local n = tonumber(params[name])
     if n == nil then return fallback end
@@ -218,6 +259,8 @@ function bk_on_round(round)
     if round ~= nil and round.slot ~= nil and round.slot ~= slot_seen then
         quoted = {}
         seen_low = {}
+        breakout_since = {}
+        spot_open = {}
         slot_seen = round.slot
     end
 end
@@ -232,17 +275,19 @@ function bk_evaluate()
         quoted = {}
         seen_low = {}
         breakout_since = {}
+        spot_open = {}
         slot_seen = round.slot
     end
 
     local params = bk.params()
     local maker = int_p(params, "maker_entry", 0) == 1
     local cap = num_p(params, "neutral_cap", 0.55)
-    local lo = num_p(params, "min_px", 0.94)
-    local hi = num_p(params, "max_px", 0.97)
+    local lo = num_p(params, "min_px", 0.88)
+    local hi = num_p(params, "max_px", 0.94)
     local t_min = int_p(params, "min_time_left", 45)
     local t_max = int_p(params, "max_time_left", 60)
     local confirm_ms = int_p(params, "breakout_confirm_ms", 4000)
+    local min_spot_bps = num_p(params, "min_spot_buffer_bps", 10)
     local now_ms = bk.now_ms and bk.now_ms() or nil
     local tl = round.time_left_sec
     local held = held_index()
@@ -250,6 +295,7 @@ function bk_evaluate()
     for _, market in ipairs(bk.markets()) do
         local cond = market.condition_id
         if cond ~= nil then
+            observe_spot(market.asset)
             -- Observe neutral-zone touches and continuous breakout dwell across the round.
             local legs = { market.up_token, market.down_token }
             for i = 1, #legs do
@@ -299,7 +345,7 @@ function bk_evaluate()
                             and tok_key ~= nil
                             and breakout_since[tok_key] ~= nil
                             and (now_ms - breakout_since[tok_key]) >= confirm_ms)
-                    if token ~= nil and seen_low[tok_key] == true and confirmed then
+                    if token ~= nil and seen_low[tok_key] == true and confirmed and spot_buffer_ok(market.asset, i == 1, min_spot_bps) then
                         local book = bk.book(token)
                         if book ~= nil and book.fresh == true then
                             local px = maker and book.best_bid or book.best_ask

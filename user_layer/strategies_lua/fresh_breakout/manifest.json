@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "421fb3bc551a0afd67a76c3118fbf69c0e2cf2ea3d904cdf311ff767379aca29",
+  "sha256": "e68a44e843719e0c6e3a84df0334e1cf4f23de96f211d3f68d2e124db037adfd",
   "author": "BlitzkriegBot",
-  "description": "Late-mid fresh breakout favorite for 5m binary rounds. Tracks legs that traded <= neutral_cap (default 0.55) earlier in the round, and with 45-60 seconds left buys a leg that stays continuously inside 0.94-0.97 for >= breakout_confirm_ms (default 4000ms) as a taker (reason late-taker) and holds to settlement. One attempt per condition per round.",
+  "description": "Late-mid fresh breakout favorite for 5m binary rounds. Tracks legs that traded <= neutral_cap (default 0.55) earlier in the round, and with 45-60s left buys a leg staying continuously inside 0.88-0.94 for >= breakout_confirm_ms (default 4000ms) with >= min_spot_buffer_bps (default 10 bps) directional spot cushion beyond round open. Armed with bk_thesis_death exit at <= thesis_exit_bid (default 0.72) to cap tail reversals.",
   "holds_to_settlement": true,
   "entry_maker": false,
   "gate_exemptions": {
@@ -22,13 +22,13 @@
     },
     "min_px": {
       "type": "decimal",
-      "default": "0.94",
+      "default": "0.88",
       "min": "0.50",
       "max": "0.98"
     },
     "max_px": {
       "type": "decimal",
-      "default": "0.97",
+      "default": "0.94",
       "min": "0.55",
       "max": "0.99"
     },
@@ -55,6 +55,18 @@
       "default": "4000",
       "min": "0",
       "max": "30000"
+    },
+    "min_spot_buffer_bps": {
+      "type": "decimal",
+      "default": "10",
+      "min": "0",
+      "max": "100"
+    },
+    "thesis_exit_bid": {
+      "type": "decimal",
+      "default": "0.72",
+      "min": "0",
+      "max": "0.90"
     }
   }
 }

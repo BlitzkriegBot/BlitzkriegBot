@@ -2,11 +2,11 @@
   "version": 2,
   "name": "fresh_breakout",
   "meta": {
-    "description": "Late-mid fresh breakout favorite: leg visited <= 0.55 earlier in the round and broke out into [0.94, 0.97] with 45-60s left.",
+    "description": "Late-mid fresh breakout favorite: leg visited <= 0.55 earlier in the round and broke out into [0.88, 0.94] with 45-60s left; thesis-death exit below 0.72.",
     "holds_to_settlement": true,
     "entry_maker": false,
     "once_per_round": true,
-    "thesis_death": false,
+    "thesis_death": true,
     "gate_exemptions": {
       "timing": true,
       "momentum": false,
@@ -47,7 +47,7 @@
       "params": {
         "field": "tick.price",
         "op": ">=",
-        "value": 0.94
+        "value": 0.88
       }
     },
     {
@@ -56,7 +56,7 @@
       "params": {
         "field": "tick.price",
         "op": "<=",
-        "value": 0.97
+        "value": 0.94
       }
     },
     {

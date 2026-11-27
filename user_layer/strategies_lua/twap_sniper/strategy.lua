@@ -9,10 +9,24 @@
 --
 -- THESIS DEATH DECLARATION (#961)
 --   entry thesis : near-locked TWAP favorite held for $1 redemption
---   enforcement  : bk_thesis_death returns false; no intra-round exit
+--   enforcement  : bk_thesis_death returns true when fresh best_bid/mid <= thesis_exit_bid (default 0.72)
 
-function bk_thesis_death(_h)
-    return false
+function bk_thesis_death(h)
+    local params = bk.params and bk.params() or {}
+    local exit_bid = tonumber(params["thesis_exit_bid"])
+    if exit_bid == nil then exit_bid = 0.72 end
+    if exit_bid <= 0 or h == nil or h.token_id == nil then
+        return false
+    end
+    local book = bk.book and bk.book(h.token_id) or nil
+    if book == nil or book.fresh ~= true then
+        return false
+    end
+    local px = tonumber(book.best_bid)
+    if px == nil or px <= 0 then
+        px = tonumber(book.mid)
+    end
+    return px ~= nil and px > 0 and px <= exit_bid
 end
 
 -- BEGIN common/decimal.lua
@@ -182,6 +196,29 @@ end
 local quoted = {}
 local slot_seen = nil
 
+local spot_open = {}
+
+local function observe_spot(asset)
+    if asset == nil or bk.spot == nil then return nil, nil end
+    local sp = tonumber(bk.spot(asset))
+    if sp == nil or sp <= 0 then return nil, nil end
+    if spot_open[asset] == nil then
+        spot_open[asset] = sp
+    end
+    return sp, spot_open[asset]
+end
+
+local function spot_buffer_ok(asset, is_up, min_bps)
+    if min_bps <= 0 then return true end
+    local sp, so = observe_spot(asset)
+    if sp == nil or so == nil or so <= 0 then
+        return true
+    end
+    local bps = is_up and ((sp - so) / so * 10000) or ((so - sp) / so * 10000)
+    return bps >= min_bps
+end
+
+
 local function int_p(params, name, fallback)
     local n = tonumber(params[name])
     if n == nil then return fallback end
@@ -214,6 +251,7 @@ end
 function bk_on_round(round)
     if round ~= nil and round.slot ~= nil and round.slot ~= slot_seen then
         quoted = {}
+        spot_open = {}
         slot_seen = round.slot
     end
 end
@@ -226,21 +264,24 @@ function bk_evaluate()
     end
     if slot_seen ~= round.slot then
         quoted = {}
+        spot_open = {}
         slot_seen = round.slot
     end
 
     local params = bk.params()
     local maker = int_p(params, "maker_entry", 0) == 1
-    local lo = num_p(params, "min_px", 0.90)
-    local hi = num_p(params, "max_px", 0.96)
+    local lo = num_p(params, "min_px", 0.88)
+    local hi = num_p(params, "max_px", 0.95)
     local t_min = int_p(params, "min_time_left", 5)
     local t_max = int_p(params, "max_time_left", 15)
+    local min_spot_bps = num_p(params, "min_spot_buffer_bps", 5)
     local tl = round.time_left_sec
     local held = held_index()
 
     for _, market in ipairs(bk.markets()) do
         local cond = market.condition_id
         if cond ~= nil then
+            observe_spot(market.asset)
             local k = key_of(round.slot, cond)
             local st = quoted[k]
             local up_held = market.up_token ~= nil and held[market.up_token]
@@ -262,7 +303,7 @@ function bk_evaluate()
                 for i = 1, #legs do
                     local token = legs[i]
                     local book = token ~= nil and bk.book(token) or nil
-                    if book ~= nil and book.fresh == true then
+                    if book ~= nil and book.fresh == true and spot_buffer_ok(market.asset, i == 1, min_spot_bps) then
                         local px = maker and book.best_bid or book.best_ask
                         local n = tonumber(px)
                         if n ~= nil and n >= lo and n <= hi and (best == nil or n > best.n) then

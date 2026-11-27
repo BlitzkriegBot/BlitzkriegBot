@@ -1112,27 +1112,26 @@ const journalOpen = ref(false)
             >#{{ roundIdDisplay ?? '—' }}</a>
             <span v-else class="label-micro">#{{ roundIdDisplay ?? '—' }}</span>
           </div>
-          <div class="mt-1.5 flex items-center gap-2 text-[11.5px] text-faint-fg">
+          <div class="mt-1.5 flex items-center gap-2 whitespace-nowrap text-[11.5px] text-faint-fg">
             <Clock class="size-3.5 shrink-0" />
-            <!--
-              The age lives in a fixed four-digit slot so the status to its right
-              cannot move.
-            -->
-            <span class="inline-flex items-baseline">
-              <span class="inline-block w-[4ch] text-right tabular-nums">
-                <RollingNumber :value="roundDisplay?.ageSec ?? '—'" :duration="320" />
-              </span>
-              <span class="ml-0.5">s 已过</span>
-            </span>
-            <span class="opacity-40">·</span>
             <!-- issue 943：倒计时随冻结停走 —— FROZEN 优先于其他两态。 -->
             <span
               v-if="frozenClock"
-              class="font-semibold text-down"
+              class="shrink-0 font-semibold text-down"
               title="该账户已被风控冻结（设置 · 风控可解锁）：倒计时暂停，新单被拒绝"
             >FROZEN</span>
-            <span v-else :class="currentRound?.canTrade ? 'text-up font-semibold' : 'text-primary'">
+            <span v-else class="shrink-0" :class="currentRound?.canTrade ? 'text-up font-semibold' : 'text-primary'">
               {{ currentRound?.canTrade ? 'TRADING' : 'WAITING' }}
+            </span>
+            <span class="shrink-0 opacity-40">·</span>
+            <!--
+              Status sits to the left of the age so variable-length counts
+              (up to 5 digits on daily rounds) grow rightward without shifting
+              TRADING/WAITING or wrapping onto two lines.
+            -->
+            <span class="inline-flex shrink-0 items-baseline whitespace-nowrap tabular-nums">
+              <RollingNumber :value="roundDisplay?.ageSec ?? '—'" :duration="320" />
+              <span class="ml-0.5">s 已过</span>
             </span>
           </div>
         </div>

@@ -519,3 +519,215 @@ fn rebuild_drops_an_enabled_scope_the_assignment_omits() {
         "the named scope arrives enabled (assignment IS enablement)"
     );
 }
+
+/// Cross-venue arb leg config must NEVER be broadcast to non-arb strategies:
+/// otherwise a single-account strategy hosted on `default` (which also happens
+/// to be `leg_a_account`) would have `LuaEngineAdapter::stamp_account` rewrite
+/// foreign-venue signals into `leg_b_account` (`kalshi`) and book them into
+/// the wrong ledger.
+#[test]
+fn arb_leg_config_is_not_broadcast_to_non_arb_strategies() {
+    struct ArbSpy {
+        name: String,
+        is_arb: bool,
+        seen: Arc<Mutex<Vec<Option<crate::account::CrossVenueArbConfig>>>>,
+    }
+    impl EngineStrategy for ArbSpy {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn atomic_batch(&self) -> bool {
+            self.is_arb
+        }
+        fn on_book(&mut self, _: &str, _: &OrderbookSnapshot, _: i64) {}
+        fn on_round(&mut self, _: i64, _: i64, _: i64) {}
+        fn find_candidates(&mut self, _: &StrategyCtx<'_>) -> Vec<TradeSignal> {
+            Vec::new()
+        }
+        fn set_arb_leg_config(&mut self, cfg: Option<crate::account::CrossVenueArbConfig>) {
+            self.seen.lock().unwrap().push(cfg);
+        }
+    }
+
+    let mut e = Engine::new(cfg());
+    let plain_seen = Arc::new(Mutex::new(Vec::new()));
+    let arb_seen = Arc::new(Mutex::new(Vec::new()));
+    e.register_scoped_strategy(
+        Box::new(ArbSpy {
+            name: "sm_mid_mom".into(),
+            is_arb: false,
+            seen: plain_seen.clone(),
+        }),
+        "test".into(),
+        DEFAULT_ACCT,
+    )
+    .unwrap();
+    e.register_scoped_strategy(
+        Box::new(ArbSpy {
+            name: "cross_venue_arb".into(),
+            is_arb: true,
+            seen: arb_seen.clone(),
+        }),
+        "test".into(),
+        DEFAULT_ACCT,
+    )
+    .unwrap();
+
+    let arb_cfg = crate::account::CrossVenueArbConfig {
+        leg_a_venue: "polymarket".into(),
+        leg_a_account: DEFAULT_ACCT.into(),
+        leg_b_venue: "kalshi".into(),
+        leg_b_account: "kalshi".into(),
+        pairs: vec!["BTC".into()],
+    };
+    e.set_arb_leg_config(Some(arb_cfg.clone()));
+
+    assert!(
+        plain_seen.lock().unwrap().iter().all(|c| c.is_none()),
+        "non-arb strategy must never receive arb_leg_config: {:?}",
+        plain_seen.lock().unwrap()
+    );
+    assert_eq!(
+        arb_seen.lock().unwrap().last().cloned().flatten(),
+        Some(arb_cfg.clone()),
+        "arb strategy receives the configured leg map"
+    );
+
+    // Late joiner after set_arb_leg_config: same rule holds on registration.
+    let late_plain_seen = Arc::new(Mutex::new(Vec::new()));
+    let late_arb_seen = Arc::new(Mutex::new(Vec::new()));
+    e.register_scoped_strategy(
+        Box::new(ArbSpy {
+            name: "late_plain".into(),
+            is_arb: false,
+            seen: late_plain_seen.clone(),
+        }),
+        "test".into(),
+        "kalshi",
+    )
+    .unwrap();
+    e.register_scoped_strategy(
+        Box::new(ArbSpy {
+            name: "late_arb".into(),
+            is_arb: true,
+            seen: late_arb_seen.clone(),
+        }),
+        "test".into(),
+        "kalshi",
+    )
+    .unwrap();
+    assert_eq!(
+        *late_plain_seen.lock().unwrap(),
+        vec![None],
+        "late non-arb strategy must receive None"
+    );
+    assert_eq!(
+        *late_arb_seen.lock().unwrap(),
+        vec![Some(arb_cfg)],
+        "late arb strategy receives the active leg map"
+    );
+}
+
+/// When `polymarket` and `polysimulator` share a byte-identical `token_id`,
+/// `submit_candidate_orders` must resolve the market through the account's
+/// bound venue (`market_for_account_token`) instead of venue-blind
+/// `market_for_token` (which refuses ambiguity with `None` and falls back to
+/// `table_round_timing` — a 1h slot multiplied by 300s → year 1974).
+#[test]
+fn shared_token_resolves_account_venue_round_slot_not_foreign_1h_table_first() {
+    let mut c = cfg();
+    c.scanner.round_duration_sec = 300;
+    let mut e = engine_from(c);
+    e.set_account_venue(DEFAULT_ACCT, "polymarket");
+    e.set_account_trading(DEFAULT_ACCT, true);
+    e.set_scanner_grids(vec![
+        (String::new(), 300),
+        ("polymarket".into(), 300),
+        ("polysimulator".into(), 300),
+        ("polymarket".into(), 3600),
+    ]);
+
+    // Real 2026-11-27 11:55 UTC window: 5m slot starts at 1_795_751_700,
+    // expires at 1_795_752_000_000. Put a 1h market FIRST in the table so
+    // `table_round_timing` would yield the 1h index (498_819) if triggered.
+    let now_ms = 1_795_751_737_000i64;
+    let m_1h = CryptoMarket {
+        asset: "BTC".into(),
+        condition_id: "cond_1h".into(),
+        question_id: "q_1h".into(),
+        up_token_id: "tok_1h_up".into(),
+        down_token_id: "tok_1h_down".into(),
+        up_price: dec!(0.5),
+        down_price: dec!(0.5),
+        expires_at_ms: 1_795_752_000_000,
+        round_slot: 498_819,
+        round_duration_sec: 3600,
+        archive_verdict: false,
+        venue: "polymarket".into(),
+        neg_risk: true,
+        question: "BTC 1h".into(),
+    };
+    let shared_tok = "shared_btc_5m_up";
+    let m_5m_poly = CryptoMarket {
+        asset: "BTC".into(),
+        condition_id: "cond_5m".into(),
+        question_id: "q_5m".into(),
+        up_token_id: shared_tok.into(),
+        down_token_id: "shared_btc_5m_down".into(),
+        up_price: dec!(0.6),
+        down_price: dec!(0.4),
+        expires_at_ms: 1_795_752_000_000,
+        round_slot: 5_985_839,
+        round_duration_sec: 300,
+        archive_verdict: false,
+        venue: "polymarket".into(),
+        neg_risk: true,
+        question: "BTC 5m".into(),
+    };
+    let mut m_5m_sim = m_5m_poly.clone();
+    m_5m_sim.venue = "polysimulator".into();
+
+    e.on_data(DataEvent::RoundMarkets {
+        markets: vec![m_1h, m_5m_poly.clone(), m_5m_sim],
+        now_ms,
+    });
+
+    let orders =
+        e.submit_candidate_orders_for_test(vec![scoped_signal(DEFAULT_ACCT, shared_tok)], now_ms);
+    assert_eq!(orders.len(), 1, "bound account emits one order");
+    assert_eq!(
+        orders[0].round_slot, 1_795_751_700,
+        "persisted round_slot must be the 5m Unix start timestamp, not 1h slot × 300s (1974)"
+    );
+    assert_eq!(
+        crate::round_id::round_end_ms(orders[0].round_slot, 300),
+        m_5m_poly.expires_at_ms,
+        "round_end_ms must match the 5m market expiry"
+    );
+}
+
+/// Issue #297: per-account `size_pct` and `[min_shares, max_shares]` size
+/// independently on the exact same strategy, market, and equity.
+#[test]
+fn per_account_size_pct_and_share_band_size_independently_on_same_strategy() {
+    let mut c = pct_cfg(dec!(2), dec!(1), dec!(500));
+    c.account_size_pct.insert("acct_b".into(), dec!(5));
+    let mut e = engine_from(c);
+    e.set_equity_usd(dec!(1000));
+    e.set_account_equity("acct_b", dec!(1000));
+
+    // Price = 0.50: default (2% = $20) -> 40 shares; acct_b (5% = $50) -> 100 shares.
+    assert_eq!(
+        e.compute_shares(dec!(0.50), "probe", DEFAULT_ACCT),
+        dec!(40)
+    );
+    assert_eq!(e.compute_shares(dec!(0.50), "probe", "acct_b"), dec!(100));
+
+    // Tightening acct_b's share band caps only acct_b, never default.
+    e.set_account_share_band("acct_b", dec!(1), dec!(30));
+    assert_eq!(
+        e.compute_shares(dec!(0.50), "probe", DEFAULT_ACCT),
+        dec!(40)
+    );
+    assert_eq!(e.compute_shares(dec!(0.50), "probe", "acct_b"), dec!(30));
+}

@@ -96,6 +96,9 @@ impl Core {
                         self.config
                             .account_size_pct
                             .insert(account_id_owned.clone(), v);
+                        if let Some(engine) = self.engine.as_mut() {
+                            engine.set_account_size_pct(&account_id_owned, v);
+                        }
                         if account_id.as_str() == default_id.as_str() {
                             self.config.size_pct = v;
                             if let Some(engine) = self.engine.as_mut() {
@@ -116,10 +119,14 @@ impl Core {
                         self.config
                             .account_max_positions
                             .insert(account_id_owned.clone(), n);
+                        self.config
+                            .positions
+                            .account_max_positions
+                            .insert(account_id_owned.clone(), n);
                         if account_id.as_str() == default_id.as_str() {
                             self.config.positions.max_positions = n;
-                            self.positions.set_config(self.config.positions.clone());
                         }
+                        self.positions.set_config(self.config.positions.clone());
                     }
                     Err(_) => tracing::warn!(
                         account = %account_id,
@@ -130,12 +137,14 @@ impl Core {
             }
             {
                 let mut band_changed = false;
+                let mut acct_band_changed = false;
                 if let Some(raw) = keys.get(MIN_SHARES_SETTING) {
                     match raw.trim().parse::<Decimal>() {
                         Ok(v) if v >= Decimal::ZERO => {
                             self.config
                                 .account_min_shares
                                 .insert(account_id_owned.clone(), v);
+                            acct_band_changed = true;
                             if account_id.as_str() == default_id.as_str() {
                                 self.config.min_shares = v;
                                 band_changed = true;
@@ -154,6 +163,7 @@ impl Core {
                             self.config
                                 .account_max_shares
                                 .insert(account_id_owned.clone(), v);
+                            acct_band_changed = true;
                             if account_id.as_str() == default_id.as_str() {
                                 self.config.max_shares = v;
                                 band_changed = true;
@@ -164,6 +174,18 @@ impl Core {
                             value = %raw,
                             "account_settings engine.max_shares is unparseable — boot value stands"
                         ),
+                    }
+                }
+                if acct_band_changed {
+                    let (mut acct_min, acct_max) = self.config.share_band_for(&account_id_owned);
+                    if acct_max > Decimal::ZERO && acct_min > acct_max {
+                        acct_min = acct_max;
+                        self.config
+                            .account_min_shares
+                            .insert(account_id_owned.clone(), acct_min);
+                    }
+                    if let Some(engine) = self.engine.as_mut() {
+                        engine.set_account_share_band(&account_id_owned, acct_min, acct_max);
                     }
                 }
                 if band_changed {

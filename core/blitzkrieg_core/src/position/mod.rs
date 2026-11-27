@@ -101,6 +101,10 @@ pub struct PositionConfig {
     #[serde(default)]
     pub cli_exit_min_trail_pct: Option<Decimal>,
     pub max_positions: usize,
+    /// Per-account open position cap overrides (#297). Absent accounts fall
+    /// back to `max_positions`.
+    #[serde(default)]
+    pub account_max_positions: std::collections::HashMap<String, usize>,
     /// #363: how many positions may be open at once on ONE asset. This
     /// replaces the hardcoded one-per-asset gate (the binary
     /// "already in this asset?" check) with a count the execution policy
@@ -199,6 +203,7 @@ impl Default for PositionConfig {
             cli_exit_trailing_min_high_pct: None,
             cli_exit_min_trail_pct: None,
             max_positions: 2,
+            account_max_positions: std::collections::HashMap::new(),
             // #363: the historical one-per-asset gate, now a number.
             max_positions_per_asset: 1,
             // Off by default; the relative budget below carries the protection.

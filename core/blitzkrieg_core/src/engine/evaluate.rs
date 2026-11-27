@@ -103,6 +103,10 @@ impl Engine {
         self.bump_inputs();
         self.arb_leg_config = cfg.clone();
         for s in &mut self.strategies {
+            if !Self::strategy_uses_arb_leg_config(s.strategy.as_ref()) {
+                s.strategy.set_arb_leg_config(None);
+                continue;
+            }
             let scope_cfg = match (&cfg, s.account_id.as_str()) {
                 (Some(c), acct)
                     if acct == c.leg_a_account.trim() || acct == c.leg_b_account.trim() =>

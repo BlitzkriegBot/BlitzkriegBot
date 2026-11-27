@@ -9,6 +9,7 @@
 import { computed, ref, watch } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
 import { api, type AccountJournalDoc, type AccountJournalRowDoc } from '@/api/client'
+import { usePanelStore } from '@/stores/panel'
 import Card from '@/components/ui/card/Card.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
 import EmptyState from '@/components/ui/empty/EmptyState.vue'
@@ -16,6 +17,7 @@ import Tooltip from '@/components/ui/tooltip/Tooltip.vue'
 import RollingNumber from '@/components/ui/roll/RollingNumber.vue'
 import { money, signedMoney, clockTime } from '@/lib/format'
 
+const store = usePanelStore()
 const journalOpen = defineModel<boolean>('open', { required: true })
 
 const journalLoading = ref(false)
@@ -55,13 +57,18 @@ const journalRef = (r: string): string => (r.length > 24 ? `${r.slice(0, 24)}…
 /** 余额列渲染 balanceAfter（decimal 字符串）。 */
 const journalBalance = (v: string): string => money(v)
 
-/** 展开时拉一次（缺省账户由内核按 §9.5 解析）；重展开刷新，不加轮询。 */
+/** 展开时或切换账户时按当前显示账户拉一次；不加轮询。 */
 async function loadJournal(): Promise<void> {
+  const accountId = store.activeAccount ?? undefined
   journalLoading.value = true
   journalErr.value = null
   try {
-    journalDoc.value = await api.accountJournal({ limit: 100 })
+    const doc = await api.accountJournal({ accountId, limit: 100 })
+    // 避免慢响应覆写已切走的新账户流水。
+    if ((store.activeAccount ?? undefined) !== accountId) return
+    journalDoc.value = doc
   } catch (e) {
+    if ((store.activeAccount ?? undefined) !== accountId) return
     journalDoc.value = null
     journalErr.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -69,6 +76,11 @@ async function loadJournal(): Promise<void> {
   }
 }
 watch(journalOpen, (v) => { if (v) void loadJournal() })
+watch(() => store.activeAccount, () => {
+  journalDoc.value = null
+  journalErr.value = null
+  if (journalOpen.value) void loadJournal()
+})
 </script>
 
 <template>

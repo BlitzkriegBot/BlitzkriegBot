@@ -265,6 +265,12 @@ impl Core {
             "live",
         )?;
 
+        let cur_size_pct = self
+            .config
+            .account_size_pct
+            .get(&target)
+            .copied()
+            .unwrap_or(self.config.size_pct);
         if let Some(to) = patch.size_pct {
             if to < Decimal::ZERO || to > Decimal::ONE_HUNDRED {
                 return Err(CoreError::new(
@@ -274,21 +280,28 @@ impl Core {
             }
             changes.push(SystemicLimitChange {
                 field: "sizePct",
-                from: self.config.size_pct.to_string(),
+                from: cur_size_pct.to_string(),
                 to: to.to_string(),
                 effect: "live",
             });
         }
 
+        let cur_max_positions = self
+            .config
+            .account_max_positions
+            .get(&target)
+            .copied()
+            .unwrap_or(self.config.positions.max_positions);
         if let Some(to) = patch.max_positions {
             changes.push(SystemicLimitChange {
                 field: "maxPositions",
-                from: self.config.positions.max_positions.to_string(),
+                from: cur_max_positions.to_string(),
                 to: to.to_string(),
                 effect: "live",
             });
         }
 
+        let (cur_min_shares, cur_max_shares) = self.config.share_band_for(&target);
         if let Some(to) = patch.min_shares {
             if to < Decimal::ZERO {
                 return Err(CoreError::new(
@@ -298,7 +311,7 @@ impl Core {
             }
             changes.push(SystemicLimitChange {
                 field: "minShares",
-                from: self.config.min_shares.to_string(),
+                from: cur_min_shares.to_string(),
                 to: to.to_string(),
                 effect: "live",
             });
@@ -315,14 +328,14 @@ impl Core {
             }
             changes.push(SystemicLimitChange {
                 field: "maxShares",
-                from: self.config.max_shares.to_string(),
+                from: cur_max_shares.to_string(),
                 to: to.to_string(),
                 effect: "live",
             });
         }
 
-        let new_min_shares = patch.min_shares.unwrap_or(self.config.min_shares);
-        let new_max_shares = patch.max_shares.unwrap_or(self.config.max_shares);
+        let new_min_shares = patch.min_shares.unwrap_or(cur_min_shares);
+        let new_max_shares = patch.max_shares.unwrap_or(cur_max_shares);
         if (patch.min_shares.is_some() || patch.max_shares.is_some())
             && new_max_shares > Decimal::ZERO
             && new_min_shares > new_max_shares
@@ -375,13 +388,25 @@ impl Core {
 
         let default_id = crate::model::default_account_id();
         let is_default_target = target.as_str() == default_id.as_str();
-        // #272: update per-account maps for every target account; only mirror
-        // into process-wide `self.config` when target is `default`.
+        // #272 / #297: update per-account maps AND live execution mirrors
+        // (Engine + PositionManager) for every target account; only mirror
+        // into process-wide globals when target is `default`.
         if let Some(to) = patch.size_pct {
             self.config.account_size_pct.insert(target.clone(), to);
+            if let Some(engine) = self.engine.as_mut() {
+                engine.set_account_size_pct(&target, to);
+            }
         }
         if let Some(to) = patch.max_positions {
             self.config.account_max_positions.insert(target.clone(), to);
+            self.config
+                .positions
+                .account_max_positions
+                .insert(target.clone(), to);
+            if is_default_target {
+                self.config.positions.max_positions = to;
+            }
+            self.positions.set_config(self.config.positions.clone());
         }
         if let Some(to) = patch.min_shares {
             self.config.account_min_shares.insert(target.clone(), to);
@@ -389,17 +414,17 @@ impl Core {
         if let Some(to) = patch.max_shares {
             self.config.account_max_shares.insert(target.clone(), to);
         }
+        if (patch.min_shares.is_some() || patch.max_shares.is_some())
+            && let Some(engine) = self.engine.as_mut()
+        {
+            engine.set_account_share_band(&target, new_min_shares, new_max_shares);
+        }
         if is_default_target {
             if let Some(to) = patch.size_pct {
                 self.config.size_pct = to;
                 if let Some(engine) = self.engine.as_mut() {
                     engine.set_size_pct(to);
                 }
-            }
-
-            if let Some(to) = patch.max_positions {
-                self.config.positions.max_positions = to;
-                self.positions.set_config(self.config.positions.clone());
             }
 
             if patch.min_shares.is_some() || patch.max_shares.is_some() {

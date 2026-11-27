@@ -58,6 +58,9 @@ impl CoreConfig {
             min_shares: self.min_shares,
             max_shares: self.max_shares,
             size_pct: self.size_pct,
+            account_size_pct: self.account_size_pct.clone(),
+            account_min_shares: self.account_min_shares.clone(),
+            account_max_shares: self.account_max_shares.clone(),
             // #205: the runtime freshness budget. It flows through this one
             // mapping, so a live server and a backtest replay see the same value.
             max_orderbook_stale_ms: self.max_orderbook_stale_ms,
@@ -131,6 +134,25 @@ impl CoreConfig {
         // binding without another push.
         core.apply_strategy_round_families(&self.strategy_round_families);
         core.apply_account_round_durations(&live.account_round_durations);
+        // #297: SQLite risk-DB overlay wrote per-account sizing & share bands
+        // into `core.config()` (not `&self`). Push them into the newly
+        // installed engine so non-default accounts execute with their own
+        // stored knobs from the first cycle.
+        if let Some(e) = core.engine.as_mut() {
+            for (acct, &pct) in &live.account_size_pct {
+                e.set_account_size_pct(acct, pct);
+            }
+            let mut band_accounts: std::collections::HashSet<&str> = live
+                .account_min_shares
+                .keys()
+                .chain(live.account_max_shares.keys())
+                .map(String::as_str)
+                .collect();
+            for acct in band_accounts.drain() {
+                let (min_s, max_s) = live.share_band_for(acct);
+                e.set_account_share_band(acct, min_s, max_s);
+            }
+        }
         self.load_strategy_dir(core);
         self.load_lua_strategy_dir(core);
         for name in &self.enabled_strategies {

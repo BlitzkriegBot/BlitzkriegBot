@@ -40,6 +40,9 @@ fn engine_cfg() -> EngineConfig {
         min_shares: dec!(10),
         max_shares: dec!(10),
         size_pct: Decimal::ZERO,
+        account_size_pct: HashMap::new(),
+        account_min_shares: HashMap::new(),
+        account_max_shares: HashMap::new(),
         strategy_sizes: HashMap::new(),
         spot_freshness_max_ms: None,
     }

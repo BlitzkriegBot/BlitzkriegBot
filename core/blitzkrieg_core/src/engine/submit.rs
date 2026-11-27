@@ -193,11 +193,12 @@ impl Engine {
             // key's round segment) reads numbers from the candidate's clock,
             // not the global grid. Single-family tables resolve every row to
             // the configured grid, byte-identical with the pre-E3 read.
-            let cand_round = match self.scanner.market_for_token(&sig.token_id) {
+            let cand_market = self.market_for_account_token(&sig.account_id, &sig.token_id);
+            let cand_round = match cand_market {
                 Some(m) => self.family_round_timing(m, now_ms),
                 None => round,
             };
-            let timing = match self.scanner.market_for_token(&sig.token_id) {
+            let timing = match cand_market {
                 Some(m) => self.scanner.can_trade_reason_for(m, now_ms).err(),
                 None => self.scanner.can_trade_reason(now_ms).err(),
             };
@@ -324,7 +325,7 @@ impl Engine {
                     if n < Decimal::ONE {
                         continue;
                     }
-                    let sizing = self.effective_sizing(&sig.strategy);
+                    let sizing = self.effective_sizing_for_account(&sig.strategy, &sig.account_id);
                     let mut capped = if sizing.max_shares > Decimal::ZERO {
                         n.min(sizing.max_shares)
                     } else {
@@ -366,8 +367,7 @@ impl Engine {
             // number with Polymarket's slug. Expiry of this row uses
             // `round_id::round_end_ms`, which still understands legacy indices.
             let family_dur = self
-                .scanner
-                .market_for_token(&sig.token_id)
+                .market_for_account_token(&sig.account_id, &sig.token_id)
                 .map(|m| m.round_duration_sec)
                 .filter(|d| *d > 0)
                 .unwrap_or(self.cfg.scanner.round_duration_sec);
@@ -1119,19 +1119,25 @@ impl Engine {
         // accounts until the next set. `set_arb_leg_config` owns the
         // per-scope projection (the wired scope gets the map, a separate
         // deployment keeps its own book).
-        let joiner_cfg = self.arb_leg_config.clone();
-        let joiner_account = account_id.to_string();
-        let scope_cfg = match (&joiner_cfg, joiner_account.as_str()) {
-            (Some(c), acct) if acct == c.leg_a_account.trim() || acct == c.leg_b_account.trim() => {
-                Some(c.clone())
+        let scope_cfg = if Self::strategy_uses_arb_leg_config(hosted.strategy.as_ref()) {
+            let joiner_cfg = self.arb_leg_config.clone();
+            let joiner_account = account_id.to_string();
+            match (&joiner_cfg, joiner_account.as_str()) {
+                (Some(c), acct)
+                    if acct == c.leg_a_account.trim() || acct == c.leg_b_account.trim() =>
+                {
+                    Some(c.clone())
+                }
+                (Some(c), acct) => {
+                    let mut projected = c.clone();
+                    projected.leg_a_account = acct.to_string();
+                    projected.leg_b_account = acct.to_string();
+                    Some(projected)
+                }
+                (None, _) => None,
             }
-            (Some(c), acct) => {
-                let mut projected = c.clone();
-                projected.leg_a_account = acct.to_string();
-                projected.leg_b_account = acct.to_string();
-                Some(projected)
-            }
-            (None, _) => None,
+        } else {
+            None
         };
         hosted.strategy.set_arb_leg_config(scope_cfg);
         self.strategies.push(hosted);

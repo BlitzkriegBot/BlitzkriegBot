@@ -193,11 +193,7 @@ fn eu_dst_offset(now_ms: i64, std_offset_min: i32, dst_offset_min: i32) -> i32 {
 /// Resolve the active UTC offset in minutes for an optional IANA timezone name
 /// at `now_ms`, automatically handling US/EU Daylight Saving Time. Falls back
 /// to `fallback_offset_min` for custom or unrecognized zone strings.
-pub fn resolve_tz_offset_min(
-    timezone: Option<&str>,
-    fallback_offset_min: i32,
-    now_ms: i64,
-) -> i32 {
+pub fn resolve_tz_offset_min(timezone: Option<&str>, fallback_offset_min: i32, now_ms: i64) -> i32 {
     match timezone.map(str::trim).unwrap_or("") {
         "Asia/Shanghai" | "Asia/Hong_Kong" | "Asia/Singapore" | "Asia/Taipei" => 480,
         "Asia/Tokyo" | "Asia/Seoul" => 540,
@@ -373,7 +369,10 @@ impl AccountTradingWindows {
         for g in &self.groups {
             g.validate()?;
             if !seen_ids.insert(g.id.trim().to_string()) {
-                return Err(format!("duplicate trading window group id `{}`", g.id.trim()));
+                return Err(format!(
+                    "duplicate trading window group id `{}`",
+                    g.id.trim()
+                ));
             }
         }
         for (name, p) in &self.strategies {
@@ -566,18 +565,33 @@ mod tests {
         );
 
         // 10:00 UTC+8 (02:00 UTC): account allows, asia_quiet allows, but fresh_breakout denies morning.
-        assert!(tw.check_entry("late_favorite", utc_ms(2026, 11, 27, 2, 0)).is_ok());
-        assert!(tw.check_entry("consensus_favorite", utc_ms(2026, 11, 27, 2, 0)).is_ok());
-        assert!(tw.check_entry("fresh_breakout", utc_ms(2026, 11, 27, 2, 0)).is_err());
+        assert!(
+            tw.check_entry("late_favorite", utc_ms(2026, 11, 27, 2, 0))
+                .is_ok()
+        );
+        assert!(
+            tw.check_entry("consensus_favorite", utc_ms(2026, 11, 27, 2, 0))
+                .is_ok()
+        );
+        assert!(
+            tw.check_entry("fresh_breakout", utc_ms(2026, 11, 27, 2, 0))
+                .is_err()
+        );
 
         // 14:00 UTC+8 (06:00 UTC): all three allow.
-        assert!(tw.check_entry("fresh_breakout", utc_ms(2026, 11, 27, 6, 0)).is_ok());
+        assert!(
+            tw.check_entry("fresh_breakout", utc_ms(2026, 11, 27, 6, 0))
+                .is_ok()
+        );
 
         // 17:00 UTC+8 (09:00 UTC): account allows, asia_quiet blocks grouped strategies, ungrouped strategy allowed.
         let err = tw
             .check_entry("late_favorite", utc_ms(2026, 11, 27, 9, 0))
             .unwrap_err();
         assert!(err.contains("group:亚盘温和组"));
-        assert!(tw.check_entry("cross_venue_arb", utc_ms(2026, 11, 27, 9, 0)).is_ok());
+        assert!(
+            tw.check_entry("cross_venue_arb", utc_ms(2026, 11, 27, 9, 0))
+                .is_ok()
+        );
     }
 }

@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "954ba45ca41b8baa813a32bc04c671991e6abbe739e915ecf1900094b2d76094",
+  "sha256": "421fb3bc551a0afd67a76c3118fbf69c0e2cf2ea3d904cdf311ff767379aca29",
   "author": "BlitzkriegBot",
-  "description": "Mid-round fresh breakout favorite for 5m binary rounds. Tracks legs that traded <= neutral_cap (default 0.55) earlier in the round, and with 45-90 seconds left buys a leg breaking into 0.94-0.97 as a taker (reason late-taker) and holds to settlement. One attempt per condition per round.",
+  "description": "Late-mid fresh breakout favorite for 5m binary rounds. Tracks legs that traded <= neutral_cap (default 0.55) earlier in the round, and with 45-60 seconds left buys a leg that stays continuously inside 0.94-0.97 for >= breakout_confirm_ms (default 4000ms) as a taker (reason late-taker) and holds to settlement. One attempt per condition per round.",
   "holds_to_settlement": true,
   "entry_maker": false,
   "gate_exemptions": {
@@ -40,7 +40,7 @@
     },
     "max_time_left": {
       "type": "int",
-      "default": "90",
+      "default": "60",
       "min": "30",
       "max": "600"
     },
@@ -49,6 +49,12 @@
       "default": "0",
       "min": "0",
       "max": "1"
+    },
+    "breakout_confirm_ms": {
+      "type": "int",
+      "default": "4000",
+      "min": "0",
+      "max": "30000"
     }
   }
 }

@@ -2,7 +2,7 @@
   "version": 2,
   "name": "fresh_breakout",
   "meta": {
-    "description": "Mid-round fresh breakout favorite: leg visited <= 0.70 earlier in the round and broke out into [0.90, 0.97] with 60-200s left.",
+    "description": "Late-mid fresh breakout favorite: leg visited <= 0.55 earlier in the round and broke out into [0.94, 0.97] with 45-60s left.",
     "holds_to_settlement": true,
     "entry_maker": false,
     "once_per_round": true,
@@ -10,7 +10,7 @@
     "gate_exemptions": {
       "timing": true,
       "momentum": false,
-      "timing_min_time_left_sec": 60
+      "timing_min_time_left_sec": 45
     }
   },
   "nodes": [
@@ -20,7 +20,7 @@
       "params": {
         "field": "tick.round_min_price",
         "op": "<=",
-        "value": 0.7
+        "value": 0.55
       }
     },
     {
@@ -29,7 +29,7 @@
       "params": {
         "field": "tick.time_left_sec",
         "op": ">=",
-        "value": 60
+        "value": 45
       }
     },
     {
@@ -38,7 +38,7 @@
       "params": {
         "field": "tick.time_left_sec",
         "op": "<=",
-        "value": 200
+        "value": 60
       }
     },
     {
@@ -47,7 +47,7 @@
       "params": {
         "field": "tick.price",
         "op": ">=",
-        "value": 0.9
+        "value": 0.94
       }
     },
     {

@@ -123,6 +123,13 @@ const PATTERNS = [
   { re: /\bConnection::open\w*\s*\(/, rule: 'sql-direct', why: 'direct Connection::open — only store implementations open the database' },
   { re: /\bdb\.(save_risk|save_exit)\s*\(/, rule: 'risk-direct', why: 'db.save_risk / db.save_exit write the AccountRiskDb handle directly, bypassing the StoreApi trait seam' },
   { re: /\bjsonl::rewrite_atomic\s*\(/, rule: 'json-direct', why: 'jsonl::rewrite_atomic writes a JSON state carrier directly, outside the store seam' },
+  // #279: statement-level file & raw-SQL guards so bypassing StoreApi via
+  // jsonl::append / fs::write / File::create / OpenOptions / SQL DML cannot slip through.
+  { re: /\bjsonl::append\s*\(/, rule: 'file-direct', why: 'jsonl::append writes a JSONL file directly outside the store seam (#279)' },
+  { re: /\b(std::)?fs::write\s*\(/, rule: 'file-direct', why: 'fs::write writes a file directly outside the store seam (#279)' },
+  { re: /\bFile::create\s*\(|\bOpenOptions::new\s*\(/, rule: 'file-direct', why: 'File::create / OpenOptions::new opens a direct file writer outside the store seam (#279)' },
+  { re: /\bconn\.(execute|prepare|query_row|execute_batch)\s*\(/, rule: 'raw-sql', why: 'direct SQLite connection statement outside the store seam (#279)' },
+  { re: /\bINSERT\s+INTO\b|\bUPDATE\s+\w+\s+SET\b|\bDELETE\s+FROM\b/i, rule: 'raw-sql', rawLine: true, why: 'raw SQL DML statement outside the store seam (#279)' },
 ];
 
 // Comment lines are not code: a doc comment that MENTIONS a forbidden call
@@ -223,7 +230,8 @@ export function scanText(text) {
     if (COMMENT_LINE.test(raw)) continue;
     const code = stripLiterals(raw);
     for (const p of PATTERNS) {
-      if (p.re.test(code)) {
+      const target = p.rawLine ? raw : code;
+      if (p.re.test(target)) {
         hits.push({ line: n + 1, text: raw.trim().slice(0, 100), rule: p.rule, why: p.why });
         break; // one violation per line — the baseline counts lines
       }
@@ -364,6 +372,17 @@ function selfTest() {
     s('let _ = db.save_risk("alpha", &row);').some((h) => h.rule === 'risk-direct'));
   expect('db.save_exit call reds (risk-direct)',
     s('let _ = db.save_exit("alpha", &exit);').some((h) => h.rule === 'risk-direct'));
+  // 8c. #279 statement-level file & raw-SQL rules.
+  expect('jsonl::append call reds (file-direct)',
+    s('crate::jsonl::append(&path, &entry);').some((h) => h.rule === 'file-direct'));
+  expect('std::fs::write call reds (file-direct)',
+    s('std::fs::write(&path, bytes)?;').some((h) => h.rule === 'file-direct'));
+  expect('File::create / OpenOptions::new reds (file-direct)',
+    s('std::fs::OpenOptions::new().create(true).append(true)').some((h) => h.rule === 'file-direct'));
+  expect('conn.execute call reds (raw-sql)',
+    s('conn.execute("SELECT 1", [])?;').some((h) => h.rule === 'raw-sql'));
+  expect('raw SQL INSERT INTO inside string literal reds (raw-sql)',
+    s('let q = "INSERT INTO trades (id) VALUES (?1)";').some((h) => h.rule === 'raw-sql'));
 
   // ── the compliant arms: a gate that cannot pass is the same defect as
   // one that cannot fail.

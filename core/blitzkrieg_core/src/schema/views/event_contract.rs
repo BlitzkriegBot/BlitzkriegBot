@@ -1,11 +1,11 @@
 //! #1276 contract phase — the event envelope (`seq` / `scope` / `filter`).
 //!
-//! Split out of `views.rs` rather than appended to it: `views.rs` sits at
-//! 1349 lines against the 1500-line ratchet (`scripts/file-size-check.mjs`),
-//! and this contract plus its shape tests is ~270 lines — appending would have
-//! reddened that gate. The types are re-exported from `schema` exactly as if
-//! they lived in `views.rs` (see `views.rs`'s `pub use`), so consumers see one
-//! flat `crate::schema::*` surface.
+//! Split out of `views.rs` rather than appended to it: `views.rs` sat at
+//! 1349 lines when the ratchet was 1500 lines (current `scripts/file-size-check.mjs`
+//! threshold is 5000 hard / 3000 advisory warn), and this contract plus its
+//! shape tests is ~270 lines. The types are re-exported from `schema` exactly
+//! as if they lived in `views.rs` (see `views.rs`'s `pub use`), so consumers
+//! see one flat `crate::schema::*` surface.
 //!
 //! See `docs/rust-core/RFC-1276-event-envelope.md` for the contract itself,
 //! the field-ownership table, and the operator decisions still open.

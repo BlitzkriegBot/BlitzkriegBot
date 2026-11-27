@@ -39,6 +39,7 @@ jobs:
           node scripts/contract-tree-check.mjs
           node scripts/store-layer-check.mjs --self-test
           node scripts/store-layer-check.mjs
+          node scripts/schema-drift-check.mjs
 
       - name: core gates (teeth)
         if: success()
@@ -67,6 +68,16 @@ jobs:
           node scripts/file-size-check.mjs
           bash scripts/secret-scan.sh
 
+      - name: cargo fmt
+        if: success()
+        run: cargo fmt --all -- --check
+
       - name: cargo check
         if: success()
         run: cargo check --workspace --all-targets
+
+      - name: cargo test (store_seam + core lib)
+        if: success()
+        run: |
+          cargo test -p blitzkrieg-core --test store_seam --locked
+          cargo test -p blitzkrieg-core --lib --locked

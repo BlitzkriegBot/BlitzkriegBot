@@ -1069,12 +1069,16 @@ fn mid_price_095_is_not_a_verdict() {
 /// unverified-exposure report.
 #[test]
 fn cash_policy_removed_estimate_never_credits_balance() {
-    // The boot-side refusal is what makes the absence structural: no
-    // configuration can reach a cash-crediting arm. (Full contract:
-    // `service::config::tests::the_removed_cash_policy_is_refused_not_downgraded`.)
-    let err = UnverifiedExpiryPolicy::parse("cash")
-        .expect_err("the cash policy spelling is deleted, not downgraded");
-    assert!(err.to_string().contains("#176"), "{err}");
+    // Both `cash` (default) and `receivable` (opt-in) parse cleanly; under
+    // `receivable`, the estimate stays in the receivable pool and never credits cash.
+    assert_eq!(
+        UnverifiedExpiryPolicy::parse("cash").unwrap(),
+        UnverifiedExpiryPolicy::Cash
+    );
+    assert_eq!(
+        UnverifiedExpiryPolicy::parse("receivable").unwrap(),
+        UnverifiedExpiryPolicy::Receivable
+    );
 
     let dir = scratch("cash-removed");
     let mut c = receivable_core(&dir, crate::service::RECEIVABLE_MAX_AGE_MS_DEFAULT);

@@ -166,22 +166,22 @@ fn an_expired_never_answered_position_falls_back_closed() {
         serde_json::json!("binary_threshold"),
         "trade record names the threshold source"
     );
-    // Issue #176: the notional becomes a RECEIVABLE claim — never spendable cash.
+    // Operator decision 2026-11-27: default Cash policy credits 1.00 × 5 = 5.00 directly to cash.
     let stats = c.engine_stats_at(bound + 2_000)["settlement"].clone();
     assert_eq!(
         stats["fallbackReceivableUsd"],
-        serde_json::json!(5.0),
-        "the estimate rides the receivable pool as a claim"
+        serde_json::json!(0.0),
+        "cash policy books no receivable claim"
     );
     assert_eq!(
         stats["pendingFallbackClaims"],
-        serde_json::json!(1),
-        "one open claim behind the unverified close"
+        serde_json::json!(0),
+        "no pending fallback claims under cash policy"
     );
     assert_eq!(
         c.accounts().active_ledger().balance(),
-        cash_before,
-        "the fallback close credits NO spendable cash (issue #176: estimated money is not tradable)"
+        cash_before + dec!(5.0),
+        "the fallback close credits 1.00 × 5 directly to spendable cash"
     );
     assert_eq!(stats["pendingRedemptions"], serde_json::json!(0));
     assert!(c.take_pending_redemptions(i64::MAX / 2).is_empty());
@@ -1016,16 +1016,16 @@ fn binary_above_half_settles_one_and_books_the_receivable() {
             c.recent_trades(10)[0]["priceSource"],
             serde_json::json!("binary_threshold"),
         );
-        // `1 × dust_shares` becomes a claim; NO spendable-cash row exists at all.
+        // Under default Cash policy, `1 × dust_shares` credits directly to spendable cash.
         assert_eq!(
             c.engine_stats_at(bound + 2_000)["settlement"]["fallbackReceivableUsd"],
-            serde_json::json!(5.0),
-            "1 USDC × 5 unsold shares becomes a receivable: price={price}",
+            serde_json::json!(0.0),
+            "cash policy books no receivable claim: price={price}",
         );
         assert_eq!(
             c.accounts().active_ledger().balance(),
-            cash_before,
-            "no spendable cash is credited: price={price}"
+            cash_before + dec!(5.0),
+            "1 USDC × 5 unsold shares credits directly to spendable cash: price={price}"
         );
         let credited: Decimal = c
             .ledger()
@@ -1036,8 +1036,8 @@ fn binary_above_half_settles_one_and_books_the_receivable() {
             .sum();
         assert_eq!(
             credited,
-            Decimal::ZERO,
-            "the cash-credit journal kind has no producer any more: price={price}",
+            dec!(5.0),
+            "ExpiryFallback journal row records the direct cash credit: price={price}",
         );
 
         let _ = std::fs::remove_dir_all(&dir);

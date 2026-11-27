@@ -643,7 +643,7 @@ const recon = computed(() => accountBalance.value ?? {
 // ── history filters ─────────────────────────────────────────────────────────
 const fTime = ref<'all' | 'today' | '7d'>('all')
 const fAsset = ref('all')
-const fOutcome = ref<'all' | 'win' | 'loss' | 'unverifiable'>('all')
+const fOutcome = ref<'all' | 'win' | 'loss'>('all')
 const fStrategy = ref('all')
 
 const assetOptions = computed(() => [...new Set(historyRows.value.map((t) => t.asset).filter(Boolean))].sort())
@@ -670,13 +670,11 @@ const filteredRows = computed<TradeRow[]>(() => {
     if (fAsset.value !== 'all' && t.asset !== fAsset.value) return false
     if (fStrategy.value !== 'all' && (t.strategy ?? '') !== fStrategy.value) return false
     // issue 1199 P0-4：未知盈亏的行（netPnlUsd 读数缺失/非法）既不进「仅
-    // 盈利」也不进「仅亏损」—— 折叠成 0 会把它读成亏损。它只在「全部」
-    // 与「结算未裁决」两个视图里出现（后者按 exitReason 判，与读数无关）。
-    if (fOutcome.value !== 'all' && fOutcome.value !== 'unverifiable' && !isKnownPnl(t)) return false
+    // 盈利」也不进「仅亏损」—— 折叠成 0 会把它读成亏损，只在「全部」里出现。
+    if (fOutcome.value !== 'all' && !isKnownPnl(t)) return false
     const pnl = Number(t.netPnlUsd)
     if (fOutcome.value === 'win' && !(isKnownPnl(t) && pnl > 0)) return false
     if (fOutcome.value === 'loss' && !(isKnownPnl(t) && pnl < 0)) return false
-    if (fOutcome.value === 'unverifiable' && t.exitReason !== 'unverifiable_expiry') return false
     return true
   })
   // Newest first for display; the totals below are order-independent.
@@ -1446,7 +1444,6 @@ const journalOpen = ref(false)
             <option value="all">全部盈亏</option>
             <option value="win">仅盈利</option>
             <option value="loss">仅亏损</option>
-            <option value="unverifiable">结算未裁决</option>
           </select>
           <select v-model="fStrategy" class="filter-select">
             <option value="all">全部策略</option>

@@ -127,9 +127,12 @@ pub(crate) async fn handle_risk(
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
-            let target_account = requested_account
-                .map(str::to_string)
-                .unwrap_or_else(|| crate::model::default_account_id().as_str().to_owned());
+            let target_account = requested_account.map(str::to_string).unwrap_or_else(|| {
+                crate::model::default_account_id()
+                    .to_string()
+                    .as_str()
+                    .to_owned()
+            });
             let exit_cfg = c
                 .config()
                 .positions
@@ -334,6 +337,104 @@ pub(crate) async fn handle_risk(
         },
         // Routed here only from `handle_line`'s dispatch, which sends exactly
         // this family's verbs; `&str` matching needs the exhaustive arm.
+        method::RISK_TRADING_WINDOWS_GET => {
+            let account = params
+                .get("account")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let c = core.lock().await;
+            let acct = account.unwrap_or_else(|| crate::model::default_account_id().to_string());
+            let windows = c.trading_windows_get(&acct);
+            let now = now_ms();
+            let acct_check = windows
+                .account
+                .as_ref()
+                .map(|p| p.check_entry("account", now))
+                .unwrap_or(Ok(()));
+            let mut strat_status = serde_json::Map::new();
+            for (name, pol) in &windows.strategies {
+                let res = windows.check_entry(name, now);
+                strat_status.insert(
+                    name.clone(),
+                    serde_json::json!({
+                        "allowed": res.is_ok(),
+                        "reason": res.err(),
+                        "enabled": pol.enabled,
+                    }),
+                );
+            }
+            Ok(serde_json::json!({
+                "version": crate::schema::PROTOCOL_VERSION,
+                "accountId": acct,
+                "windows": windows,
+                "activeNow": {
+                    "nowMs": now,
+                    "accountAllowed": acct_check.is_ok(),
+                    "accountReason": acct_check.err(),
+                    "strategies": strat_status,
+                },
+            }))
+        }
+        method::RISK_TRADING_WINDOWS_SET => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct SetTradingWindowsParams {
+                #[serde(default)]
+                account: Option<String>,
+                windows: crate::risk::trading_window::AccountTradingWindows,
+            }
+            let req: SetTradingWindowsParams = serde_json::from_value(params).map_err(|e| {
+                (
+                    Failure::INVALID_PARAMS,
+                    format!("invalid risk.tradingWindows.set params: {e}"),
+                    None,
+                )
+            })?;
+            let mut c = core.lock().await;
+            let acct = req
+                .account
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::model::default_account_id().to_string());
+            match c.trading_windows_set_persisting(&acct, req.windows) {
+                Ok(saved) => {
+                    let now = now_ms();
+                    let acct_check = saved
+                        .account
+                        .as_ref()
+                        .map(|p| p.check_entry("account", now))
+                        .unwrap_or(Ok(()));
+                    let mut strat_status = serde_json::Map::new();
+                    for (name, pol) in &saved.strategies {
+                        let res = saved.check_entry(name, now);
+                        strat_status.insert(
+                            name.clone(),
+                            serde_json::json!({
+                                "allowed": res.is_ok(),
+                                "reason": res.err(),
+                                "enabled": pol.enabled,
+                            }),
+                        );
+                    }
+                    Ok(serde_json::json!({
+                        "version": crate::schema::PROTOCOL_VERSION,
+                        "accountId": acct,
+                        "windows": saved,
+                        "activeNow": {
+                            "nowMs": now,
+                            "accountAllowed": acct_check.is_ok(),
+                            "accountReason": acct_check.err(),
+                            "strategies": strat_status,
+                        },
+                    }))
+                }
+                Err(e) => Err((Failure::INVALID_PARAMS, e.to_string(), None)),
+            }
+        }
         _ => unreachable!("family handler called with a verb of another family"),
     }
 }

@@ -249,6 +249,9 @@ pub struct CoreConfig {
     pub account_max_shares: HashMap<String, Decimal>,
     /// #272: per-account equity-relative sizing percentage overrides.
     pub account_size_pct: HashMap<String, Decimal>,
+    /// Per-account & per-strategy trading-hours windows loaded from SQLite `account_settings`.
+    pub account_trading_windows:
+        HashMap<String, crate::risk::trading_window::AccountTradingWindows>,
     /// #272: per-account concurrent open-position cap overrides.
     pub account_max_positions: HashMap<String, usize>,
     /// Issue #1189 (PR-D): per-account market plugin overrides —
@@ -668,6 +671,7 @@ impl Default for CoreConfig {
             account_min_shares: HashMap::new(),
             account_max_shares: HashMap::new(),
             account_size_pct: HashMap::new(),
+            account_trading_windows: HashMap::new(),
             account_max_positions: HashMap::new(),
             account_market_plugins: HashMap::new(),
             size_pct: Decimal::ZERO,

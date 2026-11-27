@@ -284,6 +284,26 @@ impl WebServer {
                 // writes later, and the audited reply names each old→new.
                 self.proxy_backtest_body("risk.setExit", &req.body)
             }
+            ("GET", "/api/risk-trading-windows") => {
+                let mut params = serde_json::Map::new();
+                if let Some((_, query)) = req.target.split_once('?') {
+                    for pair in query.split('&') {
+                        if let Some(("account", raw)) = pair.split_once('=') {
+                            let trimmed = raw.trim();
+                            if !trimmed.is_empty() {
+                                params.insert(
+                                    "account".into(),
+                                    serde_json::Value::String(trimmed.to_string()),
+                                );
+                            }
+                        }
+                    }
+                }
+                self.proxy_read("risk.tradingWindows.get", serde_json::Value::Object(params))
+            }
+            ("POST", "/api/risk-trading-windows") => {
+                self.proxy_backtest_body("risk.tradingWindows.set", &req.body)
+            }
             ("GET", "/api/unified") => {
                 // Issue #481 (G4): the confirmed cross-venue mappings — the
                 // 配对视图 card's data source. Read-only proxy of

@@ -961,6 +961,7 @@ mod tests {
 pub mod account_store;
 pub mod limits;
 pub mod physics;
+pub mod trading_window;
 // E-VA: strategy-level virtual accounts — a risk-layer quota book on the
 // (account, strategy) axis. Default-off: an unconfigured core never holds a
 // pot and every call site short-circuits on `governed` (byte-identical bypass).

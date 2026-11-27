@@ -422,7 +422,11 @@ async fn handle_line(
         method::RISK_RESUME => handlers::risk::handle_risk(method, core, peer, params).await,
         method::RISK_SET_LIMITS => handlers::risk::handle_risk(method, core, peer, params).await,
         method::RISK_SET_SYSTEMIC => handlers::risk::handle_risk(method, core, peer, params).await,
-        method::RISK_SET_EXIT => handlers::risk::handle_risk(method, core, peer, params).await,
+        method::RISK_SET_EXIT
+        | method::RISK_TRADING_WINDOWS_GET
+        | method::RISK_TRADING_WINDOWS_SET => {
+            handlers::risk::handle_risk(method, core, peer, params).await
+        }
         method::ROUND_DURATION_GET => {
             handlers::round::handle_round(method, core, peer, host, registry, data_plane, params)
                 .await

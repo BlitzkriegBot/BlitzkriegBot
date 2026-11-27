@@ -56,7 +56,7 @@ import { ordersApi, type OrderRow, type ForceCloseOrderBody, type ForceClosePosi
 import { roundsApi, type RoundDurationOption, type RoundDurationDoc, type RoundDurationSetBody, type RoundDurationUpdateDoc } from './rounds.ts'
 import { resetApi, type ResetPreSummaryDoc, type ResetTradingBody, type ResetTradingResultDoc } from './reset.ts'
 import { marketApi, type KlineIntervalWire, KLINE_INTERVALS, type KlineBar, type KlineHistoryDoc, type MarketPluginReadoutDoc, type PluginCredentialRowDoc, type CredentialsStatusDoc, type CredentialsUpdateDoc } from './market.ts'
-import { accountsApi, type AccountJournalRowDoc, type AccountJournalDoc, type AccountVenueRowDoc, type AccountVenueDoc, type AccountVenueSetDoc, type ArbConfigSetBody, type ArbConfigDoc, type ArbStatusDoc, type ArbReadinessCheck, type ArbScannerRow, type ArbPairStateRow, type ArbOrderRow, type ArbTradeRow, type DisplayAccountSetDoc, type AccountTradingSetDoc, type AccountStrategiesSetDoc, type AccountCreateDoc, type AccountRemoveDoc, type AccountRoundsSetResult } from './accounts.ts'
+import { accountsApi, type AccountJournalRowDoc, type AccountJournalDoc, type AccountVenueRowDoc, type AccountVenueDoc, type AccountVenueSetDoc, type ArbConfigSetBody, type ArbConfigDoc, type ArbStatusDoc, type ArbReadinessCheck, type ArbScannerRow, type ArbPairStateRow, type ArbOrderRow, type ArbTradeRow, type TradingWindowMode, type TradingTimeInterval, type TradingWindowPolicy, type AccountTradingWindows, type TradingWindowStatusDoc, type DisplayAccountSetDoc, type AccountTradingSetDoc, type AccountStrategiesSetDoc, type AccountCreateDoc, type AccountRemoveDoc, type AccountRoundsSetResult } from './accounts.ts'
 import { netcheckApi, type NetCheckItem, type NetCheckReport, type NetCheckDoc } from './netcheck.ts'
 import { versionApi } from './version.ts'
 import { backtestApi, type OnchainPullParams, type BacktestRunParams, type BacktestDataset, type BacktestDatasetListDoc, type BacktestJobIdsDoc, type BacktestJobStatusDoc, type BacktestLadderRow, type BacktestResultDoc, type BacktestExportDoc } from './backtest.ts'
@@ -88,7 +88,7 @@ export type {
   KlineIntervalWire, KlineBar, KlineHistoryDoc,
   MarketPluginReadoutDoc, PluginCredentialRowDoc, CredentialsStatusDoc, CredentialsUpdateDoc,
   AccountJournalRowDoc, AccountJournalDoc, AccountVenueRowDoc, AccountVenueDoc,
-  AccountVenueSetDoc, ArbConfigSetBody, ArbConfigDoc, ArbStatusDoc, ArbReadinessCheck, ArbScannerRow, ArbPairStateRow, ArbOrderRow, ArbTradeRow, DisplayAccountSetDoc,
+  AccountVenueSetDoc, ArbConfigSetBody, ArbConfigDoc, ArbStatusDoc, ArbReadinessCheck, ArbScannerRow, ArbPairStateRow, ArbOrderRow, ArbTradeRow, TradingWindowMode, TradingTimeInterval, TradingWindowPolicy, AccountTradingWindows, TradingWindowStatusDoc, DisplayAccountSetDoc,
   AccountTradingSetDoc, AccountStrategiesSetDoc, AccountCreateDoc, AccountRemoveDoc,
   AccountRoundsSetResult,
   NetCheckItem, NetCheckReport, NetCheckDoc,

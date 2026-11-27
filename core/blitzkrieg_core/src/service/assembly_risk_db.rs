@@ -81,7 +81,7 @@ impl Core {
     ) -> Result<(), String> {
         use crate::risk::account_store::{
             MAX_POSITIONS_SETTING, MAX_SHARES_SETTING, MIN_SHARES_SETTING, ROUND_DURATION_SETTING,
-            SIZE_PCT_SETTING, STRATEGIES_SETTING,
+            SIZE_PCT_SETTING, STRATEGIES_SETTING, TRADING_WINDOWS_SETTING,
         };
         let settings = db
             .load_settings()
@@ -90,6 +90,24 @@ impl Core {
         for (account_id, keys) in &settings {
             let account_id_owned = account_id.clone();
             let id = blitzkrieg_market_api::AccountId::from(account_id.as_str());
+            if let Some(raw) = keys.get(TRADING_WINDOWS_SETTING) {
+                match serde_json::from_str::<crate::risk::trading_window::AccountTradingWindows>(
+                    raw,
+                ) {
+                    Ok(tw) if tw.validate().is_ok() => {
+                        self.config
+                            .account_trading_windows
+                            .insert(account_id_owned.clone(), tw.clone());
+                        if let Some(engine) = self.engine.as_mut() {
+                            engine.set_account_trading_windows(&account_id_owned, tw);
+                        }
+                    }
+                    _ => tracing::warn!(
+                        account = %account_id,
+                        "account_settings risk.trading_windows is invalid JSON or out of bounds — ignored"
+                    ),
+                }
+            }
             if let Some(raw) = keys.get(SIZE_PCT_SETTING) {
                 match raw.trim().parse::<Decimal>() {
                     Ok(v) if v >= Decimal::ZERO && v <= Decimal::ONE_HUNDRED => {

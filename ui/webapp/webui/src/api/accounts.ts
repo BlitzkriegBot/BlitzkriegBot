@@ -196,8 +196,16 @@ export interface TradingWindowPolicy {
   label?: string | null
 }
 
+export interface TradingWindowGroup {
+  id: string
+  name: string
+  strategies: string[]
+  policy: TradingWindowPolicy
+}
+
 export interface AccountTradingWindows {
   account: TradingWindowPolicy | null
+  groups?: TradingWindowGroup[]
   strategies: Record<string, TradingWindowPolicy>
 }
 
@@ -209,6 +217,7 @@ export interface TradingWindowStatusDoc {
     nowMs: number
     accountAllowed: boolean
     accountReason: string | null
+    groups?: Record<string, { allowed: boolean; reason: string | null; enabled: boolean; name: string }>
     strategies: Record<string, { allowed: boolean; reason: string | null; enabled: boolean }>
   }
   error?: string

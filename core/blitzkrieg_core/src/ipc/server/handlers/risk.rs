@@ -347,35 +347,7 @@ pub(crate) async fn handle_risk(
             let c = core.lock().await;
             let acct = account.unwrap_or_else(|| crate::model::default_account_id().to_string());
             let windows = c.trading_windows_get(&acct);
-            let now = now_ms();
-            let acct_check = windows
-                .account
-                .as_ref()
-                .map(|p| p.check_entry("account", now))
-                .unwrap_or(Ok(()));
-            let mut strat_status = serde_json::Map::new();
-            for (name, pol) in &windows.strategies {
-                let res = windows.check_entry(name, now);
-                strat_status.insert(
-                    name.clone(),
-                    serde_json::json!({
-                        "allowed": res.is_ok(),
-                        "reason": res.err(),
-                        "enabled": pol.enabled,
-                    }),
-                );
-            }
-            Ok(serde_json::json!({
-                "version": crate::schema::PROTOCOL_VERSION,
-                "accountId": acct,
-                "windows": windows,
-                "activeNow": {
-                    "nowMs": now,
-                    "accountAllowed": acct_check.is_ok(),
-                    "accountReason": acct_check.err(),
-                    "strategies": strat_status,
-                },
-            }))
+            Ok(build_trading_windows_doc(&acct, windows, now_ms()))
         }
         method::RISK_TRADING_WINDOWS_SET => {
             #[derive(serde::Deserialize)]
@@ -401,40 +373,80 @@ pub(crate) async fn handle_risk(
                 .map(str::to_string)
                 .unwrap_or_else(|| crate::model::default_account_id().to_string());
             match c.trading_windows_set_persisting(&acct, req.windows) {
-                Ok(saved) => {
-                    let now = now_ms();
-                    let acct_check = saved
-                        .account
-                        .as_ref()
-                        .map(|p| p.check_entry("account", now))
-                        .unwrap_or(Ok(()));
-                    let mut strat_status = serde_json::Map::new();
-                    for (name, pol) in &saved.strategies {
-                        let res = saved.check_entry(name, now);
-                        strat_status.insert(
-                            name.clone(),
-                            serde_json::json!({
-                                "allowed": res.is_ok(),
-                                "reason": res.err(),
-                                "enabled": pol.enabled,
-                            }),
-                        );
-                    }
-                    Ok(serde_json::json!({
-                        "version": crate::schema::PROTOCOL_VERSION,
-                        "accountId": acct,
-                        "windows": saved,
-                        "activeNow": {
-                            "nowMs": now,
-                            "accountAllowed": acct_check.is_ok(),
-                            "accountReason": acct_check.err(),
-                            "strategies": strat_status,
-                        },
-                    }))
-                }
+                Ok(saved) => Ok(build_trading_windows_doc(&acct, saved, now_ms())),
                 Err(e) => Err((Failure::INVALID_PARAMS, e.to_string(), None)),
             }
         }
         _ => unreachable!("family handler called with a verb of another family"),
     }
+}
+
+fn build_trading_windows_doc(
+    acct: &str,
+    windows: crate::risk::trading_window::AccountTradingWindows,
+    now: i64,
+) -> Value {
+    let acct_check = windows
+        .account
+        .as_ref()
+        .map(|p| p.check_entry("account", now))
+        .unwrap_or(Ok(()));
+
+    let mut group_status = serde_json::Map::new();
+    let mut strat_names = std::collections::BTreeSet::new();
+    for g in &windows.groups {
+        let g_res = g
+            .policy
+            .check_entry(&format!("group:{}", g.display_label()), now);
+        group_status.insert(
+            g.id.clone(),
+            serde_json::json!({
+                "allowed": g_res.is_ok(),
+                "reason": g_res.err(),
+                "enabled": g.policy.enabled,
+                "name": g.display_label(),
+            }),
+        );
+        for s in &g.strategies {
+            strat_names.insert(s.clone());
+        }
+    }
+    for name in windows.strategies.keys() {
+        strat_names.insert(name.clone());
+    }
+
+    let mut strat_status = serde_json::Map::new();
+    for name in strat_names {
+        let res = windows.check_entry(&name, now);
+        let direct_enabled = windows
+            .strategies
+            .get(&name)
+            .map(|p| p.enabled)
+            .unwrap_or(false);
+        let group_enabled = windows
+            .groups
+            .iter()
+            .any(|g| g.policy.enabled && g.strategies.iter().any(|s| s == &name));
+        strat_status.insert(
+            name,
+            serde_json::json!({
+                "allowed": res.is_ok(),
+                "reason": res.err(),
+                "enabled": direct_enabled || group_enabled,
+            }),
+        );
+    }
+
+    serde_json::json!({
+        "version": crate::schema::PROTOCOL_VERSION,
+        "accountId": acct,
+        "windows": windows,
+        "activeNow": {
+            "nowMs": now,
+            "accountAllowed": acct_check.is_ok(),
+            "accountReason": acct_check.err(),
+            "groups": group_status,
+            "strategies": strat_status,
+        },
+    })
 }

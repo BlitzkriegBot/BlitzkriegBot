@@ -149,14 +149,16 @@ function rawInNumericSlots(src) {
 console.log('round header — status position and rolling digits')
 
 // ── 1. the jitter ─────────────────────────────────────────────────────────────
-check('the age is reserved a fixed tabular digit slot', () => {
-  // Both halves matter: the width reserves the space, tabular-nums makes the
-  // reserved `ch` equal the digits it is reserving for.
-  assert.match(page, /w-\[4ch\]/, 'the age must reserve a fixed width')
-  const slot = page.match(/class="([^"]*w-\[4ch\][^"]*)"/)
-  assert.ok(slot, 'the slot class must be findable')
-  assert.match(slot[1], /tabular-nums/, 'the reserved `ch` must be a tabular digit')
-  assert.match(slot[1], /text-right/, 'overflow past four digits must grow leftward, away from the status')
+check('the status sits before a non-wrapping tabular age', () => {
+  // Status precedes the age so variable-length counts (including 5-digit daily
+  // rounds) grow rightward without shifting TRADING/WAITING or wrapping.
+  const statusIdx = page.indexOf("currentRound?.canTrade ? 'TRADING' : 'WAITING'")
+  const ageIdx = page.indexOf('roundDisplay?.ageSec')
+  assert.ok(statusIdx > 0 && ageIdx > 0, 'both status and age must be present')
+  assert.ok(statusIdx < ageIdx, 'TRADING/WAITING must render before the age counter')
+  assert.doesNotMatch(page, /w-\[4ch\]/, 'the fixed 4ch slot wrapped 5-digit daily counts and must be removed')
+  const slot = page.match(/class="([^"]*whitespace-nowrap[^"]*tabular-nums[^"]*)"/)
+  assert.ok(slot, 'the age wrapper must carry whitespace-nowrap and tabular-nums')
 })
 
 check('the status text follows the fixed slot, not the raw number', () => {

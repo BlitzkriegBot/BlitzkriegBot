@@ -516,3 +516,84 @@ fn book_books_settlement_once_and_records_the_claim() {
     assert_eq!(settled.claim_id, "cond-1");
     assert!(book.record(&settled.key).is_some());
 }
+
+/// Two accounts entering the exact same `(condition_id, token_id)` in the
+/// exact same millisecond must get distinct `settlement_key`s and both settle
+/// with independent redemption claims (fixes polysimulator ETH skipped by
+/// duplicate-key collision with default, falling into `unverifiable_expiry`).
+#[test]
+fn two_accounts_same_market_same_millisecond_both_settle_independently() {
+    let (mut book, path) = book_with_journal();
+    let mut p_default = position("hft-19", "up", dec!(10), 1_795_713_214_029);
+    p_default.account_id = crate::account::AccountId::from("default");
+    p_default.venue = "polymarket".into();
+
+    let mut p_sim = position("hft-20", "up", dec!(10), 1_795_713_214_029);
+    p_sim.account_id = crate::account::AccountId::from("polysimulator");
+    p_sim.venue = "polysimulator".into();
+
+    assert_ne!(
+        settlement_key(&p_default),
+        settlement_key(&p_sim),
+        "distinct accounts at the same ms must not collide on settlement_key"
+    );
+
+    let r = win();
+    let b_default = booking_for(&p_default, &r).unwrap();
+    let b_sim = booking_for(&p_sim, &r).unwrap();
+
+    let s1 = book
+        .book(&b_default, &r, 1_795_713_300_000)
+        .expect("default settles");
+    let s2 = book
+        .book(&b_sim, &r, 1_795_713_300_000)
+        .expect("polysimulator settles without false duplicate collision");
+
+    assert_ne!(s1.claim_id, s2.claim_id, "each account gets its own claim");
+    assert_eq!(book.applied_count(), 2);
+    assert_eq!(book.receivable_usd_for("default"), dec!(10));
+    assert_eq!(book.receivable_usd_for("polysimulator"), dec!(10));
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// Backward-compat: a pre-fix journal carrying a legacy 3-segment key
+/// `{condition}:{token}:{entered_at_ms}` for `default` still prevents duplicate
+/// settlement for `default`, while allowing `polysimulator` at the same ms to
+/// settle cleanly.
+#[test]
+fn legacy_three_segment_key_dedupes_same_account_only() {
+    let (book_init, path) = book_with_journal();
+    drop(book_init);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{"kind":"settlement","at_ms":10,"record":{"key":"cond-1:up:1000","positionId":"hft-1","conditionId":"cond-1","tokenId":"up","strategy":"s","asset":"ETH","shares":10.0,"payoutPerShare":1.0,"payoutUsd":10.0,"winning":true,"claimId":"cond-1","negRisk":false,"winningTokenId":"up","outcomeIndex":0,"outcomeCount":2,"source":"core-dry","accountId":"default","venue":"polymarket","appliedAtMs":10}}
+"#,
+    )
+    .unwrap();
+
+    let mut book = SettlementBook::new(Some(&path));
+    let r = win();
+
+    let mut p_default = position("hft-1", "up", dec!(10), 1_000);
+    p_default.account_id = crate::account::AccountId::from("default");
+    assert!(
+        book.book(&booking_for(&p_default, &r).unwrap(), &r, 20)
+            .is_none(),
+        "same account must still be deduped against legacy 3-segment key"
+    );
+    assert_eq!(
+        book.recover(std::slice::from_ref(&p_default)).len(),
+        1,
+        "recover still finds unclosed legacy 3-segment settlement"
+    );
+
+    let mut p_sim = position("hft-2", "up", dec!(10), 1_000);
+    p_sim.account_id = crate::account::AccountId::from("polysimulator");
+    assert!(
+        book.book(&booking_for(&p_sim, &r).unwrap(), &r, 20)
+            .is_some(),
+        "different account at same ms must not be blocked by default's legacy key"
+    );
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}

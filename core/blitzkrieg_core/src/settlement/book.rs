@@ -479,10 +479,27 @@ impl SettlementBook {
         positions
             .iter()
             .filter(|p| {
-                let key = super::booking::settlement_key(p);
-                self.is_applied(&key) && !self.closed.contains(&key)
+                let key = self.applied_key_for(p);
+                key.is_some_and(|k| !self.closed.contains(k.as_str()))
             })
             .collect()
+    }
+
+    /// Resolve the durable key under which `p` was applied (new 4-segment
+    /// account-scoped key first, else legacy 3-segment key only if the stored
+    /// record's `account_id` matches `p` or is empty).
+    pub fn applied_key_for(&self, p: &OpenPosition) -> Option<String> {
+        let key = super::booking::settlement_key(p);
+        if self.is_applied(&key) {
+            return Some(key);
+        }
+        let legacy = super::booking::legacy_settlement_key(p);
+        if let Some(rec) = self.applied.get(&legacy)
+            && (rec.account_id.is_empty() || rec.account_id == p.account_id.as_str())
+        {
+            return Some(legacy);
+        }
+        None
     }
 
     /// The committed settlement of a position key, for the recovery close.

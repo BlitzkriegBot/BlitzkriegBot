@@ -37,13 +37,9 @@ pub enum JournalKind {
     Merge,
     /// A settled position's redemption payout confirmed on-chain.
     Redemption,
-    /// #684: an expired, never-answered position closed at its fallback price.
-    ///
-    /// Issue #176 DELETED the producer: the credit it used to carry was
-    /// spendable cash invented from an estimated settlement price (R7.1 L1).
-    /// The variant stays only because pre-#176 journal files are append-only
-    /// evidence (R3) — replay must still read those rows verbatim instead of
-    /// dropping or re-labelling them. No code path writes a new one.
+    /// #684 + operator decision 2026-11-27: an expired position settled at its
+    /// observed pre-expiry binary quote (`UnverifiedExpiryPolicy::Cash`). Live
+    /// trading continuously realigns against the venue wallet balance.
     ExpiryFallback,
     /// A wallet-level venue cash row (MAKER_REBATE / REWARD, #388).
     Cashflow,
@@ -615,6 +611,16 @@ impl Ledger {
         }
     }
 
+    /// Credit the fallback notional (`exit_price × dust_shares`) of an expired
+    /// position directly into spendable cash under `UnverifiedExpiryPolicy::Cash`.
+    /// kind = `ExpiryFallback`, `ref` = the position id.
+    pub fn credit_expiry_fallback(&mut self, amount_usd: Decimal, position_id: &str) {
+        if amount_usd <= Decimal::ZERO {
+            return;
+        }
+        self.apply(JournalKind::ExpiryFallback, amount_usd, position_id);
+    }
+
     /// Credit the collateral of MERGED share-pairs (task 2.2): one complete
     /// UP+DOWN pair of a condition merges on-chain into $1.00 of USDC — the
     /// collection channel of pair-discount arbitrage (@almach: 12,570 merges,
@@ -1059,11 +1065,8 @@ mod tests {
         l.release("o1"); // no cash movement, no row
         // Zero-delta set_balance is a silent no-op (no flood of realign rows):
         l.set_balance(dec!(150));
-        // Issue #176 deleted the expiry-fallback CASH credit: an unverified
-        // expiry no longer touches the balance at all (the receivable claim
-        // rides SettlementBook instead). `JournalKind::ExpiryFallback` survives
-        // only so pre-#176 journal files still replay — see
-        // `legacy_expiry_fallback_rows_still_replay` below.
+        l.credit_expiry_fallback(dec!(2), "hft-1"); // expiry fallback direct cash credit
+        l.credit_expiry_fallback(Decimal::ZERO, "hft-1"); // no row: zero is a no-op
         let rows = l.journal_snapshot();
         let sum = rows.iter().fold(Decimal::ZERO, |a, r| a + r.amount);
         assert_eq!(sum, l.balance(), "balance == Σ journal.amount");
@@ -1102,10 +1105,11 @@ mod tests {
                 JournalKind::Cashflow,
                 JournalKind::Realign,
                 JournalKind::Reset,
+                JournalKind::ExpiryFallback,
             ]
         );
         // The zero/negative rows really were skipped:
-        assert_eq!(rows.len(), 9);
+        assert_eq!(rows.len(), 10);
     }
 
     /// Issue #176: `JournalKind::ExpiryFallback` no longer has a producer —

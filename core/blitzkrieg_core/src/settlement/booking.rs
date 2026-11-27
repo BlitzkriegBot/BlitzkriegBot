@@ -38,11 +38,26 @@ pub struct SettlementBooking {
     pub claim_id: String,
 }
 
-/// The idempotency key of one settled position. Stable across a restart: the
-/// position id is restored from the position log, and `entered_at_ms` pins it
-/// to the round it belongs to (position ids are per-process counters, so the
-/// timestamp is what makes the key unique over a long-lived deployment).
+/// The idempotency key of one settled position. Stable across a restart:
+/// includes `account_id` so two accounts entering the same `(condition_id,
+/// token_id)` in the exact same millisecond (`entered_at_ms`) never collide
+/// and skip the second account's settlement.
 pub fn settlement_key(p: &OpenPosition) -> String {
+    let acct = p.account_id.as_str();
+    if acct.is_empty() {
+        legacy_settlement_key(p)
+    } else {
+        format!(
+            "{acct}:{}:{}:{}",
+            p.condition_id, p.token_id, p.entered_at_ms
+        )
+    }
+}
+
+/// Pre-account-scoped 3-segment key written by older `settlements.jsonl` files.
+/// Used only as a read-side fallback when matching an existing record whose
+/// `account_id` agrees with the position (or is empty).
+pub(crate) fn legacy_settlement_key(p: &OpenPosition) -> String {
     format!("{}:{}:{}", p.condition_id, p.token_id, p.entered_at_ms)
 }
 

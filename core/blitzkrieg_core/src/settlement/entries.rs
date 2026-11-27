@@ -30,6 +30,20 @@ impl SettlementBook {
         if self.is_applied(&booking.key) {
             return None;
         }
+        // Backward-compat: a pre-fix journal may have recorded the legacy
+        // 3-segment key `{condition}:{token}:{entered_at_ms}` without the
+        // `{account_id}:` prefix. Match it ONLY when the stored record belongs
+        // to the same account (or is untagged), so a sibling account at the
+        // same millisecond is never falsely treated as a duplicate.
+        if !booking.account_id.is_empty()
+            && let Some(legacy) = booking
+                .key
+                .strip_prefix(&format!("{}:", booking.account_id))
+            && let Some(existing) = self.applied.get(legacy)
+            && (existing.account_id.is_empty() || existing.account_id == booking.account_id)
+        {
+            return None;
+        }
         // The market+account's open claim, if it has one (redemption removes
         // it). One claim per (market, account): both outcomes of one account's
         // market still redeem once (one NegRisk call), but a second account's

@@ -1,9 +1,10 @@
--- fresh_breakout — mid-round breakout favorite on 5m binary rounds.
+-- fresh_breakout — late-mid breakout favorite on 5m binary rounds.
 -- Observes fresh quotes throughout the round and records any leg that trades
 -- at or below `neutral_cap` (default 0.55). During `min_time_left..max_time_left`
--- (default 45-90s), buys a leg priced inside `min_px..max_px` (default 0.94-0.97)
+-- (default 45-60s), buys a leg priced inside `min_px..max_px` (default 0.94-0.97)
 -- ONLY if that leg was previously seen <= `neutral_cap` earlier in the same
--- round (fresh breakout rather than stale early lock-in).
+-- round AND has stayed continuously inside `min_px..max_px` for at least
+-- `breakout_confirm_ms` (default 4000ms) to filter single-tick wick reversals.
 --
 -- One attempt per condition per round; holds to settlement.
 --
@@ -181,6 +182,7 @@ end
 
 local quoted = {}
 local seen_low = {}
+local breakout_since = {}
 local slot_seen = nil
 
 local function int_p(params, name, fallback)
@@ -229,6 +231,7 @@ function bk_evaluate()
     if slot_seen ~= round.slot then
         quoted = {}
         seen_low = {}
+        breakout_since = {}
         slot_seen = round.slot
     end
 
@@ -238,23 +241,36 @@ function bk_evaluate()
     local lo = num_p(params, "min_px", 0.94)
     local hi = num_p(params, "max_px", 0.97)
     local t_min = int_p(params, "min_time_left", 45)
-    local t_max = int_p(params, "max_time_left", 90)
+    local t_max = int_p(params, "max_time_left", 60)
+    local confirm_ms = int_p(params, "breakout_confirm_ms", 4000)
+    local now_ms = bk.now_ms and bk.now_ms() or nil
     local tl = round.time_left_sec
     local held = held_index()
 
     for _, market in ipairs(bk.markets()) do
         local cond = market.condition_id
         if cond ~= nil then
-            -- Observe neutral-zone touches across the entire round.
+            -- Observe neutral-zone touches and continuous breakout dwell across the round.
             local legs = { market.up_token, market.down_token }
             for i = 1, #legs do
                 local tok = legs[i]
+                local tok_key = tok ~= nil and key_of(round.slot, tok) or nil
                 local book = tok ~= nil and bk.book(tok) or nil
                 if book ~= nil and book.fresh == true then
                     local ask_n = tonumber(book.best_ask)
                     if ask_n ~= nil and ask_n <= cap then
-                        seen_low[key_of(round.slot, tok)] = true
+                        seen_low[tok_key] = true
                     end
+                    local px_n = tonumber(maker and book.best_bid or book.best_ask)
+                    if seen_low[tok_key] == true and px_n ~= nil and px_n >= lo and px_n <= hi then
+                        if now_ms ~= nil and breakout_since[tok_key] == nil then
+                            breakout_since[tok_key] = now_ms
+                        end
+                    else
+                        breakout_since[tok_key] = nil
+                    end
+                elseif tok_key ~= nil then
+                    breakout_since[tok_key] = nil
                 end
             end
 
@@ -277,7 +293,13 @@ function bk_evaluate()
                 local best = nil
                 for i = 1, #legs do
                     local token = legs[i]
-                    if token ~= nil and seen_low[key_of(round.slot, token)] == true then
+                    local tok_key = token ~= nil and key_of(round.slot, token) or nil
+                    local confirmed = confirm_ms <= 0
+                        or (now_ms ~= nil
+                            and tok_key ~= nil
+                            and breakout_since[tok_key] ~= nil
+                            and (now_ms - breakout_since[tok_key]) >= confirm_ms)
+                    if token ~= nil and seen_low[tok_key] == true and confirmed then
                         local book = bk.book(token)
                         if book ~= nil and book.fresh == true then
                             local px = maker and book.best_bid or book.best_ask

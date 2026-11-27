@@ -948,7 +948,9 @@ impl Core {
             .collect();
         let mut recovered = 0usize;
         for pos in stale {
-            let key = settlement_key(&pos);
+            let Some(key) = self.settlement.applied_key_for(&pos) else {
+                continue;
+            };
             let Some(record) = self.settlement.record(&key) else {
                 continue;
             };

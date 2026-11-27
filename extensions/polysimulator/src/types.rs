@@ -197,6 +197,7 @@ pub struct PmTradeRow {
     /// books from that role.
     #[serde(default, deserialize_with = "deserialize_opt_i64_or_string")]
     pub fee_rate_bps: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_opt_maker_order_ids")]
     pub maker_orders: Option<Vec<String>>,
     pub taker_order_id: Option<String>,
     pub transaction_hash: Option<String>,
@@ -640,6 +641,58 @@ where
     deserializer.deserialize_option(OptI64Visitor)
 }
 
+/// Deserialize `maker_orders` from `GET /v1/data/trades`.
+///
+/// PolySimulator / Polymarket CLOB responses may represent each entry in
+/// `maker_orders` either as a bare order-id string (`"41"`), an integer
+/// (`41`), or a Polymarket-style maker-order object
+/// (`{"order_id": "41", "owner": "...", "matched_amount": "...", ...}`).
+/// Normalize all forms into `Option<Vec<String>>` of order ids so downstream
+/// maker-fill attribution stays unchanged.
+fn deserialize_opt_maker_order_ids<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<Vec<serde_json::Value>> = Option::deserialize(deserializer)?;
+    let Some(items) = raw else {
+        return Ok(None);
+    };
+    let mut ids = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            serde_json::Value::String(id) => {
+                let trimmed = id.trim();
+                if !trimmed.is_empty() {
+                    ids.push(trimmed.to_string());
+                }
+            }
+            serde_json::Value::Number(n) => {
+                ids.push(n.to_string());
+            }
+            serde_json::Value::Object(map) => {
+                let id_val = map
+                    .get("order_id")
+                    .or_else(|| map.get("orderId"))
+                    .or_else(|| map.get("id"));
+                match id_val {
+                    Some(serde_json::Value::String(id)) => {
+                        let trimmed = id.trim();
+                        if !trimmed.is_empty() {
+                            ids.push(trimmed.to_string());
+                        }
+                    }
+                    Some(serde_json::Value::Number(n)) => {
+                        ids.push(n.to_string());
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(Some(ids))
+}
+
 #[cfg(test)]
 mod pm_trade_row_string_i64_tests {
     use super::*;
@@ -677,5 +730,53 @@ mod pm_trade_row_string_i64_tests {
         assert_eq!(rows[1].bucket_index, Some(1));
         assert_eq!(rows[1].last_update, Some(1730000002000));
         assert_eq!(rows[1].match_time, None);
+    }
+
+    #[test]
+    fn parses_maker_orders_as_objects_strings_or_integers() {
+        let raw = r#"{
+            "data": [
+                {
+                    "id": "t-map",
+                    "market": "0xcond",
+                    "maker_orders": [
+                        {
+                            "order_id": "ord-101",
+                            "owner": "0xabc",
+                            "matched_amount": "5",
+                            "price": "0.52",
+                            "fee_rate_bps": "0",
+                            "outcome": "Up"
+                        },
+                        {
+                            "orderId": 202,
+                            "matched_amount": "3"
+                        },
+                        "ord-303",
+                        404
+                    ]
+                },
+                {
+                    "id": "t-empty",
+                    "market": "0xcond",
+                    "maker_orders": []
+                }
+            ]
+        }"#;
+        let env: PmTradesEnvelope = serde_json::from_str(raw).expect("envelope parses");
+        let rows = env.data.expect("data");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].maker_orders.as_deref(),
+            Some(
+                &[
+                    "ord-101".to_string(),
+                    "202".to_string(),
+                    "ord-303".to_string(),
+                    "404".to_string(),
+                ][..]
+            )
+        );
+        assert_eq!(rows[1].maker_orders.as_deref(), Some(&[][..]));
     }
 }

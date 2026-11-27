@@ -635,17 +635,27 @@ impl crate::service::Core {
         }
     }
 
-    /// Resolve the account a panel patch targets (issue #1189 per-account):
-    /// the named account, or the process default when absent. Refuses an
-    /// unknown account (fail-closed: never silently a sibling's row).
+    /// Resolve the account a panel patch targets (issue #1189 / #271):
+    /// `accountId` is REQUIRED (fail-closed: never silently fall back to the
+    /// process active account, which can differ from the panel's display
+    /// account). Refuses missing or unknown accounts.
     pub(crate) fn resolve_set_target(
         &self,
         account_id: Option<&str>,
         op: &str,
     ) -> Result<String, crate::model::CoreError> {
         let target = account_id
-            .map(str::to_string)
-            .unwrap_or_else(|| self.accounts.active_id().to_string());
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                crate::model::CoreError::new(
+                    crate::model::CoreErrorCode::InvalidParams,
+                    format!(
+                        "{op}: accountId is required; refusing to guess from the process active account"
+                    ),
+                )
+            })?
+            .to_string();
         if self
             .accounts
             .account(&crate::account::AccountId::from(target.as_str()))

@@ -61,7 +61,7 @@ async fn risk_set_systemic_and_exit_write_the_db_not_the_env() {
         &core,
         &crate::market::registry::MarketPluginRegistry::new(),
         &PeerAuth::SameUid { uid: own_uid() },
-        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"maxPositionSize":7,"maxSingleLossUsd":"0.75","reason":"db carrier"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"accountId":"default","maxPositionSize":7,"maxSingleLossUsd":"0.75","reason":"db carrier"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -110,7 +110,7 @@ async fn risk_set_systemic_and_exit_write_the_db_not_the_env() {
         &core,
         &crate::market::registry::MarketPluginRegistry::new(),
         &PeerAuth::SameUid { uid: own_uid() },
-        r#"{"jsonrpc":"2.0","id":2,"method":"risk.setExit","params":{"stopLossPct":"8","trailingEnabled":true,"reason":"db carrier"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":2,"method":"risk.setExit","params":{"accountId":"default","stopLossPct":"8","trailingEnabled":true,"reason":"db carrier"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -178,7 +178,7 @@ async fn risk_set_systemic_and_exit_never_touch_a_wired_env_file() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"maxPositionSize":2,"maxSingleLossUsd":"0.75","reason":"env readonly"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"accountId":"default","maxPositionSize":2,"maxSingleLossUsd":"0.75","reason":"env readonly"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -209,7 +209,7 @@ async fn risk_set_systemic_and_exit_never_touch_a_wired_env_file() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":2,"method":"risk.setExit","params":{"stopLossPct":"8","trailingEnabled":true,"reason":"env readonly"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":2,"method":"risk.setExit","params":{"accountId":"default","stopLossPct":"8","trailingEnabled":true,"reason":"env readonly"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -248,7 +248,7 @@ async fn risk_set_systemic_and_exit_stay_memory_only_without_a_store() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"maxPositionSize":1,"maxDailyDrawdownUsd":50,"reason":"memory only"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"accountId":"default","maxPositionSize":1,"maxDailyDrawdownUsd":50,"reason":"memory only"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -279,7 +279,7 @@ async fn risk_set_systemic_and_exit_stay_memory_only_without_a_store() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":2,"method":"risk.setExit","params":{"stopLossPct":"8","trailingEnabled":true,"reason":"memory only"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":2,"method":"risk.setExit","params":{"accountId":"default","stopLossPct":"8","trailingEnabled":true,"reason":"memory only"}}"#.to_string(),
     )
     .await;
     assert!(

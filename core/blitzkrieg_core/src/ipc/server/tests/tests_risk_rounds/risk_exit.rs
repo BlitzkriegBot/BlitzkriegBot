@@ -22,7 +22,7 @@ async fn risk_set_exit_writes_the_triple_and_names_each_change() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setExit","params":{"stopLossPct":"8","takeProfitPct":"90","forceExitSec":120,"trailingEnabled":true,"reason":"tighten"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setExit","params":{"accountId":"default","stopLossPct":"8","takeProfitPct":"90","forceExitSec":120,"trailingEnabled":true,"reason":"tighten"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -122,7 +122,7 @@ async fn risk_set_exit_writes_the_triple_and_names_each_change() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":3,"method":"risk.setExit","params":{"forceExitSec":0}}"#
+        r#"{"jsonrpc":"2.0","id":3,"method":"risk.setExit","params":{"accountId":"default","forceExitSec":0}}"#
             .to_string(),
     )
     .await;
@@ -137,7 +137,7 @@ async fn risk_set_exit_writes_the_triple_and_names_each_change() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":4,"method":"risk.setExit","params":{"stopLossPct":"0","takeProfitPct":"50"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":4,"method":"risk.setExit","params":{"accountId":"default","stopLossPct":"0","takeProfitPct":"50"}}"#.to_string(),
     )
     .await;
     assert!(

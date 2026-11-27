@@ -35,7 +35,7 @@ async fn risk_set_systemic_binds_next_order_without_restart() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":3,"method":"risk.setSystemic","params":{"maxOrderNotionalUsd":1,"reason":"tighten after drawdown"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":3,"method":"risk.setSystemic","params":{"accountId":"default","maxOrderNotionalUsd":1,"reason":"tighten after drawdown"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -113,7 +113,7 @@ async fn risk_set_systemic_writes_the_matrix_and_names_each_effect() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"maxPositionSize":1,"maxDailyDrawdownUsd":50,"reason":"live arm"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"accountId":"default","maxPositionSize":1,"maxDailyDrawdownUsd":50,"reason":"live arm"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -208,7 +208,7 @@ async fn risk_set_systemic_writes_the_matrix_and_names_each_effect() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":4,"method":"risk.setSystemic","params":{"maxSingleLossUsd":"-5","maxConsecutiveLosses":10}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":4,"method":"risk.setSystemic","params":{"accountId":"default","maxSingleLossUsd":"-5","maxConsecutiveLosses":10}}"#.to_string(),
     )
     .await;
     assert!(

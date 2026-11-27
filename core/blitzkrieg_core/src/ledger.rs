@@ -130,6 +130,9 @@ pub struct Ledger {
     /// Deliberately not serialized and not replayed — the first venue report
     /// after a boot re-establishes it, which is the honest answer for the gap.
     venue_reported: bool,
+    /// #277: latched true on any journal append or reset rewrite failure so
+    /// callers can detect durability loss and fail closed.
+    journal_write_failed: bool,
 }
 
 /// The ONE net-PnL formula, `balance − opening_equity`, as a pure function.
@@ -153,6 +156,11 @@ pub fn cumulative_net_pnl(balance: Decimal, opening_equity: Option<Decimal>) -> 
 impl Ledger {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// #277: returns true if any durable journal append or rewrite failed.
+    pub fn journal_write_failed(&self) -> bool {
+        self.journal_write_failed
     }
 
     /// Attach the durable journal file. Boot-replay only — a ledger that
@@ -250,9 +258,10 @@ impl Ledger {
             if let Some(path) = self.journal_path.clone()
                 && !crate::jsonl::append(&path, &entry)
             {
-                tracing::warn!(
+                self.journal_write_failed = true;
+                tracing::error!(
                     path = %path.display(),
-                    "ledger journal append failed — entry kept in memory, not durable; trading continues"
+                    "ledger journal append failed — durability fault latched"
                 );
             }
             if self.journal.len() == JOURNAL_CAP {
@@ -671,18 +680,6 @@ impl Ledger {
     /// 决定是否告警），与 `jsonl::rewrite_atomic` 的契约一致。
     pub fn reset_account_to_seed(&mut self, seed: Decimal) -> bool {
         let target = seed.max(Decimal::ZERO);
-        self.reservations.clear();
-        self.balance = target;
-        self.journal.clear();
-        // issue #1026：重置后内存本金锚同步置为目标值，避免重启 replay 时
-        // 以 0 锚启动导致面板把全部本金记成净利。
-        self.seeded_total = target;
-        // issue 749: the book is a seed again, not venue truth.
-        self.venue_reported = false;
-        // issue 723: every path below appends exactly one `Reset` row — the
-        // global row counter moves with it, monotonically (a rebuilt
-        // generation never reissues the previous one's seqs).
-        self.journal_total += 1;
         let entry = JournalEntry {
             at_ms: now_ms(),
             kind: JournalKind::Reset,
@@ -691,28 +688,34 @@ impl Ledger {
             ref_: "reset".to_string(),
             fee_source: String::new(),
         };
+        // #277 disk-first: persist the reset snapshot BEFORE mutating in-memory
+        // balance/journal so a disk failure never leaves memory diverged from disk.
         if let Some(path) = self.journal_path.clone() {
             match serde_json::to_vec(&entry) {
                 Ok(mut bytes) => {
                     bytes.push(b'\n');
                     if !crate::jsonl::rewrite_atomic(&path, &bytes) {
-                        tracing::warn!(
+                        self.journal_write_failed = true;
+                        tracing::error!(
                             path = %path.display(),
-                            "issue 561: account journal rewrite failed — \
-                             the on-disk trail keeps pre-reset rows; the next \
-                             boot replay would restore them"
+                            "account journal rewrite failed — aborting in-memory reset so disk and memory stay consistent"
                         );
-                        self.journal.push_back(entry);
                         return false;
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "issue 561: account journal row serialize failed");
-                    self.journal.push_back(entry);
+                    self.journal_write_failed = true;
+                    tracing::error!(error = %e, "account journal reset serialization failed");
                     return false;
                 }
             }
         }
+        self.reservations.clear();
+        self.balance = target;
+        self.journal.clear();
+        self.seeded_total = target;
+        self.venue_reported = false;
+        self.journal_total += 1;
         self.journal.push_back(entry);
         true
     }
@@ -1612,5 +1615,39 @@ mod tests {
             "replay rebuilds the seed anchor from the full row list"
         );
         assert_eq!(replayed.balance(), l.balance());
+    }
+
+    /// #277: disk-first reset must NOT mutate in-memory balance/journal when
+    /// the journal rewrite fails, and must latch `journal_write_failed()`.
+    #[test]
+    fn reset_account_to_seed_is_disk_first_and_latches_fault_on_write_failure() {
+        let dir = std::env::temp_dir().join(format!("bk-ledger-disk-first-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut l = Ledger::new();
+        l.seed(dec!(500));
+        l.reserve("o1", dec!(100)).unwrap();
+        l.set_journal_path(dir.clone());
+
+        assert!(
+            !l.reset_account_to_seed(dec!(1000)),
+            "reset must return false when disk rewrite fails"
+        );
+        assert!(
+            l.journal_write_failed(),
+            "durability fault must be latched on journal write failure"
+        );
+        assert_eq!(
+            l.balance(),
+            dec!(500),
+            "in-memory balance must NOT be mutated when disk rewrite fails"
+        );
+        assert_eq!(
+            l.reserved(),
+            dec!(100),
+            "in-memory reservations must NOT be cleared when disk rewrite fails"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

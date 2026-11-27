@@ -90,14 +90,17 @@ impl Core {
         for (account_id, keys) in &settings {
             let account_id_owned = account_id.clone();
             let id = blitzkrieg_market_api::AccountId::from(account_id.as_str());
-            if account_id.as_str() == default_id.as_str()
-                && let Some(raw) = keys.get(SIZE_PCT_SETTING)
-            {
+            if let Some(raw) = keys.get(SIZE_PCT_SETTING) {
                 match raw.trim().parse::<Decimal>() {
                     Ok(v) if v >= Decimal::ZERO && v <= Decimal::ONE_HUNDRED => {
-                        self.config.size_pct = v;
-                        if let Some(engine) = self.engine.as_mut() {
-                            engine.set_size_pct(v);
+                        self.config
+                            .account_size_pct
+                            .insert(account_id_owned.clone(), v);
+                        if account_id.as_str() == default_id.as_str() {
+                            self.config.size_pct = v;
+                            if let Some(engine) = self.engine.as_mut() {
+                                engine.set_size_pct(v);
+                            }
                         }
                     }
                     _ => tracing::warn!(
@@ -107,13 +110,16 @@ impl Core {
                     ),
                 }
             }
-            if account_id.as_str() == default_id.as_str()
-                && let Some(raw) = keys.get(MAX_POSITIONS_SETTING)
-            {
+            if let Some(raw) = keys.get(MAX_POSITIONS_SETTING) {
                 match raw.trim().parse::<usize>() {
                     Ok(n) => {
-                        self.config.positions.max_positions = n;
-                        self.positions.set_config(self.config.positions.clone());
+                        self.config
+                            .account_max_positions
+                            .insert(account_id_owned.clone(), n);
+                        if account_id.as_str() == default_id.as_str() {
+                            self.config.positions.max_positions = n;
+                            self.positions.set_config(self.config.positions.clone());
+                        }
                     }
                     Err(_) => tracing::warn!(
                         account = %account_id,
@@ -122,13 +128,18 @@ impl Core {
                     ),
                 }
             }
-            if account_id.as_str() == default_id.as_str() {
+            {
                 let mut band_changed = false;
                 if let Some(raw) = keys.get(MIN_SHARES_SETTING) {
                     match raw.trim().parse::<Decimal>() {
                         Ok(v) if v >= Decimal::ZERO => {
-                            self.config.min_shares = v;
-                            band_changed = true;
+                            self.config
+                                .account_min_shares
+                                .insert(account_id_owned.clone(), v);
+                            if account_id.as_str() == default_id.as_str() {
+                                self.config.min_shares = v;
+                                band_changed = true;
+                            }
                         }
                         _ => tracing::warn!(
                             account = %account_id,
@@ -140,8 +151,13 @@ impl Core {
                 if let Some(raw) = keys.get(MAX_SHARES_SETTING) {
                     match raw.trim().parse::<Decimal>() {
                         Ok(v) if v >= Decimal::ZERO => {
-                            self.config.max_shares = v;
-                            band_changed = true;
+                            self.config
+                                .account_max_shares
+                                .insert(account_id_owned.clone(), v);
+                            if account_id.as_str() == default_id.as_str() {
+                                self.config.max_shares = v;
+                                band_changed = true;
+                            }
                         }
                         _ => tracing::warn!(
                             account = %account_id,
@@ -160,6 +176,8 @@ impl Core {
                         engine.set_share_band(self.config.min_shares, self.config.max_shares);
                     }
                 }
+            }
+            if account_id.as_str() == default_id.as_str() {
                 // #243 Fail-Closed migration: when both legacy BK_SIZE_PCT and
                 // POLICY_BUDGET_RATIO are present, take the tighter percentage
                 // (never silently widen) and emit a clear WARN.

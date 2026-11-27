@@ -1034,6 +1034,7 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     // optional once_per_round deduplication.
     out.push_str("-- runtime bridge: intent collection over the per-token book (see header).\n");
     out.push_str("local __orders = {}\n");
+    out.push_str("local __exits = {}\n");
     out.push_str("local __slot_seen = nil\n");
     out.push_str("local __fired = {}\n");
     out.push_str("local __min_px = {}\n");
@@ -1089,11 +1090,11 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     out.push_str("  t.asset = m and m.asset or nil\n");
     out.push_str("  t.side_label = side_label\n");
     out.push_str("  t.account_id = a and a.id or nil\n");
-    out.push_str("  t.available_balance = tonumber(a and (a.available or a.balance)) or 0\n");
+    out.push_str("  t.available_balance = tonumber(a and (a.available or a.balance))\n");
     out.push_str("  t.time_left_sec = r and r.time_left_sec or nil\n");
-    out.push_str("  local dur = r and tonumber(r.duration_sec) or 300\n");
-    out.push_str("  if t.time_left_sec and dur > 0 then t.elapsed_pct = (dur - t.time_left_sec) / dur else t.elapsed_pct = 0 end\n");
-    out.push_str("  t.trend_confirmed = false\n");
+    out.push_str("  local dur = r and tonumber(r.duration_sec) or nil\n");
+    out.push_str("  if t.time_left_sec and dur and dur > 0 then t.elapsed_pct = (dur - t.time_left_sec) / dur else t.elapsed_pct = nil end\n");
+    out.push_str("  t.trend_confirmed = nil\n");
     out.push_str("  t.consensus_aligned = (cdir ~= nil and cdir == side_label)\n");
     out.push_str(
         "  local sp = (m and m.asset and bk.spot) and tonumber(bk.spot(m.asset)) or nil\n",
@@ -1101,9 +1102,9 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     out.push_str("  if sp and sp > 0 and m and m.asset then\n");
     out.push_str("    if __spot_open[m.asset] == nil then __spot_open[m.asset] = sp end\n");
     out.push_str("    local so = __spot_open[m.asset]\n");
-    out.push_str("    t.spot_return_bps = so and so > 0 and ((sp - so) / so * 10000) or 0\n");
+    out.push_str("    t.spot_return_bps = so and so > 0 and ((sp - so) / so * 10000) or nil\n");
     out.push_str("  else\n");
-    out.push_str("    t.spot_return_bps = 0\n");
+    out.push_str("    t.spot_return_bps = nil\n");
     out.push_str("  end\n");
     out.push_str("  if b and b.fresh then\n");
     out.push_str("    local ask = tonumber(b.best_ask)\n");
@@ -1113,8 +1114,8 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     out.push_str("    t.best_bid = bid\n");
     out.push_str("    t.price = tonumber(b.best_ask) or tonumber(b.mid)\n");
     out.push_str("    t.mid_price = mid\n");
-    out.push_str("    t.obi = tonumber(b.obi) or 0\n");
-    out.push_str("    t.spread = tonumber(b.spread) or ((ask and bid) and (ask - bid) or 0)\n");
+    out.push_str("    t.obi = tonumber(b.obi)\n");
+    out.push_str("    t.spread = tonumber(b.spread) or ((ask and bid) and (ask - bid) or nil)\n");
     out.push_str("    if t.price then\n");
     out.push_str("      local mn = __min_px[token]\n");
     out.push_str("      local mx = __max_px[token]\n");
@@ -1131,8 +1132,8 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     out.push_str("    local obid = ob and ob.fresh and tonumber(ob.best_bid) or nil\n");
     out.push_str("    t.other_best_ask = oask\n");
     out.push_str("    t.other_best_bid = obid\n");
-    out.push_str("    t.pair_ask_sum = (ask and oask) and (ask + oask) or 2.0\n");
-    out.push_str("    t.pair_bid_sum = (bid and obid) and (bid + obid) or 2.0\n");
+    out.push_str("    t.pair_ask_sum = (ask and oask) and (ask + oask) or nil\n");
+    out.push_str("    t.pair_bid_sum = (bid and obid) and (bid + obid) or nil\n");
     out.push_str("  end\n");
     out.push_str("  return t\n");
     out.push_str("end\n");
@@ -1142,15 +1143,26 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     out.push_str(
         "    local pk = tostring(__cur_slot or 0) .. \":\" .. tostring(__cur_cond or o.symbol)\n",
     );
-    out.push_str("    __orders[#__orders + 1] = { token = o.symbol, price = string.format(\"%.6g\", o.price), reason = \"blueprint-pair\", pair = { key = pk, leg = \"up\" } }\n");
-    out.push_str("    __orders[#__orders + 1] = { token = o.other_symbol, price = string.format(\"%.6g\", o.other_price), reason = \"blueprint-pair\", pair = { key = pk, leg = \"down\" } }\n");
+    out.push_str("    local sh = (type(o.budget_usd) == \"number\" and o.budget_usd > 0 and o.price > 0) and string.format(\"%.6g\", o.budget_usd / o.price) or nil\n");
+    out.push_str("    local osh = (type(o.budget_usd) == \"number\" and o.budget_usd > 0 and o.other_price > 0) and string.format(\"%.6g\", o.budget_usd / o.other_price) or nil\n");
+    out.push_str("    __orders[#__orders + 1] = { token = o.symbol, price = string.format(\"%.6g\", o.price), shares = sh, reason = \"blueprint-pair\", pair = { key = pk, leg = \"up\" } }\n");
+    out.push_str("    __orders[#__orders + 1] = { token = o.other_symbol, price = string.format(\"%.6g\", o.other_price), shares = osh, reason = \"blueprint-pair\", pair = { key = pk, leg = \"down\" } }\n");
     out.push_str("    if __once_per_round and __cur_cond then __fired[tostring(__cur_slot or 0) .. \":\" .. __cur_cond] = true end\n");
     out.push_str("    return\n");
     out.push_str("  end\n");
     out.push_str("  if o.symbol and o.side == \"buy\" and type(o.price) == \"number\" then\n");
+    out.push_str("    local sh = (type(o.budget_usd) == \"number\" and o.budget_usd > 0 and o.price > 0) and string.format(\"%.6g\", o.budget_usd / o.price) or nil\n");
     out.push_str(
-        "    __orders[#__orders + 1] = { token = o.symbol, price = string.format(\"%.6g\", o.price), reason = o.maker and \"blueprint-maker\" or \"blueprint\" }\n",
+        "    __orders[#__orders + 1] = { token = o.symbol, price = string.format(\"%.6g\", o.price), shares = sh, reason = o.maker and \"blueprint-maker\" or \"blueprint\" }\n",
     );
+    out.push_str("    if __once_per_round and __cur_cond then __fired[tostring(__cur_slot or 0) .. \":\" .. __cur_cond] = true end\n");
+    out.push_str("    return\n");
+    out.push_str("  end\n");
+    out.push_str("  if o.symbol and o.side == \"sell\" then\n");
+    out.push_str(
+        "    local px = type(o.price) == \"number\" and string.format(\"%.6g\", o.price) or nil\n",
+    );
+    out.push_str("    __exits[#__exits + 1] = { token = o.symbol, price = px, reason = \"blueprint-sell\" }\n");
     out.push_str("    if __once_per_round and __cur_cond then __fired[tostring(__cur_slot or 0) .. \":\" .. __cur_cond] = true end\n");
     out.push_str("  end\n");
     out.push_str("end\n");
@@ -1182,6 +1194,7 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     out.push_str("end\n");
     out.push_str("function bk_evaluate()\n");
     out.push_str("  __orders = {}\n");
+    out.push_str("  __exits = {}\n");
     out.push_str("  local r = bk.round()\n");
     out.push_str("  if r == nil then return { entries = {}, exits = {}, breaks = {} } end\n");
     out.push_str("  if r.slot ~= nil and r.slot ~= __slot_seen then\n");
@@ -1209,7 +1222,7 @@ fn generate(bp: &Blueprint, graph: &Graph) -> Result<(String, Vec<BlueprintTunab
     out.push_str("      end\n");
     out.push_str("    end\n");
     out.push_str("  end\n");
-    out.push_str("  return { entries = __orders, exits = {}, breaks = {} }\n");
+    out.push_str("  return { entries = __orders, exits = __exits, breaks = {} }\n");
     out.push_str("end\n");
     out.push_str("function declare_modes()\n");
     out.push_str(
@@ -1295,7 +1308,7 @@ fn order_call_tunable(
             });
         }
         format!(
-            "tick.available_balance * {}",
+            "(tick.available_balance ~= nil and (tick.available_balance * {}) or nil)",
             param_expr(&action.id, "budget_ratio", v)
         )
     });
@@ -1391,7 +1404,13 @@ fn comparison_tunable(
         return comparison(left, op, value);
     }
     let _ = tunables; // registered by the caller before this runs
-    format!("{left} {op} {}", param_expr(node, "value", value))
+    let lua_op = if op == "!=" { "~=" } else { op };
+    let rhs = param_expr(node, "value", value);
+    // Nil-safe guard (#276): missing market/account fields are nil, never
+    // fabricated defaults, so any comparison against nil cleanly evaluates to
+    // false instead of raising a Lua runtime error or spuriously triggering
+    // `nil ~= true`.
+    format!("({left} ~= nil and {left} {lua_op} {rhs})")
 }
 
 /// A comparison guard: `left op value`, with `in` expanded to an equality

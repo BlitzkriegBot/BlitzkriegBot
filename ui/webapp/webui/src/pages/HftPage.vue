@@ -139,7 +139,7 @@ const marketTypeText = computed(() => {
     ? shortMarketType(marketTypeLabel(row.type ?? row.kind ?? null))
     : shortMarketType(marketTypeLabel(snap.value?.marketActiveType ?? null))
 })
-const isDry = computed(() => (snap.value?.mode ?? 'dry') === 'dry')
+const isDry = computed(() => snap.value?.mode === 'dry')
 
 /**
  * Whether the engine is up.
@@ -545,8 +545,8 @@ const cumStats = computed(() => {
   // PnL under this page's account filter. The account-scoped read is
   // kernel-filtered, so it agrees with the rows on screen; the row-sum
   // fallback stays for older cores.
-  const scoped = store.accountTradeSummary
-  const s = scoped ?? snap.value?.tradeSummary
+  // issue 282: 只认当前显示账户切片，绝不回落到全进程全局 snap.value.tradeSummary。
+  const s = store.accountTradeSummary
   const rows = historyRows.value
   if (s && (s.totalTrades ?? 0) > 0) {
     return {
@@ -942,7 +942,9 @@ const forceCloseExpired = ref(false)
 async function forceClose(position: Position): Promise<void> {
   if (!control.value.canStop || busy.value) return
   forceCloseTarget.value = position
-  forceCloseExpired.value = positionExpired(position, identityDurSec.value ?? 900)
+  forceCloseExpired.value = identityDurSec.value != null && identityDurSec.value > 0
+    ? positionExpired(position, identityDurSec.value)
+    : false
   forceCloseConfirmOpen.value = true
 }
 
@@ -1018,7 +1020,9 @@ const positions = computed(() =>
 // 省（读数未到）回落 900 保持现行为。orderExpired 是函数，逐单调用的当拍
 // 取值 —— venue 变化后下一拍即按新族长算，无需重绑。
 function orderExpired(o: OrderRow): boolean {
-  const dur = identityDurSec.value ?? 900
+  // issue 278: 轮次时长未知时不按 900s 猜测，避免把在途挂单误判为已过期。
+  const dur = identityDurSec.value
+  if (dur == null || dur <= 0) return false
   return o.roundSlot > 0 && Date.now() / 1000 >= roundEndSec(o.roundSlot, dur)
 }
 

@@ -56,7 +56,9 @@ const emit = defineEmits<{
 // 点了也过不了活轮拒绝。逐单调用的当拍取值 —— venue 变化后下一拍即按新族
 // 长算，无需重绑。
 function orderExpired(o: OrderRow): boolean {
-  const dur = props.identityDurSec ?? 900
+  // issue 278: 轮长未知时不伪造 900s，避免误判活单已过期。
+  const dur = props.identityDurSec
+  if (dur == null || dur <= 0) return false
   return o.roundSlot > 0 && Date.now() / 1000 >= (o.roundSlot + 1) * dur
 }
 
@@ -71,7 +73,9 @@ function positionRemainingLabel(p: Position): string {
  *  判定单源在 lib/trades positionExpired（轮次号匹配 + 行族长优先），按钮
  *  与页面分流同用一处（issue 733）。 */
 function expired(p: Position): boolean {
-  return positionExpired(p, props.identityDurSec ?? 900)
+  return props.identityDurSec != null && props.identityDurSec > 0
+    ? positionExpired(p, props.identityDurSec)
+    : false
 }
 
 function orderStatusLabel(s: string): string {

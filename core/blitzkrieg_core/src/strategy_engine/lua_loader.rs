@@ -916,6 +916,7 @@ impl EngineStrategy for LuaEngineAdapter {
                     down_token: m.down_token_id.clone(),
                     expires_at_ms: m.expires_at_ms,
                     slot: m.round_slot,
+                    round_duration_sec: m.round_duration_sec,
                     neg_risk: m.neg_risk,
                     venue: m.venue.clone(),
                 })

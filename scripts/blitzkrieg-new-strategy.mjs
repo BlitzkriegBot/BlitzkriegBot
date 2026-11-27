@@ -85,6 +85,7 @@ pub fn template_market() -> MarketInfo {
         down_token: "DOWN".into(),
         expires_at_ms: 0,
         slot: 0,
+        round_duration_sec: 0,
         neg_risk: false,
         venue: String::new(),
     }

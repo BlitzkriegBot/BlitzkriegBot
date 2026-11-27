@@ -692,3 +692,154 @@ fn a_venue_outside_the_configuration_stamps_the_instance_account() {
         "an all-unknown round pairs nothing: {got_u:?}"
     );
 }
+
+// ── test 9: boot install_engine replay + multi-family 5m/15m cross-venue fill ─
+
+/// End-to-end regression for the two production dead-ends that prevented
+/// `cross_venue_arb` from ever placing an order:
+///   1. `CoreConfig::install_engine` must push `core.arb_leg_config` (loaded
+///      from SQLite `arb_pairs` at boot) into the freshly built `Engine`
+///      without requiring a runtime `arb.config.set`.
+///   2. When leg A (`default` @ polymarket) is anchored to 300s (5m) and leg B
+///      (`arb-b` @ kalshi) is anchored to 900s (15m), polymarket lists BOTH 5m
+///      and 15m BTC rows while kalshi lists 15m BTC. `cross_venue_arb` must
+///      pair the matching 15m expiry window and fill BOTH legs in DRY mode.
+#[test]
+fn boot_install_engine_and_mixed_round_families_fill_both_legs_in_dry() {
+    let path = accounts_toml_path("boot-mixed-families");
+    let now = NOW;
+
+    // Step 1: persist arb_pairs into SQLite via a first Core, then drop it.
+    {
+        let mut c1 = arb_core(&path, false);
+        c1.arb_config_set_persisting(&legs_payload(), "test", "seed arb_pairs", now)
+            .expect("arb_pairs persists into SQLite");
+    }
+
+    // Step 2: fresh Core booting over the SAME SQLite store, using real
+    // `CoreConfig::install_engine` (NO manual `arb_config_set` call!).
+    let mut account_round_durations = HashMap::new();
+    account_round_durations.insert("default".to_string(), 300);
+    account_round_durations.insert("arb-b".to_string(), 900);
+    let config = CoreConfig {
+        mode: blitzkrieg_core::model::Mode::Dry,
+        risk: blitzkrieg_core::risk::RiskConfig {
+            max_order_notional: dec!(100_000),
+            ..Default::default()
+        },
+        dry_seed_balance: dec!(1_000_000),
+        engine_enabled: true,
+        default_round_duration_sec: 900,
+        round_duration_sec: 900,
+        account_round_durations,
+        min_shares: dec!(1),
+        max_shares: dec!(10000),
+        assets: vec!["BTC".into()],
+        lua_strategy_dir: Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../user_layer/strategies_lua")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        enabled_strategies: vec!["cross_venue_arb".into()],
+        positions: blitzkrieg_core::position::PositionConfig {
+            exit: blitzkrieg_core::exit_policy::ExitConfig {
+                min_time_left_sec: 0,
+                maker_first_exit_enabled: false,
+                exit_grace_sec: 0,
+                ..Default::default()
+            },
+            max_positions_per_asset: 4,
+            ..Default::default()
+        },
+        execution_policy_path: None,
+        accounts_config_path: Some(path.to_string_lossy().into_owned()),
+        env_file_path: Some(accounts_env_path(&path).to_string_lossy().into_owned()),
+        db_path: Some(path.with_extension("store.sqlite")),
+        ..Default::default()
+    };
+    let book = load_account_ledgers_single_source(
+        &path,
+        Some(&accounts_env_path(&path)),
+        now,
+        TEST_ALLOWED_ROUNDS,
+    )
+    .expect("accounts fixture parses");
+    let mut c = Core::with_account_book(config.clone(), book);
+    assert!(
+        c.arb_leg_config().is_some(),
+        "Core::with_account_book loaded persisted arb_pairs from SQLite"
+    );
+    config
+        .install_engine(&mut c)
+        .expect("install_engine succeeds and pushes arb_leg_config");
+
+    // Step 3: feed mixed-family markets — polymarket has BOTH 5m and 15m BTC,
+    // kalshi has 15m BTC.
+    let slot_15m = now / 1000 / 900;
+    let slot_5m = now / 1000 / 300;
+    let pm_5m = CryptoMarket {
+        asset: "BTC".into(),
+        condition_id: "pm-cond-5m".into(),
+        question_id: "q5".into(),
+        up_token_id: "pm-5m-up".into(),
+        down_token_id: "pm-5m-down".into(),
+        up_price: dec!(0.50),
+        down_price: dec!(0.50),
+        expires_at_ms: (slot_5m + 1) * 300 * 1000,
+        round_slot: slot_5m + 1,
+        round_duration_sec: 300,
+        archive_verdict: false,
+        venue: "polymarket".into(),
+        neg_risk: false,
+        question: "BTC 5m".into(),
+    };
+    c.engine_on_data(
+        DataEvent::RoundMarkets {
+            markets: vec![pm_5m],
+            now_ms: now,
+        },
+        now,
+    );
+    c.engine_on_data(
+        DataEvent::RoundMarkets {
+            markets: vec![market(PM_UP, PM_DOWN, PM, "polymarket", slot_15m)],
+            now_ms: now,
+        },
+        now,
+    );
+    c.engine_on_data(
+        DataEvent::RoundMarkets {
+            markets: vec![market(KX_UP, KX_DOWN, KX, "kalshi", slot_15m)],
+            now_ms: now,
+        },
+        now,
+    );
+    for (token, ask) in [
+        ("pm-5m-up", dec!(0.50)),
+        ("pm-5m-down", dec!(0.50)),
+        (PM_UP, dec!(0.44)),
+        (PM_DOWN, dec!(0.50)),
+        (KX_UP, dec!(0.48)),
+        (KX_DOWN, dec!(0.42)),
+    ] {
+        c.engine_on_data(leg_book(token, ask, dec!(100), now + 1_000), now + 1_000);
+    }
+
+    // Step 4: evaluate — BOTH legs must place and fill in DRY mode!
+    let placed = c.engine_evaluate(now + 2_000);
+    assert_eq!(
+        placed, 2,
+        "boot-replayed arb_leg_config + mixed 5m/15m families must place both legs: {placed}"
+    );
+    let a_rows = open_positions(&c, "default");
+    let b_rows = open_positions(&c, "arb-b");
+    assert_eq!(a_rows.len(), 1, "default (polymarket) holds 15m UP leg");
+    assert_eq!(b_rows.len(), 1, "arb-b (kalshi) holds 15m DOWN leg");
+    assert_eq!(a_rows[0].token_id, PM_UP);
+    assert_eq!(b_rows[0].token_id, KX_DOWN);
+    assert!(
+        !c.pair_book_all().is_empty(),
+        "PairBook recorded the cross-venue pair"
+    );
+}

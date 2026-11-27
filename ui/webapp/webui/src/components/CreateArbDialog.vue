@@ -482,6 +482,11 @@ async function commit(): Promise<void> {
       pairs: [...selectedPairs.value],
     })
     if (cfg.error) throw new Error(cfg.error)
+    const patch = paramsPatch.value
+    if (Object.keys(patch).length > 0) {
+      const pRes = await api.strategyParamsSet({ name: selectedArbStrategy.value, params: patch })
+      if (pRes.error) throw new Error(pRes.error)
+    }
     const res = await api.setStrategy(selectedArbStrategy.value, true, legAAccount.value)
     if (res.ok === false || res.reason) {
       // 内核拒绝（模式握手/已启用等）：如实转述 reason，配置已落盘 —— 文案

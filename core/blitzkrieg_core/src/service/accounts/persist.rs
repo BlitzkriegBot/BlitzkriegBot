@@ -328,6 +328,7 @@ impl Core {
         if let Some(e) = self.engine.as_mut() {
             e.set_arb_leg_config(self.arb_leg_config.clone());
         }
+        self.sync_family_feed_from_accounts();
     }
 
     /// The MEMORY-ONLY leg-configuration write: the same validations and the
@@ -495,6 +496,7 @@ impl Core {
         if let Some(e) = self.engine.as_mut() {
             e.set_arb_leg_config(None);
         }
+        self.sync_family_feed_from_accounts();
         tracing::info!(
             target: "risk",
             actor = %actor,

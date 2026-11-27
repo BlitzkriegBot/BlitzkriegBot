@@ -201,6 +201,7 @@ pub fn install_bk(lua: &Lua, state: Arc<Mutex<BkState>>) -> mlua::Result<()> {
                         .field(&m.down_token)
                         .num(m.expires_at_ms)
                         .num(m.slot)
+                        .num(m.round_duration_sec)
                         .field(if m.neg_risk { "1" } else { "0" })
                         .field(&m.venue);
                 }
@@ -220,6 +221,7 @@ pub fn install_bk(lua: &Lua, state: Arc<Mutex<BkState>>) -> mlua::Result<()> {
                     t.raw_set("down_token", m.down_token.as_str())?;
                     t.raw_set("expires_at_ms", m.expires_at_ms)?;
                     t.raw_set("slot", m.slot)?;
+                    t.raw_set("round_duration_sec", m.round_duration_sec)?;
                     t.raw_set("neg_risk", m.neg_risk)?;
                     // #427: the listing venue, pure data (nil = undeclared).
                     if m.venue.is_empty() {

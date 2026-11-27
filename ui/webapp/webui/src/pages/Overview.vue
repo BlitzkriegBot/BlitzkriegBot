@@ -82,15 +82,12 @@ async function clearExpiredPosition(positionId: string): Promise<void> {
 // available/reserved），不再读快照顶层的进程级 ledger.balance。
 // issue 179：权益（equity）恒为 null —— AccountView 没有该字段，面板不拼
 // seed + net（R7.1 L5），显示「—」。净利只认账本 SSOT cumulativeNetPnl。
-const isDry = computed(() => (snap.value?.mode ?? 'dry') === 'dry')
+const isDry = computed(() => snap.value?.mode === 'dry')
 const accountBalance = computed<BalanceView>(() => {
   const row = store.activeAccountRow
-  if (!row) return {
-    net: 0, fees: 0, gross: 0, equity: null,
-    cash: 0, reserved: 0, available: 0,
-  }
-  return useAccountBalance(row) ?? {
-    net: 0, fees: 0, gross: 0, equity: null,
+  const view = row ? useAccountBalance(row) : null
+  return view ?? {
+    net: null, fees: 0, gross: null, equity: null,
     cash: 0, reserved: 0, available: 0,
   }
 })

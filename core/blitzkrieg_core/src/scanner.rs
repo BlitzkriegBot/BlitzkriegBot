@@ -434,19 +434,54 @@ impl Scanner {
             return Err(TimingBlock::NoMarkets);
         }
         let t = self.round_timing_for(&market.venue, family_duration, local_now_ms);
-        if t.age_sec < self.cfg.min_round_age_sec {
+        let min_age = self.effective_min_round_age_sec(family_duration);
+        if t.age_sec < min_age {
             return Err(TimingBlock::TooYoung {
                 age_sec: t.age_sec,
-                min_age_sec: self.cfg.min_round_age_sec,
+                min_age_sec: min_age,
             });
         }
-        if t.time_left_sec < self.cfg.min_time_left_sec {
+        let min_left = self.effective_min_time_left_sec(family_duration);
+        if t.time_left_sec < min_left {
             return Err(TimingBlock::TooCloseToExpiry {
                 time_left_sec: t.time_left_sec,
-                min_time_left_sec: self.cfg.min_time_left_sec,
+                min_time_left_sec: min_left,
             });
         }
         Ok(())
+    }
+
+    /// Scale `min_time_left_sec` proportionally when a market's family duration
+    /// is shorter than the 15m (900s) reference grid (e.g. a 300s 5m family
+    /// under `min_time_left_sec = 180` scales to `60s` instead of blocking the
+    /// final 60% of every 5m round). Single-family >= reference durations keep
+    /// the configured value verbatim.
+    pub fn effective_min_time_left_sec(&self, family_duration: i64) -> i64 {
+        let base = self.cfg.min_time_left_sec;
+        let ref_dur = self.cfg.round_duration_sec.max(900);
+        if base <= 0 || family_duration <= 0 || family_duration >= ref_dur {
+            return base;
+        }
+        if family_duration < self.cfg.round_duration_sec || base * 2 >= family_duration {
+            (base * family_duration / ref_dur).max(1)
+        } else {
+            base
+        }
+    }
+
+    /// Scale `min_round_age_sec` proportionally for short round families
+    /// (e.g. `30s` on 900s → `10s` on 300s).
+    pub fn effective_min_round_age_sec(&self, family_duration: i64) -> i64 {
+        let base = self.cfg.min_round_age_sec;
+        let ref_dur = self.cfg.round_duration_sec.max(900);
+        if base <= 0 || family_duration <= 0 || family_duration >= ref_dur {
+            return base;
+        }
+        if family_duration < self.cfg.round_duration_sec || base * 2 >= family_duration {
+            (base * family_duration / ref_dur).max(1)
+        } else {
+            base
+        }
     }
 
     /// Whether `market` is a row of the round currently being traded — shared

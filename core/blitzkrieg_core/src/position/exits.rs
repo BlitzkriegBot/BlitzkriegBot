@@ -264,6 +264,17 @@ impl PositionManager {
                 .cloned()
                 .unwrap_or_else(|| global.clone());
             self.config.apply_cli_exit_overrides(&mut cfg);
+            // Scale 15m-calibrated `min_time_left_sec` (e.g. 180s) for shorter
+            // round families (e.g. 300s 5m → 60s) so 5m positions do not fire
+            // `TimeExit` two minutes into the round.
+            if pos.round_duration_sec > 0
+                && pos.round_duration_sec < 900
+                && cfg.min_time_left_sec > 0
+                && cfg.min_time_left_sec * 2 >= pos.round_duration_sec
+            {
+                cfg.min_time_left_sec =
+                    (cfg.min_time_left_sec * pos.round_duration_sec / 900).max(1);
+            }
             // The strategy's own trailing declaration rides ON TOP of the
             // kernel-wide config for THIS position's verdict; every other knob
             // stays shared. Cheap: an absent override short-circuits to the

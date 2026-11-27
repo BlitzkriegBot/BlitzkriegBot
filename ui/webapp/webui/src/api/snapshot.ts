@@ -240,6 +240,8 @@ export interface MarketPrice {
    * 永不假设字段在场，缺省降回 venue-only 过滤，不崩。
    */
   durationSec?: number
+  /** Market condition / venue ticker id (e.g. Kalshi `KXBTC15M-...`). */
+  conditionId?: string
   /**
    * Freshness of this card's mid. `snapshot` = placeholder REST (not the
    * high-freq feed). `live` = the account's currently subscribed family.

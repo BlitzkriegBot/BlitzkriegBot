@@ -444,12 +444,20 @@ const venueLoading = computed(() => {
 // 成功后行情卡/倒计时仍按旧档过滤，切换看起来没有生效。
 const roundDurHintSec = computed<number | null>(() => {
   const acct = store.activeAccount ?? 'default'
-  return (
+  const declared = store.plugins?.marketPlugins.find((p) => p.name === activeVenue.value)?.supportedRoundSecs
+  const raw =
     roundSwitch.doc.value?.perAccount?.[acct]
     ?? roundSwitch.doc.value?.engineActiveSec
     ?? roundSwitch.doc.value?.effectiveSec
     ?? null
-  )
+  if (Array.isArray(declared) && declared.length > 0) {
+    if (declared.length === 1) return declared[0]
+    if (raw !== null && declared.includes(raw)) return raw
+    const curDur = currentRound.value?.durationSec
+    if (typeof curDur === 'number' && curDur > 0 && declared.includes(curDur)) return curDur
+    return declared[0]
+  }
+  return raw
 })
 
 /** 身份所轮长：venueRound 行有 durationSec 就用它，缺席回落 roundDurHintSec，
@@ -476,9 +484,11 @@ const roundIdDisplay = computed(() => {
 const roundHref = computed(() => {
   const id = roundIdDisplay.value
   const dur = currentRound.value?.durationSec ?? 0
-  const asset = visiblePrices.value[0]?.asset
-  if (!id || !dur || !asset) return null
-  return exchangeUpdownUrl(asset, dur, id)
+  const first = visiblePrices.value[0]
+  const asset = first?.asset
+  const venue = currentRound.value?.venue || identityVenue.value || marketName.value || ''
+  if (!id || !dur || !asset || !venue) return null
+  return exchangeUpdownUrl(asset, dur, id, venue, first?.conditionId)
 })
 
 

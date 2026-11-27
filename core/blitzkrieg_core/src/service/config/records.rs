@@ -23,12 +23,14 @@ use std::path::PathBuf;
 /// live table on restore so it cannot grow across restarts.
 pub struct AppliedFillLog {
     pub path: PathBuf,
+    write_failed: std::sync::atomic::AtomicBool,
 }
 
 impl AppliedFillLog {
     pub fn new(path: impl AsRef<std::path::Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
+            write_failed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -63,11 +65,19 @@ impl AppliedFillLog {
             .open(&self.path)
         {
             if let Err(e) = f.write_all(buf.as_bytes()) {
-                tracing::warn!(error = %e, path = %self.path.display(), "applied-fill log append failed");
+                self.write_failed
+                    .store(true, std::sync::atomic::Ordering::Release);
+                tracing::error!(error = %e, path = %self.path.display(), "applied-fill log append failed — durability fault latched");
             }
         } else {
-            tracing::warn!(path = %self.path.display(), "cannot open applied-fill log");
+            self.write_failed
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::error!(path = %self.path.display(), "cannot open applied-fill log — durability fault latched");
         }
+    }
+
+    pub fn write_failed(&self) -> bool {
+        self.write_failed.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Load the mutations in file order (the OME folds them). Unparseable lines

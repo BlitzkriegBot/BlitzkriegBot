@@ -17,12 +17,14 @@ use std::path::{Path, PathBuf};
 /// An order log bound to a JSONL path.
 pub struct OrderDb {
     jsonl_path: PathBuf,
+    write_failed: std::sync::atomic::AtomicBool,
 }
 
 impl OrderDb {
     pub fn new(jsonl_path: impl AsRef<Path>) -> Self {
         Self {
             jsonl_path: jsonl_path.as_ref().to_path_buf(),
+            write_failed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -30,14 +32,20 @@ impl OrderDb {
         &self.jsonl_path
     }
 
-    /// Append the order's current state. Best effort: a write failure must never
-    /// interrupt trading (the in-memory OME stays authoritative for this run).
-    /// The failure is reflected in `crate::jsonl::append_failures()`.
+    /// #277: returns true if any order log append or compact rewrite failed.
+    pub fn write_failed(&self) -> bool {
+        self.write_failed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Append the order's current state. Latches `write_failed` on failure so
+    /// callers can halt new entries instead of silently losing durability (#277).
     pub fn append(&self, order: &TrackedOrder) {
         if !crate::jsonl::append(&self.jsonl_path, order) {
-            tracing::warn!(
+            self.write_failed
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::error!(
                 path = %self.jsonl_path.display(),
-                "order jsonl append failed — order kept in memory, not durable; trading continues"
+                "order jsonl append failed — durability fault latched"
             );
         }
     }

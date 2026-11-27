@@ -122,14 +122,53 @@ pub(crate) async fn handle_risk(
                 c.cockpit_env_path()
                     .and_then(|p| crate::env_file::read_env_vars(p).ok())
             };
-            let mut doc = crate::schema::RiskLimitsResult::snapshot(
+            let requested_account = params
+                .get("accountId")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let target_account = requested_account
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::model::default_account_id().as_str().to_owned());
+            let exit_cfg = c
+                .config()
+                .positions
+                .account_exit
+                .get(&target_account)
+                .unwrap_or(&c.config().positions.exit);
+            let mut doc = crate::schema::RiskLimitsResult::snapshot_for(
+                &target_account,
                 &c.risk_config().systemic,
-                &c.config().positions.exit,
+                exit_cfg,
             );
-            doc.size_pct = Some(c.config().size_pct);
-            doc.max_positions = Some(c.config().positions.max_positions);
-            doc.min_shares = Some(c.config().min_shares);
-            doc.max_shares = Some(c.config().max_shares);
+            doc.size_pct = Some(
+                c.config()
+                    .account_size_pct
+                    .get(&target_account)
+                    .copied()
+                    .unwrap_or(c.config().size_pct),
+            );
+            doc.max_positions = Some(
+                c.config()
+                    .account_max_positions
+                    .get(&target_account)
+                    .copied()
+                    .unwrap_or(c.config().positions.max_positions),
+            );
+            doc.min_shares = Some(
+                c.config()
+                    .account_min_shares
+                    .get(&target_account)
+                    .copied()
+                    .unwrap_or(c.config().min_shares),
+            );
+            doc.max_shares = Some(
+                c.config()
+                    .account_max_shares
+                    .get(&target_account)
+                    .copied()
+                    .unwrap_or(c.config().max_shares),
+            );
             if let Some(vars) = &file {
                 crate::cockpit::overlay_risk_limits(vars, &mut doc.exit, &mut doc.account);
             }

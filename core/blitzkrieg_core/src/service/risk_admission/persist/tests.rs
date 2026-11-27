@@ -104,6 +104,7 @@ fn hot_limits_and_systemic_bounds_recover_across_a_rebuild() {
         "a file-backed core reports the hot write as persisted"
     );
     let spatch = SetSystemicLimitsParams {
+        account_id: Some("default".into()),
         max_single_loss_usd: Some(dec!(75)),
         max_daily_drawdown_usd: Some(dec!(300)),
         ..Default::default()

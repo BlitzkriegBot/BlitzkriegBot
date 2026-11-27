@@ -206,12 +206,16 @@ fn bare_sql_writers_do_not_grow() {
     //       the boot read-back; see the `strategy_assignments` note above.
     //   accounts/persist.rs `save_setting`       — same, the
     //       `account.strategies.set` face.
+    //   trading_reset.rs `save_setting`          — same `strategies` row as
+    //       the boot read-back (Gitea #285 Option B: reset_trading revokes
+    //       persisted strategy authorization so restart stays disarmed).
     //   shadow_evolution/mod.rs `save_kernel_meta` — process-scoped switch,
     //       no StoreApi face (T0: kernel-meta domain).
     let expected: BTreeSet<(&str, &str)> = [
         ("service/assembly_boot.rs", "save_account_row"),
         ("service/assembly_boot.rs", "save_credential_names"),
         ("service/assembly_boot.rs", "save_setting"),
+        ("service/trading_reset.rs", "save_setting"),
         ("service/trading_round_duration.rs", "save_setting"),
         ("service/strategies/enable.rs", "save_setting"),
         ("service/accounts/persist.rs", "save_setting"),

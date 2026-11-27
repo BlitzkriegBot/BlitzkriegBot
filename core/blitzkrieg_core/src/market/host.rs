@@ -487,7 +487,12 @@ impl MarketHost for CoreHost {
             // in the same locked interval (a batch's floor can only tighten
             // an affordability gate; the books themselves stay event-typed).
             for u in &updates {
-                c.note_venue_min_shares(&u.token_id, u.min_order_size);
+                // Only apply explicit declarations: WebSocket book updates omit
+                // `min_order_size` (`None`), which means "metadata absent on
+                // this delta", NOT "the venue repealed its minimum order size".
+                if let Some(min) = u.min_order_size {
+                    c.note_venue_min_shares(&u.token_id, Some(min));
+                }
             }
             c.engine_on_books(
                 updates

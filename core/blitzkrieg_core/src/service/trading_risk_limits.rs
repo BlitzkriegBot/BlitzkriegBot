@@ -414,10 +414,10 @@ impl Core {
         if let Some(to) = patch.max_shares {
             self.config.account_max_shares.insert(target.clone(), to);
         }
-        if patch.min_shares.is_some() || patch.max_shares.is_some() {
-            if let Some(engine) = self.engine.as_mut() {
-                engine.set_account_share_band(&target, new_min_shares, new_max_shares);
-            }
+        if (patch.min_shares.is_some() || patch.max_shares.is_some())
+            && let Some(engine) = self.engine.as_mut()
+        {
+            engine.set_account_share_band(&target, new_min_shares, new_max_shares);
         }
         if is_default_target {
             if let Some(to) = patch.size_pct {

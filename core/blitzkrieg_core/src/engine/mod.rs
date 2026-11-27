@@ -100,6 +100,15 @@ pub struct EngineConfig {
     /// would cap a grown account at the old size, which is the failure this
     /// knob exists to remove). See `compute_shares` for the exact rules.
     pub size_pct: Decimal,
+    /// Per-account equity-relative sizing overrides (#297). Absent accounts
+    /// fall back to `size_pct`.
+    pub account_size_pct: HashMap<String, Decimal>,
+    /// Per-account minimum share floor overrides (#297). Absent accounts fall
+    /// back to `min_shares`.
+    pub account_min_shares: HashMap<String, Decimal>,
+    /// Per-account maximum share ceiling overrides (#297). Absent accounts
+    /// fall back to `max_shares`.
+    pub account_max_shares: HashMap<String, Decimal>,
     /// Per-strategy sizing overrides (E2-a). Absent strategies use the globals;
     /// a present override is always clamped so it can never exceed the global
     /// risk values — global is both the fallback and the ceiling.
@@ -204,6 +213,9 @@ impl Default for EngineConfig {
             // Off by default: the absolute path is what every deployment runs
             // today, and arming this would change their order sizes silently.
             size_pct: Decimal::ZERO,
+            account_size_pct: HashMap::new(),
+            account_min_shares: HashMap::new(),
+            account_max_shares: HashMap::new(),
             strategy_sizes: HashMap::new(),
             spot_freshness_max_ms: None,
         }
@@ -578,6 +590,56 @@ pub struct PairDeclaration {
 }
 
 impl Engine {
+    /// Only cross-venue arb strategies (atomic batch / pair-book stats
+    /// consumers / `cross_venue_arb`) receive `arb_leg_config`. Non-arb
+    /// strategies stay strictly pinned to their own account scope so
+    /// `LuaEngineAdapter::stamp_account` can never rewrite a single-account
+    /// strategy's signal into a sibling leg account.
+    pub(super) fn strategy_uses_arb_leg_config(s: &dyn EngineStrategy) -> bool {
+        s.atomic_batch() || s.consumes_pair_book_stats() || s.name() == crate::service::ARB_STRATEGY
+    }
+
+    /// Venue-aware market lookup for an account's candidate token: when the
+    /// account is bound to a venue, read that venue's own dual-key row first
+    /// so shared tokens (e.g. `polymarket` + `polysimulator`) resolve cleanly
+    /// instead of hitting RFC-661 M1 ambiguity refusal (`None`).
+    pub(super) fn market_for_account_token(
+        &self,
+        account: &str,
+        token: &str,
+    ) -> Option<&crate::model::CryptoMarket> {
+        if let Some(bound) = self.venue_by_account.get(account).filter(|v| !v.is_empty())
+            && let Some(m) = self.scanner.market_for_token_on_venue(bound, token)
+        {
+            return Some(m);
+        }
+        self.scanner.market_for_token(token)
+    }
+
+    /// Move one account's equity-relative sizing percentage in memory (#297).
+    pub fn set_account_size_pct(&mut self, account: &str, size_pct: Decimal) {
+        self.bump_inputs();
+        self.cfg
+            .account_size_pct
+            .insert(account.to_string(), size_pct);
+    }
+
+    /// Move one account's share band in memory (#297).
+    pub fn set_account_share_band(
+        &mut self,
+        account: &str,
+        min_shares: Decimal,
+        max_shares: Decimal,
+    ) {
+        self.bump_inputs();
+        self.cfg
+            .account_min_shares
+            .insert(account.to_string(), min_shares);
+        self.cfg
+            .account_max_shares
+            .insert(account.to_string(), max_shares);
+    }
+
     /// See `inputs_epoch`.
     fn bump_inputs(&mut self) {
         self.inputs_epoch = self.inputs_epoch.wrapping_add(1);
@@ -805,7 +867,7 @@ impl Engine {
         strategy: &str,
         account: &str,
     ) -> Decimal {
-        let sizing = self.effective_sizing(strategy);
+        let sizing = self.effective_sizing_for_account(strategy, account);
         // P0 #202: the equity-relative mode REPLACES the absolute budget when
         // it is armed. Everything below this line is the historical path, and
         // with `size_pct = 0` (the default) it is reached unchanged.
@@ -875,7 +937,11 @@ impl Engine {
         if size > Decimal::ZERO {
             return Some(size);
         }
-        if self.effective_sizing(strategy).size_pct > Decimal::ZERO {
+        if self
+            .effective_sizing_for_account(strategy, account)
+            .size_pct
+            > Decimal::ZERO
+        {
             return None;
         }
         Some(size)
@@ -1014,50 +1080,93 @@ impl Engine {
         }
     }
 
+    /// The base sizing band for one account (#297): account-specific overrides
+    /// win over the process-wide globals.
+    pub fn account_base_sizing(&self, account: &str) -> EffectiveSizing {
+        let max_shares = self
+            .cfg
+            .account_max_shares
+            .get(account)
+            .copied()
+            .unwrap_or(self.cfg.max_shares);
+        let mut min_shares = self
+            .cfg
+            .account_min_shares
+            .get(account)
+            .copied()
+            .unwrap_or(self.cfg.min_shares);
+        if max_shares > Decimal::ZERO {
+            min_shares = min_shares.min(max_shares);
+        }
+        let size_pct = self
+            .cfg
+            .account_size_pct
+            .get(account)
+            .copied()
+            .unwrap_or(self.cfg.size_pct);
+        EffectiveSizing {
+            size_usd: self.cfg.size_usd,
+            min_shares,
+            max_shares,
+            size_pct,
+            strategy_scoped: false,
+            size_weight: None,
+        }
+    }
+
     /// The sizing in force for one strategy (E2-a): its own override where
     /// configured, otherwise the globals — then clamped so a strategy can never
     /// spend more notional nor hold more shares than the global risk allows.
     /// `min_shares` is also capped by `max_shares` so the reported band is
     /// always coherent (the ceiling wins when an override overshoots).
     pub fn effective_sizing(&self, strategy: &str) -> EffectiveSizing {
-        let globals = self.global_sizing();
+        self.effective_sizing_against(strategy, self.global_sizing())
+    }
+
+    /// Account-scoped effective sizing (#297): applies per-strategy overrides
+    /// clamped against `account`'s own base sizing band and `size_pct`.
+    pub fn effective_sizing_for_account(&self, strategy: &str, account: &str) -> EffectiveSizing {
+        self.effective_sizing_against(strategy, self.account_base_sizing(account))
+    }
+
+    fn effective_sizing_against(&self, strategy: &str, base: EffectiveSizing) -> EffectiveSizing {
         let Some(over) = self
             .cfg
             .strategy_sizes
             .get(strategy)
             .filter(|s| s.overrides_anything())
         else {
-            return globals;
+            return base;
         };
         let mut size_usd = over
             .size_usd
-            .map_or(globals.size_usd, |v| v.min(globals.size_usd));
+            .map_or(base.size_usd, |v| v.min(base.size_usd));
         if let Some(w) = over.size_weight {
             // Weight re-weights this leg's share of the per-entry budget; it
-            // never widens the global cap, and a non-positive weight zeroes the
+            // never widens the base cap, and a non-positive weight zeroes the
             // leg out entirely (an explicit off switch).
-            size_usd = (size_usd * w).max(Decimal::ZERO).min(globals.size_usd);
+            size_usd = (size_usd * w).max(Decimal::ZERO).min(base.size_usd);
         }
-        let max_shares = if globals.max_shares > Decimal::ZERO {
+        let max_shares = if base.max_shares > Decimal::ZERO {
             over.max_shares
                 .filter(|v| *v > Decimal::ZERO)
-                .map_or(globals.max_shares, |v| v.min(globals.max_shares))
+                .map_or(base.max_shares, |v| v.min(base.max_shares))
         } else {
             over.max_shares.unwrap_or(Decimal::ZERO).max(Decimal::ZERO)
         };
         let mut min_shares = over
             .min_shares
-            .map_or(globals.min_shares, |v| v.max(globals.min_shares));
+            .map_or(base.min_shares, |v| v.max(base.min_shares));
         if max_shares > Decimal::ZERO {
             min_shares = min_shares.min(max_shares);
         }
-        // #202: the global percentage is the ceiling when it is armed. An
-        // unarmed (0) global is "no opinion", not a zero ceiling, so a
+        // #202: the account/global percentage is the ceiling when it is armed.
+        // An unarmed (0) base is "no opinion", not a zero ceiling, so a
         // per-strategy percentage is what a single leg gets configured with.
         let size_pct = match over.size_pct {
-            Some(v) if globals.size_pct > Decimal::ZERO => v.min(globals.size_pct),
+            Some(v) if base.size_pct > Decimal::ZERO => v.min(base.size_pct),
             Some(v) => v.max(Decimal::ZERO),
-            None => globals.size_pct,
+            None => base.size_pct,
         };
         EffectiveSizing {
             size_usd,
@@ -1434,6 +1543,9 @@ mod tests {
             min_shares: dec!(10),
             max_shares: dec!(10),
             size_pct: Decimal::ZERO,
+            account_size_pct: HashMap::new(),
+            account_min_shares: HashMap::new(),
+            account_max_shares: HashMap::new(),
             strategy_sizes: HashMap::new(),
             spot_freshness_max_ms: None,
         }

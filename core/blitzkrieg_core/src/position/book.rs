@@ -397,8 +397,14 @@ impl PositionManager {
             .iter()
             .filter(|p| p.expires_at_ms > now_ms && p.account_id.as_str() == account)
             .count();
-        if self.config.max_positions > 0 && live >= self.config.max_positions {
-            return Err(format!("Max positions ({})", self.config.max_positions));
+        let max_positions = self
+            .config
+            .account_max_positions
+            .get(account)
+            .copied()
+            .unwrap_or(self.config.max_positions);
+        if max_positions > 0 && live >= max_positions {
+            return Err(format!("Max positions ({max_positions})"));
         }
         // NOTE: the daily-loss breaker no longer blocks entries here. Entry
         // blocking is Core's single account gate (`account_gate_permits` in

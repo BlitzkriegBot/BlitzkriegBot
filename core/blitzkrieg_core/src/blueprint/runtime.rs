@@ -12,10 +12,13 @@
 use super::{Blueprint, BlueprintMeta, CONDITION_OPS, Graph, NodeKind};
 use crate::model::{OrderbookSnapshot, SignalDirection};
 use crate::strategies::{EngineStrategy, GateExemptions, StrategyCtx};
+use arc_swap::ArcSwap;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use strategy_logic::params::{KnobSpec, StrategyParams};
 use strategy_logic::signal::{TradePairDecl, TradeSignal};
 
 /// Wire-ready description of one whitelisted strategy field.
@@ -292,6 +295,9 @@ pub struct BlueprintStrategy {
     graph: Graph,
     topo: Vec<String>,
     action_id: String,
+    account_id: String,
+    knobs: Vec<KnobSpec>,
+    params_cell: Option<Arc<ArcSwap<StrategyParams>>>,
     slot_seen: Option<i64>,
     fired: HashSet<String>,
     min_px: HashMap<String, f64>,
@@ -321,12 +327,44 @@ impl BlueprintStrategy {
             graph,
             topo,
             action_id,
+            account_id: blitzkrieg_market_api::DEFAULT_ACCOUNT_ID.to_string(),
+            knobs: Vec::new(),
+            params_cell: None,
             slot_seen: None,
             fired: HashSet::new(),
             min_px: HashMap::new(),
             max_px: HashMap::new(),
             round_duration_sec: 300.0,
         })
+    }
+
+    /// Override the strategy registration name (e.g., to match `manifest.json`
+    /// when a saved package was renamed from its blueprint document's internal name).
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.bp.name = name.into();
+        self
+    }
+
+    /// Scope this native blueprint instance to a specific account.
+    pub fn with_account_id(mut self, account_id: impl Into<String>) -> Self {
+        self.account_id = account_id.into();
+        self
+    }
+
+    /// Attach evolvable/hot-tunable knob specs (typically from `manifest.json`).
+    pub fn with_knobs(mut self, knobs: Vec<KnobSpec>) -> Self {
+        self.knobs = knobs;
+        self
+    }
+
+    /// Resolve a numeric knob override from the live ParamRegistry cell if
+    /// present, falling back to the blueprint document's literal value.
+    fn param_f64(&self, knob_name: &str, fallback: f64) -> f64 {
+        self.params_cell
+            .as_ref()
+            .and_then(|cell| cell.load().get(knob_name))
+            .and_then(|d| d.to_f64())
+            .unwrap_or(fallback)
     }
 
     pub fn meta(&self) -> &BlueprintMeta {
@@ -382,7 +420,11 @@ impl BlueprintStrategy {
                             .and_then(|(src, _)| vals.get(src.as_str()).cloned().flatten())
                     };
                     let op = n.params.get("op").and_then(|v| v.as_str()).unwrap_or("==");
-                    let rhs = n.params.get("value");
+                    let rhs_override = n.params.get("value").and_then(|v| v.as_f64()).map(|raw| {
+                        let live = self.param_f64(&format!("{}_value", n.id), raw);
+                        serde_json::json!(live)
+                    });
+                    let rhs = rhs_override.as_ref().or_else(|| n.params.get("value"));
                     let ok = match (left, rhs) {
                         (Some(lv), Some(rv)) => eval_cmp(&lv, op, rv),
                         _ => false,
@@ -572,6 +614,30 @@ impl EngineStrategy for BlueprintStrategy {
         }
     }
 
+    fn holds_to_settlement(&self) -> bool {
+        self.bp.meta.holds_to_settlement
+    }
+
+    fn entry_maker(&self) -> bool {
+        self.bp.meta.entry_maker
+    }
+
+    fn reads_wall_clock(&self) -> bool {
+        false
+    }
+
+    fn instance_account(&self) -> String {
+        self.account_id.clone()
+    }
+
+    fn set_hot_params(&mut self, registry: Option<Arc<crate::registry::ParamRegistry>>) {
+        self.params_cell = registry.as_ref().and_then(|r| r.handle_for(self.name()));
+    }
+
+    fn evolvable_knobs(&self) -> Vec<KnobSpec> {
+        self.knobs.clone()
+    }
+
     fn find_candidates(&mut self, ctx: &StrategyCtx<'_>) -> Vec<TradeSignal> {
         self.reset_round(ctx.round_slot(), ctx.time_left_sec());
         let Some(action) = self.bp.nodes.iter().find(|n| n.id == self.action_id) else {
@@ -585,7 +651,11 @@ impl EngineStrategy for BlueprintStrategy {
             .get("maker")
             .and_then(|v| v.as_bool())
             .unwrap_or(self.bp.meta.entry_maker);
-        let fixed_price = action.params.get("price").and_then(|v| v.as_f64());
+        let fixed_price = action
+            .params
+            .get("price")
+            .and_then(|v| v.as_f64())
+            .map(|fp| self.param_f64(&format!("{}_price", action.id), fp));
 
         let held_tokens: HashSet<&str> = ctx
             .held_positions()
@@ -737,7 +807,7 @@ impl EngineStrategy for BlueprintStrategy {
                     let pair_key = format!("{}:{}", ctx.round_slot(), m.condition_id);
                     out.push(TradeSignal {
                         strategy: self.bp.name.clone(),
-                        account_id: blitzkrieg_market_api::DEFAULT_ACCOUNT_ID.to_string(),
+                        account_id: self.account_id.clone(),
                         asset: m.asset.clone(),
                         direction: dir,
                         token_id: token.clone(),
@@ -752,7 +822,7 @@ impl EngineStrategy for BlueprintStrategy {
                     });
                     out.push(TradeSignal {
                         strategy: self.bp.name.clone(),
-                        account_id: blitzkrieg_market_api::DEFAULT_ACCOUNT_ID.to_string(),
+                        account_id: self.account_id.clone(),
                         asset: m.asset.clone(),
                         direction: other_dir,
                         token_id: other_token.clone(),
@@ -772,7 +842,7 @@ impl EngineStrategy for BlueprintStrategy {
                 } else if action.node_type == "action_buy" {
                     out.push(TradeSignal {
                         strategy: self.bp.name.clone(),
-                        account_id: blitzkrieg_market_api::DEFAULT_ACCOUNT_ID.to_string(),
+                        account_id: self.account_id.clone(),
                         asset: m.asset.clone(),
                         direction: dir,
                         token_id: token.clone(),

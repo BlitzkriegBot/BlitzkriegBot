@@ -756,6 +756,7 @@ impl Engine {
         &self,
         cfg: &crate::account::CrossVenueArbConfig,
         now_ms: i64,
+        spread_open_pct: Decimal,
     ) -> Vec<serde_json::Value> {
         let target_dur = cfg.round_duration_sec.filter(|d| *d > 0);
         let find_leg = |venue: &str, asset: &str| -> Option<&crate::model::CryptoMarket> {
@@ -834,20 +835,31 @@ impl Engine {
                 let mb = find_leg(&cfg.leg_b_venue, asset);
                 let (ja, a_up_ask, a_down_ask) = leg_book_json(&cfg.leg_a_venue, ma);
                 let (jb, b_up_ask, b_down_ask) = leg_book_json(&cfg.leg_b_venue, mb);
-                let combo_up_down = match (a_up_ask, b_down_ask) {
-                    (Some(a), Some(b)) => Some(a + b),
+                let sched = crate::exit_policy::fee_schedule();
+                let combo_up_down_pair = match (a_up_ask, b_down_ask) {
+                    (Some(a), Some(b)) => Some((a, b, a + b)),
                     _ => None,
                 };
-                let combo_down_up = match (a_down_ask, b_up_ask) {
-                    (Some(a), Some(b)) => Some(a + b),
+                let combo_down_up_pair = match (a_down_ask, b_up_ask) {
+                    (Some(a), Some(b)) => Some((a, b, a + b)),
                     _ => None,
                 };
-                let best_cost = match (combo_up_down, combo_down_up) {
-                    (Some(x), Some(y)) => Some(x.min(y)),
+                let combo_up_down = combo_up_down_pair.map(|(_, _, c)| c);
+                let combo_down_up = combo_down_up_pair.map(|(_, _, c)| c);
+                let best_pair = match (combo_up_down_pair, combo_down_up_pair) {
+                    (Some(x), Some(y)) => Some(if x.2 <= y.2 { x } else { y }),
                     (Some(x), None) | (None, Some(x)) => Some(x),
                     (None, None) => None,
                 };
+                let best_cost = best_pair.map(|(_, _, c)| c);
+                let fee_usd = best_pair
+                    .map(|(p1, p2, _)| sched.fee_per_share(p1) + sched.fee_per_share(p2));
                 let edge_usd = best_cost.map(|c| Decimal::ONE - c);
+                let net_edge_usd = match (best_cost, fee_usd) {
+                    (Some(c), Some(f)) => Some(Decimal::ONE - (c + f)),
+                    _ => None,
+                };
+                let min_edge_usd = spread_open_pct / Decimal::from(100);
                 let time_left_sec = ma
                     .or(mb)
                     .map(|m| ((m.expires_at_ms - now_ms) / 1000).max(0));
@@ -860,8 +872,12 @@ impl Engine {
                     "comboUpDownCost": combo_up_down.map(|v| v.to_string()),
                     "comboDownUpCost": combo_down_up.map(|v| v.to_string()),
                     "bestCost": best_cost.map(|v| v.to_string()),
+                    "feeUsd": fee_usd.map(|v| v.to_string()),
                     "edgeUsd": edge_usd.map(|v| v.to_string()),
-                    "opportunity": edge_usd.is_some_and(|e| e > Decimal::ZERO),
+                    "netEdgeUsd": net_edge_usd.map(|v| v.to_string()),
+                    "minEdgeUsd": min_edge_usd.to_string(),
+                    "spreadOpenPct": spread_open_pct.to_string(),
+                    "opportunity": net_edge_usd.is_some_and(|e| e >= min_edge_usd),
                 })
             })
             .collect()

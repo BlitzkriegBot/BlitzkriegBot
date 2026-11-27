@@ -869,3 +869,45 @@ async fn blueprint_save_refusals_write_nothing() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[tokio::test]
+async fn blueprint_save_registers_native_rust_blueprint_strategy() {
+    let root = std::env::temp_dir().join(format!(
+        "bk-ipc-bpnative-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    let (core, registry, peer) = save_fixture(&root).await;
+    let line = json_line(
+        1,
+        "blueprint.save",
+        &serde_json::json!({ "json": WIRE_BLUEPRINT, "name": "native_bp_pkg" }),
+    );
+    let reply = rpc(&core, &registry, &peer, line).await;
+    assert!(reply.get("error").is_none(), "save must succeed: {reply}");
+
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("native_bp_pkg").join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["runtime"], serde_json::json!("rust_blueprint"));
+
+    // Verify Core registered it natively under the `blueprint:` source (not `lua:`).
+    let c = core.lock().await;
+    let source = c
+        .engine()
+        .expect("engine attached")
+        .strategy_source("native_bp_pkg")
+        .expect("native_bp_pkg registered")
+        .to_string();
+    assert!(
+        source.starts_with("blueprint:"),
+        "expected native blueprint: source, got {source}"
+    );
+    let readout = c.strategy_params_readout("native_bp_pkg");
+    assert!(readout.found);
+    assert!(!readout.tunables.is_empty());
+
+    drop(c);
+    let _ = std::fs::remove_dir_all(&root);
+}

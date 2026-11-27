@@ -29,6 +29,7 @@ BlitzkriegBot 是独立交易者的 TradingOS：**Build Once, Trade Everywhere**
 
 - **核心交易链路**：已跑通并有实况 dry 证据。
 - **多策略与影子进化**：已实现，有离线对照实验证据，实况下**尚未长期运行**。
+- **跨所套利工作台（Cross-Venue Arbitrage）**：独立于单交易所策略页的跨所双腿套利控制面（`arb.config.set/get/clear` + `arb.status`），支持 A/B 交易所共同时间轮次交集锁定、6 项运行就绪体检、扣双腿手续费净空间扫盘（对齐 `spread_open_pct` 真实开仓阈值）以及跨 A/B 账户合并的 PairBook/订单/成交账务。详见 [`arbitrage.md`](arbitrage.md)。
 - **智能交易（聪明钱逆向工作台，0.4.3 新增）**：已实现完整四步闭环（Polymarket Data API v2 6 并发雷达扫榜 → 单地址行为指纹逆向 → Blueprint 策略包合成保存 → 样本外 `verify + 1 tick` 回测验真），有单测与前端门禁覆盖；只生成策略包，不自动开启实盘。详见 [`smart-trading.md`](smart-trading.md)。
 - **Live 交易**：已实现；§4 记录部分 Polymarket 真实下单/撤单验证，成交捕获待复验。其余场地与完整成交、结算链路须逐项确认，不作全量已验证声明。
 - **产品化程度**：Vue 面板（总览/行情/回测/策略/插件/设置）与 TUI 可用；多市场数据面

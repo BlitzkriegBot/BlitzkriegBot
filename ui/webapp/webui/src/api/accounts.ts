@@ -122,7 +122,11 @@ export interface ArbScannerRow {
   comboUpDownCost: string | null
   comboDownUpCost: string | null
   bestCost: string | null
+  feeUsd?: string | null
   edgeUsd: string | null
+  netEdgeUsd?: string | null
+  minEdgeUsd?: string | null
+  spreadOpenPct?: string | null
   opportunity: boolean
 }
 
@@ -189,6 +193,7 @@ export interface ArbStatusDoc {
     legASupportedRounds: number[]
     legBSupportedRounds: number[]
     lockedByVenue: string | null
+    spreadOpenPct?: string | null
   } | null
   readiness: ArbReadinessCheck[]
   scanner: ArbScannerRow[]

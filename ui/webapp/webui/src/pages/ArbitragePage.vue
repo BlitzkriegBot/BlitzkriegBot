@@ -131,14 +131,37 @@ const roundBadgeLabel = computed(() => {
   return `${label} 共同轮次`
 })
 
+const spreadOpenPctNum = computed(() => {
+  const raw = cfg.value?.spreadOpenPct ?? status.value?.scanner?.[0]?.spreadOpenPct ?? '2.00'
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : 2
+})
+
+const spreadOpenCentsLabel = computed(() => `${spreadOpenPctNum.value.toFixed(2)}¢`)
+
 const bestEdgeRow = computed(() => {
   const rows = status.value?.scanner ?? []
-  let best: { asset: string; edge: number; raw: string } | null = null
+  let best: {
+    asset: string
+    netEdge: number
+    netRaw: string
+    grossRaw: string | null
+    opportunity: boolean
+  } | null = null
   for (const r of rows) {
-    if (r.edgeUsd == null) continue
-    const n = Number(r.edgeUsd)
+    const netRaw = r.netEdgeUsd ?? r.edgeUsd
+    if (netRaw == null) continue
+    const n = Number(netRaw)
     if (!Number.isFinite(n)) continue
-    if (!best || n > best.edge) best = { asset: r.asset, edge: n, raw: r.edgeUsd }
+    if (!best || n > best.netEdge) {
+      best = {
+        asset: r.asset,
+        netEdge: n,
+        netRaw,
+        grossRaw: r.edgeUsd,
+        opportunity: Boolean(r.opportunity),
+      }
+    }
   }
   return best
 })
@@ -292,12 +315,16 @@ async function onArbCommitted(): Promise<void> {
           <template #sub>跨 A/B 两账户累计套利委托</template>
         </StatTile>
         <StatTile
-          label="当前最优套利空间"
-          :value="bestEdgeRow ? formatEdgeCents(bestEdgeRow.raw) : '—'"
-          :tone="bestEdgeRow && bestEdgeRow.edge > 0 ? 'up' : 'default'"
+          label="当前最优净空间（扣费）"
+          :value="bestEdgeRow ? formatEdgeCents(bestEdgeRow.netRaw) : '—'"
+          :tone="bestEdgeRow && bestEdgeRow.opportunity ? 'up' : 'default'"
         >
           <template #sub>
-            {{ bestEdgeRow ? `${bestEdgeRow.asset} · 1.00 - 最优双腿组合成本` : '等待双腿盘口报价' }}
+            {{
+              bestEdgeRow
+                ? `${bestEdgeRow.asset} · 毛 ${formatEdgeCents(bestEdgeRow.grossRaw)} · 触发阈值 ≥ +${spreadOpenCentsLabel}`
+                : `触发阈值 ≥ +${spreadOpenCentsLabel}（扣双腿手续费）`
+            }}
           </template>
         </StatTile>
       </div>
@@ -341,8 +368,8 @@ async function onArbCommitted(): Promise<void> {
       <Card dense>
         <CardHeader label="实时跨所价差扫描（每 3 秒刷新）">
           <template #action>
-            <span class="text-[11.5px] text-faint-fg">
-              组合成本 = A 腿卖一 + B 腿反向卖一；低于 100¢ 即出现正向套利空间
+            <span class="figures text-[11.5px] text-faint-fg">
+              触发阈值：扣除双腿 Taker 手续费后净空间 ≥ +{{ spreadOpenCentsLabel }}（spread_open_pct={{ spreadOpenPctNum.toFixed(2) }}%）才会下单
             </span>
           </template>
         </CardHeader>
@@ -357,7 +384,8 @@ async function onArbCommitted(): Promise<void> {
                 <th class="label-micro px-2 pb-2 text-right">{{ cfg?.legBVenue }} 卖一 (UP / DN)</th>
                 <th class="label-micro px-2 pb-2 text-right">A_UP + B_DN</th>
                 <th class="label-micro px-2 pb-2 text-right">A_DN + B_UP</th>
-                <th class="label-micro px-2 pb-2 text-right">实时空间</th>
+                <th class="label-micro px-2 pb-2 text-right">毛空间</th>
+                <th class="label-micro px-2 pb-2 text-right">扣费净空间</th>
               </tr>
             </thead>
             <tbody>
@@ -383,9 +411,22 @@ async function onArbCommitted(): Promise<void> {
                 </td>
                 <td class="px-2 py-2.5 text-right num">{{ formatCents(row.comboUpDownCost) }}</td>
                 <td class="px-2 py-2.5 text-right num">{{ formatCents(row.comboDownUpCost) }}</td>
+                <td class="px-2 py-2.5 text-right num text-muted-fg">
+                  {{ formatEdgeCents(row.edgeUsd) }}
+                </td>
                 <td class="px-2 py-2.5 text-right num font-semibold">
-                  <Badge v-if="row.opportunity" variant="up">{{ formatEdgeCents(row.edgeUsd) }}</Badge>
-                  <span v-else class="text-muted-fg">{{ formatEdgeCents(row.edgeUsd) }}</span>
+                  <Badge v-if="row.opportunity" variant="up">
+                    {{ formatEdgeCents(row.netEdgeUsd ?? row.edgeUsd) }} · 可触发
+                  </Badge>
+                  <span
+                    v-else-if="row.edgeUsd != null && Number(row.edgeUsd) > 0"
+                    class="text-muted-fg"
+                    :title="`毛空间为正，但扣费后净空间低于 +${spreadOpenCentsLabel} 开仓阈值`"
+                  >
+                    {{ formatEdgeCents(row.netEdgeUsd ?? row.edgeUsd) }}
+                    <span class="ml-1 text-[11px] font-normal text-faint-fg">未达阈值</span>
+                  </span>
+                  <span v-else class="text-muted-fg">{{ formatEdgeCents(row.netEdgeUsd ?? row.edgeUsd) }}</span>
                 </td>
               </tr>
             </tbody>

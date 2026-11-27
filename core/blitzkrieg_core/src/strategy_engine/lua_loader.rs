@@ -81,6 +81,10 @@ pub struct LuaManifest {
     pub api: String,
     pub entry: String,
     pub sha256: String,
+    /// Optional explicit runtime selector (`"rust_blueprint"` executes
+    /// `blueprint.json` directly via native Rust `BlueprintStrategy`).
+    #[serde(default)]
+    pub runtime: Option<String>,
     #[serde(default)]
     pub author: String,
     #[serde(default)]
@@ -327,6 +331,80 @@ pub fn discover_lua_packages(dir: &Path) -> Vec<PathBuf> {
         .collect();
     out.sort();
     out
+}
+
+/// A validated native Rust Blueprint package loaded from `manifest.json` +
+/// `blueprint.json` without spinning up a Lua VM.
+pub struct LoadedBlueprintPackage {
+    pub name: String,
+    pub version: String,
+    pub declared_modes: Vec<StrategyMode>,
+    pub strategy: crate::blueprint::BlueprintStrategy,
+}
+
+/// Detect and load a package that should execute natively on Rust
+/// [`crate::blueprint::BlueprintStrategy`] instead of the Lua sandbox.
+///
+/// Returns `None` for hand-written Lua packages so they continue through
+/// [`load_lua_package`] untouched. Returns `Some(Ok(..))` when the package
+/// declares `runtime == "rust_blueprint"`, `entry == "blueprint.json"`, or is a
+/// `blueprint.save`-generated package (`Blueprint-compiled strategy from
+/// blueprint.json`) with a valid `blueprint.json`.
+pub fn try_load_native_blueprint_package(
+    dir: &Path,
+) -> Option<Result<LoadedBlueprintPackage, String>> {
+    let manifest_path = dir.join("manifest.json");
+    let raw = std::fs::read_to_string(&manifest_path).ok()?;
+    let manifest: LuaManifest = serde_json::from_str(&raw).ok()?;
+
+    let bp_path = dir.join("blueprint.json");
+    let is_native_bp = manifest.runtime.as_deref() == Some("rust_blueprint")
+        || manifest.entry == "blueprint.json"
+        || (bp_path.is_file()
+            && manifest
+                .description
+                .starts_with("Blueprint-compiled strategy from blueprint.json"));
+    if !is_native_bp {
+        return None;
+    }
+
+    Some((|| {
+        if manifest.api != MANIFEST_API {
+            return Err(format!(
+                "manifest api {} unsupported (this kernel speaks {MANIFEST_API})",
+                manifest.api
+            ));
+        }
+        let dir_name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if manifest.name.is_empty() || manifest.name != dir_name {
+            return Err(format!(
+                "directory name `{dir_name}` does not match manifest name `{}` — refusing a package with two identities",
+                manifest.name
+            ));
+        }
+        let declared_modes = match &manifest.modes {
+            None => Vec::new(),
+            Some(value) => {
+                let payload = serde_json::json!({ "modes": value }).to_string();
+                blitzkrieg_strategy_api::modes::parse_strategy_modes(&payload)
+                    .map_err(|e| format!("manifest modes invalid: {e}"))?
+            }
+        };
+        let bp_raw = std::fs::read_to_string(&bp_path)
+            .map_err(|e| format!("blueprint.json unreadable: {}: {e}", bp_path.display()))?;
+        let strategy = crate::blueprint::BlueprintStrategy::from_json(&bp_raw)?
+            .with_name(manifest.name.clone())
+            .with_knobs(specs_from_tunables(&manifest.tunables));
+        Ok(LoadedBlueprintPackage {
+            name: manifest.name,
+            version: manifest.version,
+            declared_modes,
+            strategy,
+        })
+    })())
 }
 
 /// Load and validate one Lua package directory.

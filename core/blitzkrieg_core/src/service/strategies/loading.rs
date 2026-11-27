@@ -6,7 +6,7 @@
 
 use crate::exit_policy::fee_schedule;
 use crate::strategy_engine::lua_loader::{
-    LuaEngineAdapter, discover_lua_packages, load_lua_package,
+    LuaEngineAdapter, discover_lua_packages, load_lua_package, try_load_native_blueprint_package,
 };
 use blitzkrieg_lua_runtime::FeeScheduleView;
 use blitzkrieg_market_api::net::now_ms;
@@ -156,6 +156,40 @@ impl Core {
             return "Failed: strategy engine not attached (load libraries after engine init)"
                 .into();
         };
+        if let Some(native_res) = try_load_native_blueprint_package(dir) {
+            return match native_res {
+                Ok(loaded) => {
+                    let name = loaded.name.clone();
+                    let version = loaded.version.clone();
+                    let refusal =
+                        Self::modes_refusal(&self.plugin_modes, &name, &loaded.declared_modes);
+                    if enforce && let Some(refusal) = refusal {
+                        return format!("Failed: {refusal}");
+                    }
+                    let incompatible = match refusal {
+                        Some(r) => format!("; INCOMPATIBLE: {r}"),
+                        None => String::new(),
+                    };
+                    match engine.register_user_strategy(
+                        Box::new(loaded.strategy),
+                        format!("blueprint:{}", dir.display()),
+                    ) {
+                        Ok(_) => {
+                            if !loaded.declared_modes.is_empty() {
+                                self.strategy_declarations
+                                    .insert(name.clone(), loaded.declared_modes.clone());
+                            }
+                            self.rewire_hot_params(now_ms());
+                            format!(
+                                "{name}@{version} (rust-blueprint) registered into the engine dispatch (disabled{incompatible})"
+                            )
+                        }
+                        Err(reason) => format!("rejected: {reason}"),
+                    }
+                }
+                Err(reason) => format!("Failed: {reason}"),
+            };
+        }
         match load_lua_package(dir) {
             Ok(loaded) => {
                 let name = loaded.name.clone();
@@ -352,6 +386,7 @@ impl Core {
                 && let Some(old_path) = source
                     .strip_prefix("dylib:")
                     .or_else(|| source.strip_prefix("lua:"))
+                    .or_else(|| source.strip_prefix("blueprint:"))
             {
                 let restore = self.load_strategy_lib_inner(old_path, false);
                 if restore.contains("registered") {

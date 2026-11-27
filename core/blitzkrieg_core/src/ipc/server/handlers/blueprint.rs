@@ -355,6 +355,7 @@ fn blueprint_save(
         "version": "1.0.0",
         "api": "1.0",
         "entry": "strategy.lua",
+        "runtime": "rust_blueprint",
         "sha256": digest,
         "author": "BlitzkriegBot",
         "description": description,

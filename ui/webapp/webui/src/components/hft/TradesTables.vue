@@ -315,13 +315,7 @@ const activePositions = computed(() => props.positions)
                      「未知」，不显示 0（0 是「打平」的读数）。该行进
                      统计卡「含 N 笔未知盈亏」，不进胜负分母。 -->
                 <span v-if="!isKnownPnl(t)" class="text-faint-fg">未知</span>
-                <template v-else>
-                  <RollingNumber :value="signedMoney(t.netPnlUsd, 2)" />
-                  <span
-                    v-if="t.exitReason === 'unverifiable_expiry'"
-                    class="block text-[10.5px] font-normal text-muted-fg"
-                  >（fallback 记账，结算未裁决）</span>
-                </template>
+                <RollingNumber v-else :value="signedMoney(t.netPnlUsd, 2)" />
               </template>
               <span v-else class="text-faint-fg">—</span>
             </td>
@@ -343,7 +337,7 @@ const activePositions = computed(() => props.positions)
                 <RollingNumber class="ml-1.5 text-[11px] text-faint-fg" :value="`#${t.orderRoundSlot ?? 0}`" />
                 <span class="ml-1.5 text-[10.5px] text-faint-fg">订单</span>
               </template>
-              <Badge v-else-if="t.exitReason === 'unverifiable_expiry'" variant="down">结算未裁决</Badge>
+              <Badge v-else-if="t.exitReason === 'unverifiable_expiry'" variant="gold">到期结算</Badge>
               <Badge v-else-if="t.exitReason" :variant="exitReasonTone(t.exitReason)">{{ t.exitReason }}</Badge>
               <span v-else class="text-faint-fg">—</span>
             </td>

@@ -32,17 +32,17 @@ core/blitzkrieg_core/src/ipc/version.rs:600 file-direct std::fs::write(&sums_tmp
 core/blitzkrieg_core/src/ipc/version.rs:966 file-direct std::fs::write(&tmp, serde_json::to_vec_pretty(&doc)?)?;
 core/blitzkrieg_core/src/jsonl.rs:308 file-direct let ok = match std::fs::OpenOptions::new()
 core/blitzkrieg_core/src/jsonl.rs:56 file-direct let mut f = std::fs::File::create(&tmp)?;
-core/blitzkrieg_core/src/ledger.rs:255 file-direct && !crate::jsonl::append(&path, &entry)
-core/blitzkrieg_core/src/ledger.rs:692 json-direct if !crate::jsonl::rewrite_atomic(&path, &bytes) {
-core/blitzkrieg_core/src/order_db.rs:37 file-direct if !crate::jsonl::append(&self.jsonl_path, order) {
-core/blitzkrieg_core/src/order_db.rs:70 json-direct crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes());
+core/blitzkrieg_core/src/ledger.rs:259 file-direct && !crate::jsonl::append(&path, &entry)
+core/blitzkrieg_core/src/ledger.rs:697 json-direct if !crate::jsonl::rewrite_atomic(&path, &bytes) {
+core/blitzkrieg_core/src/order_db.rs:43 file-direct if !crate::jsonl::append(&self.jsonl_path, order) {
+core/blitzkrieg_core/src/order_db.rs:78 json-direct crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes());
 core/blitzkrieg_core/src/position/mod.rs:580 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
 core/blitzkrieg_core/src/position/mod.rs:651 json-direct if !crate::jsonl::rewrite_atomic(std::path::Path::new(path), text.as_bytes()) {
 core/blitzkrieg_core/src/round_id_migrate.rs:286 file-direct let mut f = fs::File::create(tmp)?;
 core/blitzkrieg_core/src/runtime_config.rs:70 file-direct let mut f = std::fs::OpenOptions::new()
 core/blitzkrieg_core/src/service/accounts/audit.rs:365 file-direct crate::jsonl::append(std::path::Path::new(path), &value);
-core/blitzkrieg_core/src/service/config/records.rs:60 file-direct if let Ok(mut f) = std::fs::OpenOptions::new()
-core/blitzkrieg_core/src/service/config/records.rs:98 json-direct if !crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
+core/blitzkrieg_core/src/service/config/records.rs:108 json-direct if !crate::jsonl::rewrite_atomic(&self.path, buf.as_bytes()) {
+core/blitzkrieg_core/src/service/config/records.rs:62 file-direct if let Ok(mut f) = std::fs::OpenOptions::new()
 core/blitzkrieg_core/src/service/risk_admission/persist.rs:129 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
 core/blitzkrieg_core/src/service/settlement_orders/closing.rs:338 file-direct && !crate::jsonl::append(path, &CloseCredentialLine::Consumed { trade_id: evicted })
 core/blitzkrieg_core/src/service/settlement_orders/closing.rs:347 file-direct && !crate::jsonl::append(

@@ -373,23 +373,41 @@ impl Core {
             None
         };
 
+        let default_id = crate::model::default_account_id();
+        let is_default_target = target.as_str() == default_id.as_str();
+        // #272: update per-account maps for every target account; only mirror
+        // into process-wide `self.config` when target is `default`.
         if let Some(to) = patch.size_pct {
-            self.config.size_pct = to;
-            if let Some(engine) = self.engine.as_mut() {
-                engine.set_size_pct(to);
-            }
+            self.config.account_size_pct.insert(target.clone(), to);
         }
-
         if let Some(to) = patch.max_positions {
-            self.config.positions.max_positions = to;
-            self.positions.set_config(self.config.positions.clone());
+            self.config.account_max_positions.insert(target.clone(), to);
         }
+        if let Some(to) = patch.min_shares {
+            self.config.account_min_shares.insert(target.clone(), to);
+        }
+        if let Some(to) = patch.max_shares {
+            self.config.account_max_shares.insert(target.clone(), to);
+        }
+        if is_default_target {
+            if let Some(to) = patch.size_pct {
+                self.config.size_pct = to;
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.set_size_pct(to);
+                }
+            }
 
-        if patch.min_shares.is_some() || patch.max_shares.is_some() {
-            self.config.min_shares = new_min_shares;
-            self.config.max_shares = new_max_shares;
-            if let Some(engine) = self.engine.as_mut() {
-                engine.set_share_band(new_min_shares, new_max_shares);
+            if let Some(to) = patch.max_positions {
+                self.config.positions.max_positions = to;
+                self.positions.set_config(self.config.positions.clone());
+            }
+
+            if patch.min_shares.is_some() || patch.max_shares.is_some() {
+                self.config.min_shares = new_min_shares;
+                self.config.max_shares = new_max_shares;
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.set_share_band(new_min_shares, new_max_shares);
+                }
             }
         }
 

@@ -34,7 +34,7 @@ pub(crate) fn resolve_unverified_expiry_policy(
     // one accounting model and got another without being told.
     let policy_raw = env.text("BK_UNVERIFIED_EXPIRY_POLICY");
     let unverified_expiry_policy = match policy_raw.as_deref().map(str::trim) {
-        None => blitzkrieg_core::service::UnverifiedExpiryPolicy::Receivable,
+        None => blitzkrieg_core::service::UnverifiedExpiryPolicy::Cash,
         Some(raw) => match blitzkrieg_core::service::UnverifiedExpiryPolicy::parse(raw) {
             Ok(policy) => {
                 report.push(format!(
@@ -74,20 +74,25 @@ pub(crate) fn resolve_unverified_expiry_policy(
     }
     // Boot echo carries the policy always (its default is a posture statement)
     // and the aging budget only when the receivable policy is actually armed.
-    let receivable_echo = vec![
-        format!(
-            "expiry settlement policy: {} ({}) — unverified-expiry closes {}",
-            unverified_expiry_policy.as_str(),
-            if policy_raw.is_some() {
-                "env"
-            } else {
-                "default"
-            },
-            "book a receivable claim redeemed at venue truth on resolution/reconcile; \
-             the estimated amount is excluded from day-budget and loss-breaker headroom \
-             (#176 removed the spendable-cash model)",
-        ),
-        format!(
+    let mut receivable_echo = vec![format!(
+        "expiry settlement policy: {} ({}) — unverified-expiry closes {}",
+        unverified_expiry_policy.as_str(),
+        if policy_raw.is_some() {
+            "env"
+        } else {
+            "default"
+        },
+        match unverified_expiry_policy {
+            blitzkrieg_core::service::UnverifiedExpiryPolicy::Cash =>
+                "credit spendable cash directly at the observed pre-expiry binary quote \
+                 (live mode continuously syncs against the venue wallet balance)",
+            blitzkrieg_core::service::UnverifiedExpiryPolicy::Receivable =>
+                "book a receivable claim redeemed at venue truth on resolution/reconcile; \
+                 the estimated amount is excluded from day-budget and loss-breaker headroom",
+        },
+    )];
+    if unverified_expiry_policy == blitzkrieg_core::service::UnverifiedExpiryPolicy::Receivable {
+        receivable_echo.push(format!(
             "receivable aging budget: {} ms ({}) — overdue receivables warn amber once per episode{}",
             receivable_max_age.value,
             receivable_max_age.source.as_str(),
@@ -96,8 +101,8 @@ pub(crate) fn resolve_unverified_expiry_policy(
             } else {
                 ""
             },
-        ),
-    ];
+        ));
+    }
     (
         unverified_expiry_policy,
         receivable_max_age,

@@ -238,22 +238,53 @@ impl Core {
         price_source: &str,
         now_ms: i64,
     ) {
-        // Receivable model: book the claim from the position's OWN facts.
-        // `dust_shares` is the un-sold remainder `close` priced at `price`;
-        // `closed.net_pnl_usd` / `closed.exited_at_ms` are the retract triple
-        // the redemption amends the trade record with.
-        self.settlement.book_fallback_claim(
-            &closed.id,
-            &closed.condition_id,
-            &closed.token_id,
-            closed.account_id.as_str(),
-            closed.dust_shares,
-            price,
-            price_source,
-            closed.net_pnl_usd,
-            closed.exited_at_ms,
-            now_ms,
-        );
+        if self.config.unverified_expiry_policy == UnverifiedExpiryPolicy::Receivable {
+            // Opt-in receivable model: book a claim in SettlementBook and
+            // redeem into cash when venue truth arrives.
+            self.settlement.book_fallback_claim(
+                &closed.id,
+                &closed.condition_id,
+                &closed.token_id,
+                closed.account_id.as_str(),
+                closed.dust_shares,
+                price,
+                price_source,
+                closed.net_pnl_usd,
+                closed.exited_at_ms,
+                now_ms,
+            );
+            return;
+        }
+        self.credit_expiry_fallback_cash(closed, price);
+    }
+
+    /// Direct cash-model ledger leg (default policy, operator decision
+    /// 2026-11-27): credit `price × dust_shares` directly into the position's
+    /// account book (`JournalKind::ExpiryFallback`). Live trading continuously
+    /// syncs the real wallet balance via venue reconciliation.
+    pub(crate) fn credit_expiry_fallback_cash(
+        &mut self,
+        closed: &crate::position::ClosedPosition,
+        price: Decimal,
+    ) {
+        let amount = price * closed.dust_shares;
+        if amount <= Decimal::ZERO {
+            return;
+        }
+        let account = closed.account_id.clone();
+        let position_id = closed.id.clone();
+        if let Err(e) = self
+            .accounts
+            .get_mut(&account)
+            .map(|l| l.credit_expiry_fallback(amount, &position_id))
+        {
+            tracing::error!(
+                position = %position_id,
+                account = %account.as_str(),
+                error = %e,
+                "expiry fallback credit FAILED — cash identity will drift by {amount}"
+            );
+        }
     }
 
     /// Issue #991 — redeem fallback receivable claims at VENUE TRUTH (the

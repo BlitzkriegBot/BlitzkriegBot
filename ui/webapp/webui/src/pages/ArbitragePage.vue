@@ -9,8 +9,7 @@
  *  4. 跨 A/B 两账户聚合活跃配对（PairBook）、套利订单与历史成交，彻底消除
  *     「单账户视角下套利利润恒为 $0、看不到历史」的割裂感。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useIntervalFn } from '@vueuse/core'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   ArrowLeftRight,
   CheckCircle2,
@@ -68,12 +67,13 @@ async function loadStatus(silent = false): Promise<void> {
   }
 }
 
-const { pause: stopPoll } = useIntervalFn(() => {
-  void loadStatus(true)
-}, 3000)
-onUnmounted(() => {
-  stopPoll()
-})
+// Follow the shell's live SSE / poll heartbeat instead of running a page-local timer.
+watch(
+  () => store.lastUpdated,
+  () => {
+    void loadStatus(true)
+  },
+)
 onMounted(() => {
   void loadStatus()
 })

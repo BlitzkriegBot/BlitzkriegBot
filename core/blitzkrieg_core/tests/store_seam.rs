@@ -403,3 +403,69 @@ fn the_recording_store_records_its_own_faces_and_names_what_it_does_not() {
     let log = writes.lock().unwrap().clone();
     assert_eq!(log, vec!["setting:alice=K=Some(\"v\")".to_string()]);
 }
+
+/// #280: statement-level raw SQL ratchet outside `store/` and `tests/`.
+/// Unlike `bare_sql_writers_do_not_grow` (which matches 4 method names), this
+/// guard scans for SQL DML / rusqlite statement shapes so no new raw SQL can
+/// be added in `risk/` or any other business module outside `store/`.
+#[test]
+fn raw_sql_statements_outside_store_do_not_grow() {
+    use std::collections::BTreeMap;
+
+    const RAW_SQL_SHAPES: [&str; 6] = [
+        "INSERT INTO",
+        "UPDATE ",
+        "DELETE FROM",
+        "conn.execute",
+        ".prepare(",
+        ".query_row(",
+    ];
+
+    let expected: BTreeMap<&str, usize> = [
+        ("db/intents.rs", 12),
+        ("db/migrations.rs", 8),
+        ("db/mod.rs", 12),
+        ("db/trades.rs", 13),
+        ("db_import.rs", 8),
+        ("risk/account_store.rs", 23),
+    ]
+    .into_iter()
+    .collect();
+
+    let mut found: BTreeMap<String, usize> = BTreeMap::new();
+    for path in production_sources() {
+        let rel = path
+            .strip_prefix(src_root())
+            .expect("walked from src")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let mut count = 0usize;
+        let mut in_cfg_test = false;
+        for line in text.lines() {
+            if line.contains("#[cfg(test)]") {
+                in_cfg_test = true;
+            }
+            if in_cfg_test {
+                continue;
+            }
+            let code = code_part(line);
+            if RAW_SQL_SHAPES.iter().any(|shape| code.contains(shape)) {
+                count += 1;
+            }
+        }
+        if count > 0 {
+            found.insert(rel, count);
+        }
+    }
+
+    let found_ref: BTreeMap<&str, usize> = found.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    assert_eq!(
+        found_ref, expected,
+        "\nstatement-level raw SQL outside `store/` changed (#280).\n\
+         Any new raw SQL outside `store/` is forbidden; when migrating existing\n\
+         statements from `risk/account_store.rs` into `store/`, narrow `expected`\n\
+         so the ratchet only shrinks.\nfound: {found_ref:#?}"
+    );
+}

@@ -18,21 +18,11 @@
  * 「编辑策略」，跳蓝图并预载该包的蓝图文档（blueprint.load，只读 IPC）。
  * 跳转走 store 的 navRequest —— 页签是 App 壳的资产，页面只提请求。
  *
- * 创建套利（2026-10）：跨所配对卡从插件页迁出后，「创建套利」弹窗是本页的
- * 第二个创建入口 —— 选套利策略（现阶段唯一 cross_venue_arb）、配置双腿意图
- * （A 腿 + B 腿 + 币对多选）、预设参数并启用该策略（配置意图模型，创建即
- * 持久化）。
- *
- * 策略表现 tab 化（2026-10）：「单交易所策略 / 套利策略」双段。套利段仅当
- * 当前显示账户是已配置套利的腿账户时渲染（arb.config.get 在挂载、套利段
- * 激活、配置提交后重读，configured && displayAccount ∈ {legA, legB}）；行集合
- * 仍 = store.strategyRows（账户跟随的切片由 store 保证），tab 只按策略身份
- * 切分，不丢行。「创建套利」按钮固定在 header —— 它是弹窗的唯一入口，可达性
- * 优先于 tab 归属。
+ * 跨所套利已独立迁至「套利」页签（ArbitragePage.vue）；本页专注传统单所策略。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { AlertTriangle, ChevronDown, Link2, Pencil, Plus, Search, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-vue-next'
+import { AlertTriangle, ChevronDown, Pencil, Plus, Search, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-vue-next'
 import { api, type StrategyStatsRow } from '@/api/client'
 import { usePanelStore } from '@/stores/panel'
 import { useStrategyParamsStore } from '@/stores/strategy-params'
@@ -49,8 +39,6 @@ import EmptyState from '@/components/ui/empty/EmptyState.vue'
 import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
 import Tooltip from '@/components/ui/tooltip/Tooltip.vue'
 import RollingNumber from '@/components/ui/roll/RollingNumber.vue'
-import CreateArbDialog from '@/components/CreateArbDialog.vue'
-import SegmentedControl from '@/components/ui/segmented/SegmentedControl.vue'
 
 const store = usePanelStore()
 // 账户↔venue 解耦（2026-10 操作者裁决）：策略列表恒等全部已安装策略
@@ -195,10 +183,12 @@ function isAbnormal(r: StrategyStatsRow): boolean {
 
 const query = ref('')
 
-/** 搜索框只过滤当前 tab 的行集合（tab 先切分、搜索再过滤 —— 搜索不越过
- *  tab 边界把另一 tab 的行带进来）。 */
+/** 跨所套利已迁至独立「套利」页签（ArbitragePage.vue）；本页只展示传统单所策略。 */
+const ARB_STRATEGY = 'cross_venue_arb' // 平台化时换成配置驱动
+const singleRows = computed<StrategyStatsRow[]>(() => rows.value.filter((r) => r.name !== ARB_STRATEGY))
+
 const filteredRows = computed(() => {
-  const base = perfTab.value === 'arb' ? arbRows.value : singleRows.value
+  const base = singleRows.value
   const q = query.value.trim().toLowerCase()
   if (!q) return base
   return base.filter(
@@ -206,28 +196,21 @@ const filteredRows = computed(() => {
   )
 })
 
-/**
- * 套利收益（内核 fix/gate-account-slice 分支交付，纯 feature-detect）：
- * 套利 tab 的净 PnL 消费 `arbNetPnlUsd ?? netPnlUsd` —— arb 字段是两腿
- * 合计口径，行自身值是单侧计数；老内核缺字段回落行自身值，零破坏。
- */
 function rowNetPnl(r: StrategyStatsRow): string | number {
-  return perfTab.value === 'arb' ? (r.arbNetPnlUsd ?? r.netPnlUsd) : r.netPnlUsd
+  return r.netPnlUsd
 }
 
 /** 策略列表不再按启停/异常分组：按名称字母排序，位置固定，开关位置不漂移。 */
 const sortedRows = computed(() => [...filteredRows.value].sort((a, b) => a.name.localeCompare(b.name)))
 
-/** 策略按状态分组：运行中 / 已停止 / 异常。分组口径与启用按钮同键，均读 isAccountEnabled。
-   分组基于 filteredRows（当前 tab + 搜索后的行集），确保 tab 切分与表格不脱钩。 */
+/** 策略按状态分组：运行中 / 已停止 / 异常。分组口径与启用按钮同键，均读 isAccountEnabled。 */
 const groups = computed(() => [
   { id: 'running', label: '运行中', rows: filteredRows.value.filter(r => !isAbnormal(r) && (isAccountEnabled(r) ?? r.enabled)) },
   { id: 'stopped', label: '已停止', rows: filteredRows.value.filter(r => !isAbnormal(r) && !(isAccountEnabled(r) ?? r.enabled)) },
   { id: 'abnormal', label: '异常', rows: filteredRows.value.filter(r => isAbnormal(r)) },
 ].filter((g) => g.rows.length > 0))
 
-/** 当前 tab 的行数（SegmentedControl badge；车队 KPI 恒显全量，不随 tab 漂移）。 */
-const currentRows = computed(() => (perfTab.value === 'arb' ? arbRows.value : singleRows.value))
+const currentRows = computed(() => singleRows.value)
 
 function causePills(r: StrategyStatsRow): { name: string; n: number }[] {
   return refusalProfile(r).causes
@@ -248,20 +231,6 @@ function editStrategy(name: string): void {
   store.requestNav('blueprint')
 }
 
-// ── 创建套利（2026-10）：选套利策略 + 配置双腿意图 + 预设参数 + 启用 ────────
-// 弹窗自取 arb.config.get / 凭证读数；这里提供 default 账户的绑定读数（弹窗
-// 段0 的预填提示）并在提交后刷新整屏（配置读数、参数、启用状态都在 store）。
-const arbOpen = ref(false)
-async function onArbCommitted(): Promise<void> {
-  arbFlash.value = {
-    ok: true,
-    msg: '套利策略双腿配置已写入并启用 —— 表格里的策略行即生效读数；套利 tab 可见时那里就是两腿合计口径。',
-  }
-  setTimeout(() => { arbFlash.value = null }, 6000)
-  // issue 781 item 7：提交后重读配置 —— 新建的配置无需离开页面即可让套利段出现。
-  await Promise.all([loadArbConfig(), store.refresh()])
-}
-const arbFlash = ref<{ ok: boolean; msg: string } | null>(null)
 /** Lua 策略的来源拼法（engine.stats 的 `source`）；蓝图编辑只对 Lua 包有意义。 */
 function isLua(r: StrategyStatsRow): boolean {
   return typeof r.source === 'string' && r.source.startsWith('lua:')
@@ -271,8 +240,8 @@ function isLua(r: StrategyStatsRow): boolean {
 // `strategy.params.get` 读声明域与生效值；`strategy.params.set` 原子写入
 // （内核按声明域校验，plan-first 一个非法整体拒）。读数刷新。
 const strategyParams = useStrategyParamsStore()
-const { paramsCache, paramsDraft, paramsBusy, arbConfigured, arbLegAccounts } = storeToRefs(strategyParams)
-const { loadParams, saveParams, loadArbConfig } = strategyParams
+const { paramsCache, paramsDraft, paramsBusy } = storeToRefs(strategyParams)
+const { loadParams, saveParams } = strategyParams
 
 /** 详情行展开时拉一次 tunables（每名只拉一次；写回后刷新）。 */
 function onExpand(name: string): void {
@@ -281,55 +250,6 @@ function onExpand(name: string): void {
     void loadParams(name)
   }
 }
-
-// ── 策略表现 tab 化（2026-10）：单交易所策略 / 套利策略 ─────────────────────
-// 「策略表现部分 tab 化：单交易所策略 和 套利策略（套利策略面板仅限被设置
-// 套利的两个账户可见）」—— 行集合仍 = store.strategyRows（账户跟随的切片
-// 由 store 轮询保证，engineStatsFor({accountId})），tab 只按策略身份切分，
-// 不引入任何按账户的行丢弃。
-/** 单实例合同：唯一的套利策略名。平台化时换成配置驱动（strategy.list 行带
- *  套利能力声明后，arbRows 从该声明派生）。 */
-const ARB_STRATEGY = 'cross_venue_arb' // 平台化时换成配置驱动
-
-type PerfTab = 'single' | 'arb'
-const perfTab = ref<PerfTab>('single')
-
-/** 行切分：套利 tab = 套利策略行；单所 tab = 其余全部（同一行集合的两片，
- *  不丢行）。 */
-const arbRows = computed<StrategyStatsRow[]>(() => rows.value.filter((r) => r.name === ARB_STRATEGY))
-const singleRows = computed<StrategyStatsRow[]>(() => rows.value.filter((r) => r.name !== ARB_STRATEGY))
-
-/**
- * 套利 tab 可见性门：`configured && 显示账户是 A/B 腿账户之一`。数据源 =
- * `arb.config.get`（弹窗同一读数）；displayAccount 是 issue 561 的面板唯一
- * 可信账户源。读失败 / 老内核（error 在场）= 无读数 —— 照实降级为只有单所
- * tab，不猜。
- */
-const arbTabVisible = computed(() => {
-  const acct = store.displayAccount
-  if (!arbConfigured.value || !acct) return false
-  return arbLegAccounts.value.includes(acct)
-})
-
-/**
- * 重读 arb 配置。issue 781：只在挂载时读一次会让「本页停留期间新建的配置」直到
- * 离开再回来才出现 —— 挂载、切到套利段、创建/保存提交后都走这里。
- */
-// 段消失时把选中 tab 拨回单所：账户从腿账户切走（或配置被解除）后
-// `arb` 不再是 segments 里的一员，v-model 悬空会让 SegmentedControl
-// 失去高亮匹配段（变黑），行过滤也会按悬空的 'arb' 继续裁行。
-watch(arbTabVisible, (visible) => {
-  if (!visible && perfTab.value === 'arb') perfTab.value = 'single'
-})
-
-// issue 781 item 7：套利段每次激活都重读配置，不依赖「离开页面再回来」。
-watch(perfTab, (target) => {
-  if (target === 'arb') void loadArbConfig()
-})
-
-onMounted(() => {
-  void loadArbConfig()
-})
 </script>
 
 <template>
@@ -357,37 +277,10 @@ onMounted(() => {
       </StatTile>
     </div>
 
-    <!-- 创建套利的提交回执（弹窗成功关闭后出现；失败留在弹窗内转述）。 -->
-    <div v-if="arbFlash" class="mt-3.5">
-      <AlertBanner
-        :tone="arbFlash.ok ? 'info' : 'error'"
-        title="创建套利"
-        dismissible
-        @dismiss="arbFlash = null"
-      >
-        {{ arbFlash.msg }}
-      </AlertBanner>
-    </div>
-
       <Card class="mt-3.5" dense>
         <CardHeader label="策略表现">
           <template #action>
-            <!-- 策略表现 tab 化：单所 / 套利（badge=各自行数）。套利段仅当
-                 当前显示账户是已配置套利的腿账户时渲染（不可见 = 段消失）；
-                 「创建套利」按钮留在 header 供所有账户可达（唯一弹窗入口，
-                 可达性优先，见下方按钮注释）。
-                 移动端：CardHeader 已允许折行，工具栏在卡片宽度内自动换行，
-                 所有控件统一 sm (h-8 / 32px) 等高且垂直居中对齐。 -->
             <div class="flex w-full min-w-0 max-w-full flex-wrap items-center gap-2 sm:w-auto">
-              <SegmentedControl
-                v-model="perfTab"
-                :segments="[
-                  { id: 'single', label: '单交易所策略', badge: singleRows.length },
-                  ...(arbTabVisible ? [{ id: 'arb', label: '套利策略', badge: arbRows.length }] : []),
-                ]"
-                size="sm"
-                class="shrink-0"
-              />
               <div class="relative min-w-[140px] flex-1 sm:flex-none">
                 <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint-fg" />
                 <Input
@@ -404,13 +297,6 @@ onMounted(() => {
               <!-- issue 393 (⑤): the page's create entry — jumps to the blueprint canvas. -->
               <Button variant="gold" size="sm" title="在蓝图中新建一个策略" @click="createStrategy" class="shrink-0">
                 <Plus class="size-3.5" />创建策略
-              </Button>
-              <!-- 创建套利：配置双腿套利并启用所选套利策略
-                   （配置意图模型，创建即持久化；弹窗内自取配置与凭证读数）。
-                   可达性优先：套利 tab 对非腿账户不可见，而本按钮是弹窗的唯一
-                   入口 —— 故固定在 header，两 tab 共用，任何账户都能开弹窗。 -->
-              <Button variant="outline" size="sm" title="配置双腿套利并启用所选套利策略" @click="arbOpen = true" class="shrink-0">
-                <Link2 class="size-3.5" />创建套利
               </Button>
             </div>
           </template>
@@ -726,14 +612,6 @@ onMounted(() => {
       </div>
     </Card>
 
-    <!-- 创建套利弹窗：default 账户绑定读数由 store 提供（段0 账户下拉的
-         预填提示；裁决与校验都在弹窗与内核，页面不复制）。 -->
-    <CreateArbDialog
-      v-model:open="arbOpen"
-      :active-account-id="store.activeAccount"
-      :active-venue="store.activeAccountVenue"
-      @committed="onArbCommitted"
-    />
   </div>
 
   <Card v-else class="rise-in">
@@ -748,12 +626,5 @@ onMounted(() => {
         </Button>
       </template>
     </EmptyState>
-    <!-- 空态同样可达：创建套利不依赖已有策略行。 -->
-    <CreateArbDialog
-      v-model:open="arbOpen"
-      :active-account-id="store.activeAccount"
-      :active-venue="store.activeAccountVenue"
-      @committed="onArbCommitted"
-    />
   </Card>
 </template>

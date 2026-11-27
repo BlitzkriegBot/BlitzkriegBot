@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "dc955ffeb39433d89cfebdfaa945be94a6589633420f7331be234c0ec3fa1b29",
+  "sha256": "ff073583caed2dddba60e537d2761ac479deed44b014f3d471985adfdb0b22fb",
   "author": "BlitzkriegBot",
-  "description": "Multi-asset aligned-direction favorite for 5m binary rounds. With 30-90 seconds left, buys the favorite priced inside 0.85-0.97 ONLY when at least 4 assets in the same round agree on the same direction at >= 0.85, filtering out single-coin fakeouts. Holds to settlement; one attempt per condition per round. maker_entry 0 (default) crosses the ask as a taker (reason late-taker).",
+  "description": "Multi-asset aligned-direction favorite for 5m binary rounds. With 30-90s left, buys the favorite priced inside 0.85-0.94 when >= 4 assets agree at >= 0.85 and directional spot cushion >= min_spot_buffer_bps (default 8 bps). Armed with bk_thesis_death exit at <= thesis_exit_bid (default 0.72) to cap tail reversals.",
   "holds_to_settlement": true,
   "entry_maker": false,
   "gate_exemptions": {
@@ -34,7 +34,7 @@
     },
     "max_px": {
       "type": "decimal",
-      "default": "0.97",
+      "default": "0.94",
       "min": "0.55",
       "max": "0.99"
     },
@@ -55,6 +55,18 @@
       "default": "0",
       "min": "0",
       "max": "1"
+    },
+    "min_spot_buffer_bps": {
+      "type": "decimal",
+      "default": "8",
+      "min": "0",
+      "max": "100"
+    },
+    "thesis_exit_bid": {
+      "type": "decimal",
+      "default": "0.72",
+      "min": "0",
+      "max": "0.90"
     }
   }
 }

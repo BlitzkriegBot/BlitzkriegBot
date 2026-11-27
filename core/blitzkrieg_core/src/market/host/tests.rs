@@ -791,3 +791,53 @@ fn market_from_api_keeps_the_round_duration() {
     };
     assert_eq!(market_from_api(&undeclared).round_duration_sec, 0);
 }
+
+#[tokio::test]
+async fn on_books_ws_delta_without_min_order_size_preserves_rest_floor() {
+    let c = two_venue_live_core();
+    let core = std::sync::Arc::new(tokio::sync::Mutex::new(c));
+    let host = CoreHost::new(core.clone());
+
+    // 1. REST `/books` snapshot declares min_order_size = 5.
+    host.on_books(
+        vec![blitzkrieg_market_api::BookUpdate {
+            token_id: "tok-ws-min".into(),
+            bids: vec![(dec!(0.49), dec!(50))],
+            asks: vec![(dec!(0.51), dec!(50))],
+            ts_ms: 1_000,
+            min_order_size: Some(dec!(5)),
+        }],
+        1_000,
+    )
+    .await;
+    assert_eq!(
+        core.lock()
+            .await
+            .engine()
+            .unwrap()
+            .venue_min_shares("tok-ws-min"),
+        Some(dec!(5))
+    );
+
+    // 2. Subsequent WebSocket book update omits min_order_size (`None`).
+    // It MUST NOT wipe out the REST-declared floor of 5 shares.
+    host.on_books(
+        vec![blitzkrieg_market_api::BookUpdate {
+            token_id: "tok-ws-min".into(),
+            bids: vec![(dec!(0.50), dec!(60))],
+            asks: vec![(dec!(0.52), dec!(60))],
+            ts_ms: 1_200,
+            min_order_size: None,
+        }],
+        1_200,
+    )
+    .await;
+    assert_eq!(
+        core.lock()
+            .await
+            .engine()
+            .unwrap()
+            .venue_min_shares("tok-ws-min"),
+        Some(dec!(5))
+    );
+}

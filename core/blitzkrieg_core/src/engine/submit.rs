@@ -345,6 +345,11 @@ impl Engine {
                         }
                         capped = capped.min(ticket);
                     }
+                    let venue_min = self.venue_min_shares_floor(&sig.token_id);
+                    if venue_min > Decimal::ZERO && capped < venue_min {
+                        self.size_pct_skipped += 1;
+                        continue;
+                    }
                     capped
                 }
                 // #202: an equity-relative budget too small for one whole share

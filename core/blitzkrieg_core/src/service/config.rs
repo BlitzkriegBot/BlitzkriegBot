@@ -247,6 +247,10 @@ pub struct CoreConfig {
     /// `account_id → max shares`. [`CoreConfig::share_band_for`] prefers the
     /// account row over the global `max_shares`.
     pub account_max_shares: HashMap<String, Decimal>,
+    /// #272: per-account equity-relative sizing percentage overrides.
+    pub account_size_pct: HashMap<String, Decimal>,
+    /// #272: per-account concurrent open-position cap overrides.
+    pub account_max_positions: HashMap<String, usize>,
     /// Issue #1189 (PR-D): per-account market plugin overrides —
     /// `account_id → plugin name`. [`CoreConfig::market_plugin_for`] prefers
     /// the account row over the caller-supplied fallback.
@@ -689,6 +693,8 @@ impl Default for CoreConfig {
             // market plugin; every account resolves to the global values.
             account_min_shares: HashMap::new(),
             account_max_shares: HashMap::new(),
+            account_size_pct: HashMap::new(),
+            account_max_positions: HashMap::new(),
             account_market_plugins: HashMap::new(),
             size_pct: Decimal::ZERO,
             trend_confirm_sec: 60,

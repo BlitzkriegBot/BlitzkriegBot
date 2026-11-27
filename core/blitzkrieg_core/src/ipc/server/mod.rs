@@ -528,10 +528,10 @@ async fn handle_line(
         method::UNIFIED_CANDIDATES => handlers::unified::handle_unified(method, core, params).await,
         method::UNIFIED_CONFIRM => handlers::unified::handle_unified(method, core, params).await,
         method::UNIFIED_REVOKE => handlers::unified::handle_unified(method, core, params).await,
-        method::ARB_CONFIG_SET
-        | method::ARB_CONFIG_GET
-        | method::ARB_CONFIG_CLEAR
-        | method::ARB_STATUS => handlers::arb::handle_arb(method, core, registry, params).await,
+        method::ARB_CONFIG_SET => handlers::arb::handle_arb(method, core, registry, params).await,
+        method::ARB_CONFIG_GET => handlers::arb::handle_arb(method, core, registry, params).await,
+        method::ARB_CONFIG_CLEAR => handlers::arb::handle_arb(method, core, registry, params).await,
+        method::ARB_STATUS => handlers::arb::handle_arb(method, core, registry, params).await,
         method::EXTENSION_LIST => handlers::extension::handle_extension(method, core, params).await,
         method::MARKET_LIST => {
             handlers::market::handle_market(method, core, registry, peer, params).await

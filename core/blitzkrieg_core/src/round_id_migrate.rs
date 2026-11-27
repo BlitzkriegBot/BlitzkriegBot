@@ -357,13 +357,16 @@ mod tests {
     use std::fs;
 
     fn tmp_dir() -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let p = std::env::temp_dir().join(format!(
-            "bk-venue-round-id-{}-{}",
+            "bk-venue-round-id-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            seq,
         ));
         fs::create_dir_all(&p).unwrap();
         p

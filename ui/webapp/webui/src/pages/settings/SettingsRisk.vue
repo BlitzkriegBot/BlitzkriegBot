@@ -35,6 +35,7 @@ import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
 import Card from '@/components/ui/card/Card.vue'
 import CardHeader from '@/components/ui/card/CardHeader.vue'
 import SettingsRiskLimits from './SettingsRiskLimits.vue'
+import TradingWindowCard from '@/components/TradingWindowCard.vue'
 import PolicyRulesEditor from './PolicyRulesEditor.vue'
 
 const store = usePanelStore()
@@ -512,5 +513,6 @@ async function rollbackPolicy(): Promise<void> {
         </div>
       </template>
     </SettingsRiskLimits>
+    <TradingWindowCard />
   </div>
 </template>

@@ -178,6 +178,42 @@ export interface ArbTradeRow {
   exitedAtMs: number
 }
 
+
+export type TradingWindowMode = 'allow' | 'deny'
+
+export interface TradingTimeInterval {
+  startMin: number
+  endMin: number
+  weekdays: number[]
+}
+
+export interface TradingWindowPolicy {
+  enabled: boolean
+  mode: TradingWindowMode
+  tzOffsetMin: number
+  timezone?: string | null
+  intervals: TradingTimeInterval[]
+  label?: string | null
+}
+
+export interface AccountTradingWindows {
+  account: TradingWindowPolicy | null
+  strategies: Record<string, TradingWindowPolicy>
+}
+
+export interface TradingWindowStatusDoc {
+  version: number
+  accountId: string
+  windows: AccountTradingWindows
+  activeNow: {
+    nowMs: number
+    accountAllowed: boolean
+    accountReason: string | null
+    strategies: Record<string, { allowed: boolean; reason: string | null; enabled: boolean }>
+  }
+  error?: string
+}
+
 export interface ArbStatusDoc {
   version: number
   configured: boolean
@@ -429,6 +465,16 @@ export const accountsApi = {
     }),
   /** 套利工作台实时状态快照（arb.status）。 */
   arbStatus: () => request<ArbStatusDoc>('/arb-status'),
+  riskTradingWindows: (account?: string) => {
+    const q = account ? `?account=${encodeURIComponent(account)}` : ''
+    return request<TradingWindowStatusDoc>(`/risk-trading-windows${q}`)
+  },
+  setRiskTradingWindows: (body: { account?: string; windows: AccountTradingWindows }) =>
+    request<TradingWindowStatusDoc>('/risk-trading-windows', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
   // ── 显示账户（issue 559）─────────────────────────────────────────────────
   // 专用代理路由（body 即 params 逐字转发，同 account-venue/set 的纪律）。
   // 写的是「行情页显示谁的市场」——与 `account <id>`（本面板会话默认账户）

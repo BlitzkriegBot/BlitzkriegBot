@@ -25,6 +25,7 @@ impl Engine {
             near_miss: crate::shadow::NearMissRecorder::new(500, 300_000),
             blocked_timing_total: 0,
             blocked_momentum_total: 0,
+            blocked_window_total: 0,
             gate_tally: HashMap::new(),
             gate_tally_acc: HashMap::new(),
             hot_params: None,
@@ -48,6 +49,7 @@ impl Engine {
             pair_declarations: Vec::new(),
             pair_refusals: Vec::new(),
             venue_min_shares: HashMap::new(),
+            trading_windows: HashMap::new(),
         }
     }
 
@@ -1161,6 +1163,20 @@ impl Engine {
     /// Spot momentum alignment filter: reject when spot is moving against the bet.
     /// Returns the reason it rejected, so an exempting strategy's audit record can
     /// state exactly what was waived.
+    /// Evaluate account-level & strategy-level trading-hours windows for a
+    /// NEW entry at `now_ms`. Exits never call this gate.
+    pub(super) fn trading_window_ok(
+        &self,
+        account_id: &str,
+        strategy: &str,
+        now_ms: i64,
+    ) -> Result<(), String> {
+        let Some(tw) = self.trading_windows.get(account_id) else {
+            return Ok(());
+        };
+        tw.check_entry(strategy, now_ms)
+    }
+
     pub(super) fn momentum_ok(
         &self,
         asset: &str,

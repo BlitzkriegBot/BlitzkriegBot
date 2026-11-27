@@ -142,6 +142,9 @@ impl CoreConfig {
             for (acct, &pct) in &live.account_size_pct {
                 e.set_account_size_pct(acct, pct);
             }
+            for (acct, tw) in &live.account_trading_windows {
+                e.set_account_trading_windows(acct, tw.clone());
+            }
             let mut band_accounts: std::collections::HashSet<&str> = live
                 .account_min_shares
                 .keys()

@@ -230,6 +230,7 @@ impl Default for EngineConfig {
 pub struct StrategyGateTally {
     pub blocked_timing: u64,
     pub blocked_momentum: u64,
+    pub blocked_window: u64,
     pub exempted_timing: u64,
     pub exempted_momentum: u64,
 }
@@ -241,6 +242,8 @@ pub enum BlockReason {
     Timing,
     /// The spot momentum filter rejected it.
     Momentum,
+    /// Account-level or strategy-level trading-hours window blocked new entry.
+    TradingWindow,
 }
 
 /// A signal the evaluator produced that a gate blocked (near-miss telemetry).
@@ -439,6 +442,7 @@ pub struct Engine {
     near_miss: crate::shadow::NearMissRecorder,
     blocked_timing_total: u64,
     blocked_momentum_total: u64,
+    blocked_window_total: u64,
     /// Session per-strategy gate counts (blocked vs exempted), E2-b / #27.
     gate_tally: HashMap<String, StrategyGateTally>,
     /// Session per-(strategy, account) gate counts — the ACCOUNT slice of
@@ -572,6 +576,8 @@ pub struct Engine {
     /// declaration only ever TIGHTENS sizing against the venue — the
     /// configured band itself is never widened past an operator knob.
     venue_min_shares: HashMap<String, Decimal>,
+    /// Per-account & per-strategy trading-hours risk windows (blocks new entries only).
+    trading_windows: HashMap<String, crate::risk::trading_window::AccountTradingWindows>,
 }
 
 /// RFC 568 阶段一：一条过了 scope 门的配对声明（engine → Core 的提交伴生

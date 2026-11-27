@@ -198,6 +198,26 @@ impl Engine {
                 Some(m) => self.family_round_timing(m, now_ms),
                 None => round,
             };
+            if let Err(detail) = self.trading_window_ok(&sig.account_id, &sig.strategy, now_ms) {
+                tracing::debug!(
+                    account = %sig.account_id,
+                    strategy = %sig.strategy,
+                    asset = %sig.asset,
+                    detail = %detail,
+                    "entry blocked by trading-window risk gate"
+                );
+                self.last_blocked.push(BlockedCandidate {
+                    strategy: sig.strategy,
+                    account_id: sig.account_id,
+                    token_id: sig.token_id,
+                    asset: sig.asset,
+                    direction: sig.direction,
+                    price: sig.price,
+                    reason: BlockReason::TradingWindow,
+                    time_left_sec: cand_round.time_left_sec,
+                });
+                continue;
+            }
             let timing = match cand_market {
                 Some(m) => self.scanner.can_trade_reason_for(m, now_ms).err(),
                 None => self.scanner.can_trade_reason(now_ms).err(),
@@ -609,6 +629,27 @@ impl Engine {
         self.blocked_momentum_total
     }
 
+    pub fn blocked_window_count(&self) -> u64 {
+        self.blocked_window_total
+    }
+
+    /// Install or replace one account's trading-window policy (account + per-strategy).
+    pub fn set_account_trading_windows(
+        &mut self,
+        account_id: &str,
+        windows: crate::risk::trading_window::AccountTradingWindows,
+    ) {
+        self.bump_inputs();
+        self.trading_windows.insert(account_id.to_string(), windows);
+    }
+
+    pub fn account_trading_windows(
+        &self,
+        account_id: &str,
+    ) -> Option<&crate::risk::trading_window::AccountTradingWindows> {
+        self.trading_windows.get(account_id)
+    }
+
     /// The per-strategy gate exemptions registered strategies declared
     /// (E2-b / #27). None for an unknown strategy.
     /// E25 (#331): the token ids tradable THIS round (both sides of every
@@ -866,17 +907,20 @@ impl Engine {
             match b.reason {
                 BlockReason::Timing => self.blocked_timing_total += 1,
                 BlockReason::Momentum => self.blocked_momentum_total += 1,
+                BlockReason::TradingWindow => self.blocked_window_total += 1,
             }
             let t = self.gate_tally.entry(b.strategy.clone()).or_default();
             match b.reason {
                 BlockReason::Timing => t.blocked_timing += 1,
                 BlockReason::Momentum => t.blocked_momentum += 1,
+                BlockReason::TradingWindow => t.blocked_window += 1,
             }
             let key = format!("{}\u{1}{}", b.strategy, b.account_id);
             let t = self.gate_tally_acc.entry(key).or_default();
             match b.reason {
                 BlockReason::Timing => t.blocked_timing += 1,
                 BlockReason::Momentum => t.blocked_momentum += 1,
+                BlockReason::TradingWindow => t.blocked_window += 1,
             }
         }
     }

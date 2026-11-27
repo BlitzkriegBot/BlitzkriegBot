@@ -42,6 +42,8 @@ pub const ROUND_DURATION_SETTING: &str = "round.duration_sec";
 /// The `account_settings` key carrying an account's strategy ENABLEMENT set
 /// as a JSON array of names — the `ACCOUNT_<ID>_STRATEGIES` key's DB twin.
 pub const STRATEGIES_SETTING: &str = "strategies";
+/// Account + per-strategy trading-window risk policy JSON.
+pub const TRADING_WINDOWS_SETTING: &str = "risk.trading_windows";
 
 /// `kernel_meta` key: Shadow Evolution on/off (process-scoped, not per-account).
 pub const SHADOW_ENABLED_META: &str = "shadow_enabled";

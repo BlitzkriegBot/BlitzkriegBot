@@ -386,7 +386,7 @@ impl Core {
             None
         };
 
-        let default_id = crate::model::default_account_id();
+        let default_id = crate::model::default_account_id().to_string();
         let is_default_target = target.as_str() == default_id.as_str();
         // #272 / #297: update per-account maps AND live execution mirrors
         // (Engine + PositionManager) for every target account; only mirror
@@ -601,5 +601,71 @@ impl Core {
             });
         }
         Ok(false)
+    }
+}
+
+impl Core {
+    /// Read one account's active trading-window policy (account + per-strategy).
+    pub fn trading_windows_get(
+        &self,
+        account_id: &str,
+    ) -> crate::risk::trading_window::AccountTradingWindows {
+        let acct = account_id.trim();
+        let target = if acct.is_empty() {
+            crate::model::default_account_id().to_string()
+        } else {
+            acct.to_string()
+        };
+        self.engine
+            .as_ref()
+            .and_then(|e| e.account_trading_windows(&target).cloned())
+            .or_else(|| self.config.account_trading_windows.get(&target).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Validate, persist (`account_settings.risk.trading_windows`), and hot-apply
+    /// an account's trading-window policy into the live Engine without restart.
+    pub fn trading_windows_set_persisting(
+        &mut self,
+        account_id: &str,
+        windows: crate::risk::trading_window::AccountTradingWindows,
+    ) -> Result<crate::risk::trading_window::AccountTradingWindows, CoreError> {
+        windows
+            .validate()
+            .map_err(|e| CoreError::new(CoreErrorCode::InvalidParams, e))?;
+        let acct = account_id.trim();
+        let target = if acct.is_empty() {
+            crate::model::default_account_id().to_string()
+        } else {
+            acct.to_string()
+        };
+        if let Some(store) = self.store.as_deref() {
+            let scope_id = crate::account::AccountId::from(target.as_str());
+            let encoded = serde_json::to_string(&windows).map_err(|e| {
+                CoreError::new(
+                    CoreErrorCode::Internal,
+                    format!("trading_windows serialize failed: {e}"),
+                )
+            })?;
+            store
+                .put_setting(
+                    crate::store::AccountScope::new(&scope_id),
+                    crate::risk::account_store::TRADING_WINDOWS_SETTING,
+                    Some(&encoded),
+                )
+                .map_err(|e| {
+                    CoreError::new(
+                        CoreErrorCode::Internal,
+                        format!("risk.trading_windows persist failed: {e}"),
+                    )
+                })?;
+        }
+        self.config
+            .account_trading_windows
+            .insert(target.clone(), windows.clone());
+        if let Some(engine) = self.engine.as_mut() {
+            engine.set_account_trading_windows(&target, windows.clone());
+        }
+        Ok(windows)
     }
 }

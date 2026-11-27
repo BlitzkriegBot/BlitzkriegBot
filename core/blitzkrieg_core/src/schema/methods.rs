@@ -30,6 +30,8 @@ pub mod method {
     /// （`StoreApi::save_exit`），重启后从库里重新解析出同样的值 ——
     /// 操作者裁决 2026-11-14：`.env` 对内核只读，不再写回。
     pub const RISK_SET_EXIT: &str = "risk.setExit";
+    pub const RISK_TRADING_WINDOWS_GET: &str = "risk.tradingWindows.get";
+    pub const RISK_TRADING_WINDOWS_SET: &str = "risk.tradingWindows.set";
     /// 轮次时间周期的运行时读数（UI 设置卡）：当前生效秒数、来源
     /// （`cli_or_env` / `default`，由启动解析裁定）、可切换的白名单档位与
     /// 「下次会话生效」的回执

@@ -254,6 +254,8 @@ pub const METHODS: &[MethodSpec] = &[
     write(method::RISK_SET_LIMITS),
     write(method::RISK_SET_SYSTEMIC),
     write(method::RISK_SET_EXIT),
+    read(method::RISK_TRADING_WINDOWS_GET),
+    write(method::RISK_TRADING_WINDOWS_SET),
     write(method::ROUND_DURATION_SET),
     write(method::MARKET_PLUGIN_SET),
     write(method::MARKET_CREDENTIALS_SET),

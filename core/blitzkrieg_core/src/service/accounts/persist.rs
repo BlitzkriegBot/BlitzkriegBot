@@ -324,10 +324,13 @@ impl Core {
                 .iter()
                 .map(|p| p.trim().to_uppercase())
                 .collect::<Vec<_>>(),
+            round_duration_sec: cfg.round_duration_sec.filter(|d| *d > 0),
         });
         if let Some(e) = self.engine.as_mut() {
             e.set_arb_leg_config(self.arb_leg_config.clone());
         }
+        let cfg_snapshot = self.config.clone();
+        self.seed_scanner_grids(&cfg_snapshot);
         self.sync_family_feed_from_accounts();
     }
 

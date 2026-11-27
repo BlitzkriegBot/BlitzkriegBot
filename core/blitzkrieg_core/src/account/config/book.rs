@@ -162,12 +162,16 @@ pub fn read_cross_venue_arb_from_env(
                 .to_string(),
         ));
     }
+    let round_duration_sec = env("ACCOUNT_ARB_ROUND_DURATION_SEC")
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+        .filter(|d| *d > 0);
     Ok(Some(CrossVenueArbConfig {
         leg_a_venue,
         leg_a_account,
         leg_b_venue,
         leg_b_account,
         pairs: pairs.iter().map(|p| p.trim().to_uppercase()).collect(),
+        round_duration_sec,
     }))
 }
 

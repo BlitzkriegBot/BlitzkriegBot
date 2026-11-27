@@ -172,6 +172,10 @@ pub struct CrossVenueArbConfig {
     pub leg_b_account: String,
     /// Upper-cased asset names, file order kept.
     pub pairs: Vec<String>,
+    /// Shared round duration (sec) locked to the intersection of Leg A and Leg B
+    /// venues' supported round families (e.g. 900s for Polymarket ∩ Kalshi).
+    /// `None` = legacy row created before common-round locking.
+    pub round_duration_sec: Option<i64>,
 }
 
 impl CrossVenueArbConfig {
@@ -579,6 +583,7 @@ fn lift_cross_venue_arb(a: &CrossVenueArbFileSection) -> CrossVenueArbConfig {
         leg_b_venue: a.leg_b_venue.trim().to_string(),
         leg_b_account: a.leg_b_account.trim().to_string(),
         pairs: a.pairs.iter().map(|p| p.trim().to_uppercase()).collect(),
+        round_duration_sec: None,
     }
 }
 

@@ -770,17 +770,23 @@ impl super::StoreApi for SqliteStore {
         self.risk
             .db()
             .with_connection(|conn| {
+                // Idempotent upgrade for existing DBs created before round_duration_sec existed.
+                let _ = conn.execute(
+                    "ALTER TABLE arb_pairs ADD COLUMN round_duration_sec INTEGER",
+                    [],
+                );
                 conn.execute(
                     "INSERT INTO arb_pairs
                             (id, leg_a_venue, leg_a_account, leg_b_venue, leg_b_account,
-                             pairs_json, updated_at_ms)
-                     VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+                             pairs_json, round_duration_sec, updated_at_ms)
+                     VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
                      ON CONFLICT(id) DO UPDATE SET
                         leg_a_venue = excluded.leg_a_venue,
                         leg_a_account = excluded.leg_a_account,
                         leg_b_venue = excluded.leg_b_venue,
                         leg_b_account = excluded.leg_b_account,
                         pairs_json = excluded.pairs_json,
+                        round_duration_sec = excluded.round_duration_sec,
                         updated_at_ms = excluded.updated_at_ms",
                     rusqlite::params![
                         cfg.leg_a_venue,
@@ -788,6 +794,7 @@ impl super::StoreApi for SqliteStore {
                         cfg.leg_b_venue,
                         cfg.leg_b_account,
                         pairs_json,
+                        cfg.round_duration_sec,
                         crate::db::now_ms(),
                     ],
                 )
@@ -818,9 +825,14 @@ impl super::StoreApi for SqliteStore {
         self.risk
             .db()
             .with_connection(|conn| {
+                let _ = conn.execute(
+                    "ALTER TABLE arb_pairs ADD COLUMN round_duration_sec INTEGER",
+                    [],
+                );
                 let mut stmt = conn
                     .prepare(
-                        "SELECT leg_a_venue, leg_a_account, leg_b_venue, leg_b_account, pairs_json \
+                        "SELECT leg_a_venue, leg_a_account, leg_b_venue, leg_b_account, \
+                                pairs_json, round_duration_sec \
                          FROM arb_pairs WHERE id = 1",
                     )
                     .map_err(|e| CoreError::new(CoreErrorCode::Internal, format!("{e}")))?;
@@ -831,17 +843,18 @@ impl super::StoreApi for SqliteStore {
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
                         r.get::<_, Option<String>>(4)?,
+                        r.get::<_, Option<i64>>(5)?,
                     ))
                 });
                 match row {
-                    Ok((leg_a_venue, leg_a_account, leg_b_venue, leg_b_account, pairs_json)) => {
-                        // NULL pairs_json is the legal "never configured / cleared"
-                        // state (save_arb_config always serializes a parseable
-                        // payload). A non-NULL payload that fails to parse is row
-                        // corruption: it still reads as an empty pairs list — a
-                        // damaged row must not panic the boot — but it must be
-                        // loud, or corruption silently reads as "unconfigured"
-                        // (issue #1199 P2-11).
+                    Ok((
+                        leg_a_venue,
+                        leg_a_account,
+                        leg_b_venue,
+                        leg_b_account,
+                        pairs_json,
+                        round_duration_sec,
+                    )) => {
                         let pairs: Vec<String> = match pairs_json.as_deref() {
                             None => Vec::new(),
                             Some(raw) => match serde_json::from_str(raw) {
@@ -862,6 +875,7 @@ impl super::StoreApi for SqliteStore {
                             leg_b_venue,
                             leg_b_account,
                             pairs,
+                            round_duration_sec: round_duration_sec.filter(|d| *d > 0),
                         }))
                     }
                     Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -1628,6 +1642,7 @@ mod tests {
                 leg_b_venue: "polymarket".into(),
                 leg_b_account: "paper".into(),
                 pairs: vec!["BTC".into()],
+                round_duration_sec: None,
             })
             .unwrap();
         let pairs_json: String = store

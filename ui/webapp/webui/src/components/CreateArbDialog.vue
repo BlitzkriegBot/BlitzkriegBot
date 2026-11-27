@@ -270,6 +270,49 @@ const paramsPatch = computed<Record<string, string>>(() => {
   return patch
 })
 
+// ── 共同时间轮次（A/B 交易所支持周期交集）──────────────────────────────────
+const DEFAULT_ROUND_SECS = [300, 900, 3600, 86400]
+const selectedRoundSec = ref<number | null>(null)
+
+function venueSupportedRounds(venue: string): number[] {
+  const v = venue.trim().toLowerCase()
+  if (!v) return []
+  const plugin = store.plugins?.marketPlugins?.find((p) => p.name.toLowerCase() === v)
+  const list = plugin?.supportedRoundSecs
+  if (Array.isArray(list) && list.length > 0) return [...list].sort((a, b) => a - b)
+  return DEFAULT_ROUND_SECS
+}
+
+const commonRoundDurations = computed<number[]>(() => {
+  if (!legAVenue.value || !legBVenue.value || legAVenue.value === legBVenue.value) return []
+  const a = venueSupportedRounds(legAVenue.value)
+  const b = new Set(venueSupportedRounds(legBVenue.value))
+  return a.filter((d) => b.has(d))
+})
+
+function formatRoundLabel(sec: number): string {
+  if (sec === 300) return '5m'
+  if (sec === 900) return '15m'
+  if (sec === 3600) return '1h'
+  if (sec === 14400) return '4h'
+  if (sec === 86400) return 'daily'
+  return sec % 60 === 0 ? `${sec / 60}m` : `${sec}s`
+}
+
+watch(
+  commonRoundDurations,
+  (list) => {
+    if (list.length === 0) {
+      selectedRoundSec.value = null
+    } else if (list.length === 1) {
+      selectedRoundSec.value = list[0]
+    } else if (!selectedRoundSec.value || !list.includes(selectedRoundSec.value)) {
+      selectedRoundSec.value = list.includes(900) ? 900 : list[0]
+    }
+  },
+  { immediate: true },
+)
+
 // ── 配置预填（arb.config.get）+ 老内核 feature-detect ──────────────────────
 const configLoading = ref(false)
 /** get 回执原文（configured=true 时按腿回显；null = 未读/读失败）。 */
@@ -309,6 +352,7 @@ async function loadConfig(): Promise<void> {
       legBVenue.value = doc.legBVenue ?? ''
       legBAccount.value = doc.legBAccount ?? ''
       selectedPairs.value = [...(doc.pairs ?? [])]
+      selectedRoundSec.value = doc.roundDurationSec ?? null
     } else if (props.activeAccountId) {
       // 未配置过：账户下拉没有内核读数可预填 —— 用面板 default 账户作
       // 初始提示（没有更高的事实源，操作员可改选）。
@@ -480,6 +524,7 @@ async function commit(): Promise<void> {
       legBVenue: legBVenue.value,
       legBAccount: legBAccount.value,
       pairs: [...selectedPairs.value],
+      roundDurationSec: selectedRoundSec.value,
     })
     if (cfg.error) throw new Error(cfg.error)
     const patch = paramsPatch.value
@@ -723,6 +768,31 @@ function credLabel(leg: LegCredStatus | null): string {
                   />
                   <span class="col-span-2 text-[11px] leading-snug text-faint-fg">{{ hint }}</span>
                 </label>
+              </div>
+            </div>
+
+            <!-- 段2.5 共同时间轮次：按 A/B 交易所支持周期的交集锁定 -->
+            <div v-if="legAVenue && legBVenue && legAVenue !== legBVenue">
+              <div class="flex items-center justify-between gap-2">
+                <span class="label-micro">共同时间轮次</span>
+                <span v-if="commonRoundDurations.length === 1" class="text-[11px] text-primary">
+                  仅双方共同支持 {{ formatRoundLabel(commonRoundDurations[0]) }}（已自动锁定）
+                </span>
+              </div>
+              <div v-if="commonRoundDurations.length > 0" class="mt-1.5 flex flex-wrap gap-1.5">
+                <Button
+                  v-for="sec in commonRoundDurations"
+                  :key="sec"
+                  size="sm"
+                  :variant="selectedRoundSec === sec ? 'gold' : 'outline'"
+                  :disabled="commonRoundDurations.length === 1"
+                  @click="selectedRoundSec = sec"
+                >
+                  {{ formatRoundLabel(sec) }}
+                </Button>
+              </div>
+              <div v-else class="mt-1.5 text-[11.5px] text-down">
+                所选两个交易所没有共同支持的时间轮次，无法配对套利。
               </div>
             </div>
 

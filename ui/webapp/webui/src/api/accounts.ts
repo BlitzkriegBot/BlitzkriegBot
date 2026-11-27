@@ -74,6 +74,7 @@ export interface ArbConfigSetBody {
   legBVenue: string
   legBAccount: string
   pairs: string[]
+  roundDurationSec?: number | null
 }
 
 /** `arb.config.get` / `arb.config.set` 的回执（configured 分支预填与回显用）。 */
@@ -85,6 +86,123 @@ export interface ArbConfigDoc {
   legBVenue: string | null
   legBAccount: string | null
   pairs: string[]
+  roundDurationSec?: number | null
+  commonRoundDurations?: number[]
+  legASupportedRounds?: number[]
+  legBSupportedRounds?: number[]
+  lockedByVenue?: string | null
+  error?: string
+}
+
+export interface ArbReadinessCheck {
+  id: string
+  label: string
+  ok: boolean
+  detail: string
+}
+
+export interface ArbScannerLeg {
+  venue: string
+  marketFound: boolean
+  roundDurationSec?: number
+  expiresAtMs?: number
+  upAsk: string | null
+  downAsk: string | null
+  upBid: string | null
+  downBid: string | null
+  stale: boolean
+}
+
+export interface ArbScannerRow {
+  asset: string
+  roundDurationSec: number | null
+  timeLeftSec: number | null
+  legA: ArbScannerLeg
+  legB: ArbScannerLeg
+  comboUpDownCost: string | null
+  comboDownUpCost: string | null
+  bestCost: string | null
+  edgeUsd: string | null
+  opportunity: boolean
+}
+
+export interface ArbPairLegRow {
+  accountId: string
+  tokenId: string
+  internalKey: string
+  declaredShares: string
+  filledShares: string
+  dead: boolean
+}
+
+export interface ArbPairStateRow {
+  id: string
+  strategy: string
+  slot: number
+  status: string
+  nakedToken: string | null
+  createdMs: number
+  legs: ArbPairLegRow[]
+}
+
+export interface ArbOrderRow {
+  orderId: string
+  accountId: string
+  asset: string
+  direction: string
+  side: string
+  price: string
+  size: string
+  filledSize: string
+  status: string
+  createdAtMs: number
+  roundSlot: number
+}
+
+export interface ArbTradeRow {
+  id: string
+  accountId: string
+  venue: string
+  asset: string
+  direction: string
+  entryPrice: string
+  exitPrice: string
+  shares: string
+  netPnlUsd: string
+  exitReason: string
+  enteredAtMs: number
+  exitedAtMs: number
+}
+
+export interface ArbStatusDoc {
+  version: number
+  configured: boolean
+  running: boolean
+  config: {
+    legAVenue: string
+    legAAccount: string
+    legBVenue: string
+    legBAccount: string
+    pairs: string[]
+    roundDurationSec: number | null
+    commonRoundDurations: number[]
+    legASupportedRounds: number[]
+    legBSupportedRounds: number[]
+    lockedByVenue: string | null
+  } | null
+  readiness: ArbReadinessCheck[]
+  scanner: ArbScannerRow[]
+  activePairs: ArbPairStateRow[]
+  summary: {
+    netPnlUsd: string
+    wins: number
+    losses: number
+    closedTrades: number
+    activePairs: number
+    ordersCount: number
+  }
+  orders: ArbOrderRow[]
+  trades: ArbTradeRow[]
   error?: string
 }
 
@@ -298,6 +416,14 @@ export const accountsApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  /** 解除套利双腿配置（arb.config.clear）。 */
+  arbConfigClear: (actor = 'panel') =>
+    request<{ version: number; configured: boolean; error?: string }>('/arb-config/clear', {
+      method: 'POST',
+      body: JSON.stringify({ actor }),
+    }),
+  /** 套利工作台实时状态快照（arb.status）。 */
+  arbStatus: () => request<ArbStatusDoc>('/arb-status'),
   // ── 显示账户（issue 559）─────────────────────────────────────────────────
   // 专用代理路由（body 即 params 逐字转发，同 account-venue/set 的纪律）。
   // 写的是「行情页显示谁的市场」——与 `account <id>`（本面板会话默认账户）

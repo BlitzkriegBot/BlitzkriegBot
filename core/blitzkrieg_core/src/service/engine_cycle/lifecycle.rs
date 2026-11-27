@@ -145,17 +145,24 @@ impl Core {
             families.push((venue, duration_sec));
         }
         if let Some(arb) = &self.arb_leg_config {
-            let dur_a = cfg
-                .account_round_durations
-                .get(arb.leg_a_account.as_str())
-                .copied()
-                .unwrap_or(cfg.default_round_duration_sec);
-            let dur_b = cfg
-                .account_round_durations
-                .get(arb.leg_b_account.as_str())
-                .copied()
-                .unwrap_or(cfg.default_round_duration_sec);
-            for dur in [dur_a, dur_b] {
+            let mut arb_durs: Vec<i64> = Vec::new();
+            if let Some(common) = arb.round_duration_sec.filter(|d| *d > 0) {
+                arb_durs.push(common);
+            } else {
+                let dur_a = cfg
+                    .account_round_durations
+                    .get(arb.leg_a_account.as_str())
+                    .copied()
+                    .unwrap_or(cfg.default_round_duration_sec);
+                let dur_b = cfg
+                    .account_round_durations
+                    .get(arb.leg_b_account.as_str())
+                    .copied()
+                    .unwrap_or(cfg.default_round_duration_sec);
+                arb_durs.push(dur_a);
+                arb_durs.push(dur_b);
+            }
+            for dur in arb_durs {
                 if !arb.leg_a_venue.is_empty() {
                     families.push((arb.leg_a_venue.clone(), dur));
                 }

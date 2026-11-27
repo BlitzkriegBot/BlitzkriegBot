@@ -874,6 +874,9 @@ pub struct ArbConfigSetParams {
     pub leg_b_venue: String,
     pub leg_b_account: String,
     pub pairs: Vec<String>,
+    /// Optional shared round duration (sec) locked to Leg A ∩ Leg B supported rounds.
+    #[serde(default)]
+    pub round_duration_sec: Option<i64>,
     /// Audit trail only; defaults to "panel".
     #[serde(default)]
     pub actor: Option<String>,

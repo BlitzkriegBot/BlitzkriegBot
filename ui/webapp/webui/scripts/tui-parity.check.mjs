@@ -153,6 +153,19 @@ const WEBUI_TAB_SETS = [
     'plugins',
     'settings',
   ],
+  [
+    'overview',
+    'hft',
+    'backtest',
+    'strategies',
+    'arbitrage',
+    'blueprint',
+    'smart_trading',
+    'decisions',
+    'evolution',
+    'plugins',
+    'settings',
+  ],
 ]
 check('WebUI nav is a known tab set (six, seven with evolution, eight with decisions, nine with blueprint)', () => {
   assert.ok(
@@ -390,12 +403,13 @@ const WEBUI_SURPLUS = [
   ['blueprint', 'CLI/JSON: 手写 blueprint.json 过 blueprint.compile（画布是 WebUI 专属增强面，产物进策略包）'],
   ['smart_trading', 'CLI/库: tools/onchain_pull reverse::analyze_fills + blueprint::compile（聪明钱逆向是 WebUI 增强面）'],
   ['strategies', 'TUI 指令台 strategy <name> on|off 同动词；账本表格是 WebUI 增强面'],
+  ['arbitrage', 'IPC: arb.config.set / arb.config.clear / arb.status（跨所套利实时扫盘与双腿工作台是 WebUI 增强面）'],
 ]
 check('every WebUI-only tab has a declared off-panel equivalent', () => {
   const surplus = webuiIds.filter((id) => !TUI_TO_WEBUI.some(([, ts]) => ts.includes(id)))
   assert.deepEqual(
     surplus,
-    ['backtest', 'strategies', 'blueprint', 'smart_trading'],
+    ['backtest', 'strategies', 'arbitrage', 'blueprint', 'smart_trading'],
     'new WebUI tab without a parity note — add it to WEBUI_SURPLUS and this list',
   )
 })

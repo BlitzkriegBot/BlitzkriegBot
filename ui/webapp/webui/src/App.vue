@@ -82,6 +82,7 @@ const pages = {
   blueprint: defineAsyncComponent(() => import('./pages/BlueprintPage.vue')),
   smart_trading: defineAsyncComponent(() => import('./pages/SmartTradingPage.vue')),
   strategies: defineAsyncComponent(() => import('./pages/Strategies.vue')),
+  arbitrage: defineAsyncComponent(() => import('./pages/ArbitragePage.vue')),
   decisions: defineAsyncComponent(() => import('./pages/Decisions.vue')),
   evolution: defineAsyncComponent(() => import('./pages/EvolutionPage.vue')),
   plugins: defineAsyncComponent(() => import('./pages/Plugins.vue')),

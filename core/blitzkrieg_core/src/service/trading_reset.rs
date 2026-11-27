@@ -322,6 +322,28 @@ impl Core {
         // 数字（不改 realized、不改 cap、不清亏损）。
         self.clear_account_gate(account_id.as_str());
 
+        // Resetting a leg account clears the cross-venue arb config and pair book
+        // so stale arb entries do not linger after an operator resets trading.
+        if self.arb_leg_config.as_ref().is_some_and(|c| {
+            c.leg_a_account.trim() == account_id.as_str()
+                || c.leg_b_account.trim() == account_id.as_str()
+        }) {
+            if let Some(store) = self.store.as_deref()
+                && let Err(e) = store.clear_arb_config()
+            {
+                tracing::warn!(
+                    account = %account_id,
+                    error = %e.message,
+                    "reset_trading: clear_arb_config failed"
+                );
+            }
+            self.arb_leg_config = None;
+            self.pair_book = crate::pair::PairBook::default();
+            if let Some(e) = self.engine.as_mut() {
+                e.set_arb_leg_config(None);
+            }
+        }
+
         // 4) 持仓簿账户维摘除 + 磁盘记录按账户截断（不重启进程）。
         let open_before = pre.open_positions;
         let (removed_open, _removed_closed) =

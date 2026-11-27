@@ -221,6 +221,7 @@ fn arb_core(pot: Option<Decimal>) -> Core {
         leg_b_venue: "kalshi".into(),
         leg_b_account: default_account_id().to_string(),
         pairs: vec!["BTC".into()],
+        round_duration_sec: None,
     })
     .expect("the leg configuration lands (memory-only core)");
     c

@@ -322,6 +322,7 @@ fn replay_with_config(
                 leg_b_venue: "kalshi".into(),
                 leg_b_account: "kalshi".into(),
                 pairs: vec!["BTC".into()],
+                round_duration_sec: None,
             })
             .expect("the leg configuration lands (memory-only core)");
     }

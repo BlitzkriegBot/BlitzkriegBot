@@ -192,6 +192,12 @@ fn arb_core_atomic(accounts_path: &Path, virtual_pot: bool, atomic: bool) -> Cor
         // 持久化后端是 SQLite（`.env` 只读）：arb.config.set 的写面走 store。
         // 与 accounts_path 同目录、同文件名，并行测试不互冲突。
         db_path: Some(accounts_path.with_extension("store.sqlite")),
+        manual_ops_audit_path: Some(
+            accounts_path
+                .with_extension("ops.jsonl")
+                .to_string_lossy()
+                .into_owned(),
+        ),
         virtual_limits,
         ..Default::default()
     };
@@ -223,6 +229,7 @@ fn legs_payload() -> blitzkrieg_core::account::CrossVenueArbConfig {
         leg_b_venue: "kalshi".into(),
         leg_b_account: "arb-b".into(),
         pairs: vec!["BTC".into()],
+        round_duration_sec: None,
     }
 }
 
@@ -841,5 +848,44 @@ fn boot_install_engine_and_mixed_round_families_fill_both_legs_in_dry() {
     assert!(
         !c.pair_book_all().is_empty(),
         "PairBook recorded the cross-venue pair"
+    );
+}
+
+#[test]
+fn arb_common_round_duration_persists_and_reset_trading_clears_arb_config() {
+    let path = accounts_toml_path("common-round-reset");
+    let mut cfg_with_round = legs_payload();
+    cfg_with_round.round_duration_sec = Some(900);
+
+    {
+        let mut c = arb_core(&path, false);
+        c.arb_config_set_persisting(&cfg_with_round, "test", "arb.config.set", NOW)
+            .expect("arb config persists with round_duration_sec");
+    }
+
+    // Boot reload from the same SQLite store preserves locked round_duration_sec = 900.
+    let mut c = arb_core(&path, false);
+    assert_eq!(
+        c.arb_leg_config().and_then(|cfg| cfg.round_duration_sec),
+        Some(900),
+        "SQLite reload must preserve locked common round_duration_sec"
+    );
+
+    // Resetting a leg account clears arb_leg_config both in memory and in SQLite.
+    let params = blitzkrieg_core::schema::ResetTradingParams {
+        confirm: "RESET".into(),
+        account_id: Some("default".into()),
+        reason: Some("test-reset".into()),
+    };
+    c.reset_trading(&params, "test", NOW + 1_000)
+        .expect("reset_trading succeeds");
+    assert!(
+        c.arb_leg_config().is_none(),
+        "reset_trading on a leg account must clear in-memory arb_leg_config"
+    );
+    let c_after = arb_core(&path, false);
+    assert!(
+        c_after.arb_leg_config().is_none(),
+        "reset_trading on a leg account must clear SQLite arb_pairs row"
     );
 }

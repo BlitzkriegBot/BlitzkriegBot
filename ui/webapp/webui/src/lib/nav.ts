@@ -18,6 +18,7 @@ export type TabId =
   | 'blueprint'
   | 'smart_trading'
   | 'strategies'
+  | 'arbitrage'
   | 'decisions'
   | 'evolution'
   | 'plugins'
@@ -50,6 +51,7 @@ export const NAV: NavEntry[] = [
     label: '策略',
     children: [
       { kind: 'page', id: 'strategies', label: '策略' },
+      { kind: 'page', id: 'arbitrage', label: '套利' },
       { kind: 'page', id: 'blueprint', label: '蓝图' },
       { kind: 'page', id: 'smart_trading', label: '智能交易' },
       { kind: 'page', id: 'decisions', label: '裁决流' },

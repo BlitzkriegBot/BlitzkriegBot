@@ -603,7 +603,7 @@ impl Engine {
     /// account is bound to a venue, read that venue's own dual-key row first
     /// so shared tokens (e.g. `polymarket` + `polysimulator`) resolve cleanly
     /// instead of hitting RFC-661 M1 ambiguity refusal (`None`).
-    pub(super) fn market_for_account_token(
+    pub fn market_for_account_token(
         &self,
         account: &str,
         token: &str,
@@ -732,13 +732,139 @@ impl Engine {
     /// collide with that borrow.
     fn instance_round_family_sec(
         account_round_durations: &HashMap<String, i64>,
+        arb_leg_config: Option<&crate::account::CrossVenueArbConfig>,
         s: &HostedStrategy,
     ) -> Option<i64> {
+        if Self::strategy_uses_arb_leg_config(s.strategy.as_ref())
+            && let Some(arb_dur) = arb_leg_config
+                .and_then(|c| c.round_duration_sec)
+                .filter(|d| *d > 0)
+        {
+            return Some(arb_dur);
+        }
         account_round_durations
             .get(&s.account_id)
             .copied()
             .filter(|d| *d > 0)
             .or(s.round_family_sec)
+    }
+
+    /// Live cross-venue spread snapshot for `arb.status`: for each configured
+    /// pair asset, inspect Leg A and Leg B's current market on the shared
+    /// round duration and report real-time best asks/bids and combo cost vs $1.
+    pub fn arb_scanner_snapshot(
+        &self,
+        cfg: &crate::account::CrossVenueArbConfig,
+        now_ms: i64,
+    ) -> Vec<serde_json::Value> {
+        let target_dur = cfg.round_duration_sec.filter(|d| *d > 0);
+        let find_leg = |venue: &str, asset: &str| -> Option<&crate::model::CryptoMarket> {
+            self.scanner.markets().iter().find(|m| {
+                m.venue.eq_ignore_ascii_case(venue)
+                    && m.asset.eq_ignore_ascii_case(asset)
+                    && target_dur.is_none_or(|d| {
+                        row_family_duration(
+                            m.round_duration_sec,
+                            self.cfg.scanner.round_duration_sec,
+                        ) == d
+                    })
+            })
+        };
+        let leg_book_json = |venue: &str, m: Option<&crate::model::CryptoMarket>| {
+            let Some(m) = m else {
+                return (
+                    serde_json::json!({
+                        "venue": venue,
+                        "marketFound": false,
+                        "upAsk": null,
+                        "downAsk": null,
+                        "upBid": null,
+                        "downBid": null,
+                        "stale": true,
+                    }),
+                    None,
+                    None,
+                );
+            };
+            let up = fresh_book(
+                &self.books,
+                &m.up_token_id,
+                now_ms,
+                self.cfg.max_orderbook_stale_ms,
+            );
+            let down = fresh_book(
+                &self.books,
+                &m.down_token_id,
+                now_ms,
+                self.cfg.max_orderbook_stale_ms,
+            );
+            let up_ask = up
+                .as_ref()
+                .and_then(|b| (b.best_ask > Decimal::ZERO).then_some(b.best_ask));
+            let down_ask = down
+                .as_ref()
+                .and_then(|b| (b.best_ask > Decimal::ZERO).then_some(b.best_ask));
+            let up_bid = up
+                .as_ref()
+                .and_then(|b| (b.best_bid > Decimal::ZERO).then_some(b.best_bid));
+            let down_bid = down
+                .as_ref()
+                .and_then(|b| (b.best_bid > Decimal::ZERO).then_some(b.best_bid));
+            let stale = up.is_none() || down.is_none();
+            (
+                serde_json::json!({
+                    "venue": venue,
+                    "marketFound": true,
+                    "roundDurationSec": m.round_duration_sec,
+                    "expiresAtMs": m.expires_at_ms,
+                    "upAsk": up_ask.map(|v| v.to_string()),
+                    "downAsk": down_ask.map(|v| v.to_string()),
+                    "upBid": up_bid.map(|v| v.to_string()),
+                    "downBid": down_bid.map(|v| v.to_string()),
+                    "stale": stale,
+                }),
+                up_ask,
+                down_ask,
+            )
+        };
+        cfg.pairs
+            .iter()
+            .map(|asset| {
+                let ma = find_leg(&cfg.leg_a_venue, asset);
+                let mb = find_leg(&cfg.leg_b_venue, asset);
+                let (ja, a_up_ask, a_down_ask) = leg_book_json(&cfg.leg_a_venue, ma);
+                let (jb, b_up_ask, b_down_ask) = leg_book_json(&cfg.leg_b_venue, mb);
+                let combo_up_down = match (a_up_ask, b_down_ask) {
+                    (Some(a), Some(b)) => Some(a + b),
+                    _ => None,
+                };
+                let combo_down_up = match (a_down_ask, b_up_ask) {
+                    (Some(a), Some(b)) => Some(a + b),
+                    _ => None,
+                };
+                let best_cost = match (combo_up_down, combo_down_up) {
+                    (Some(x), Some(y)) => Some(x.min(y)),
+                    (Some(x), None) | (None, Some(x)) => Some(x),
+                    (None, None) => None,
+                };
+                let edge_usd = best_cost.map(|c| Decimal::ONE - c);
+                let time_left_sec = ma
+                    .or(mb)
+                    .map(|m| ((m.expires_at_ms - now_ms) / 1000).max(0));
+                serde_json::json!({
+                    "asset": asset,
+                    "roundDurationSec": target_dur.or_else(|| ma.or(mb).map(|m| m.round_duration_sec)),
+                    "timeLeftSec": time_left_sec,
+                    "legA": ja,
+                    "legB": jb,
+                    "comboUpDownCost": combo_up_down.map(|v| v.to_string()),
+                    "comboDownUpCost": combo_down_up.map(|v| v.to_string()),
+                    "bestCost": best_cost.map(|v| v.to_string()),
+                    "edgeUsd": edge_usd.map(|v| v.to_string()),
+                    "opportunity": edge_usd.is_some_and(|e| e > Decimal::ZERO),
+                })
+            })
+            .collect()
     }
 
     /// The family binding in force for one strategy name (folded lookup), for

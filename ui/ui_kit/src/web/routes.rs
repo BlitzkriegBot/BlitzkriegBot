@@ -588,12 +588,21 @@ impl WebServer {
             ("POST", "/api/arb-config/set") => {
                 // 跨所套利创建（合同 v1）：双腿配置写 —— body 即
                 // `arb.config.set` 的 params 对象（`{version, legAVenue,
-                // legAAccount, legBVenue, legBAccount, pairs}`），逐字转发
+                // legAAccount, legBVenue, legBAccount, pairs, roundDurationSec?}`），逐字转发
                 // （同 account-venue/set 的纪律：网关零加工）。B≠A（venue 与
                 // 账户两个维度）的校验在内核是 APPLICATION 错误，消息点名
                 // 非法字段 —— 原样过线给弹窗转述。持久化（accounts.toml）
                 // 在内核侧，网关零持久化职责。
                 self.proxy_backtest_body("arb.config.set", &req.body)
+            }
+            ("POST", "/api/arb-config/clear") => {
+                // 解除跨所套利双腿配置（`arb.config.clear`）。
+                self.proxy_backtest_body("arb.config.clear", &req.body)
+            }
+            ("GET", "/api/arb-status") => {
+                // 跨所套利工作台实时状态快照（`arb.status`）：配置、共同轮次周期、
+                // 6 项就绪体检、实时跨所价差扫描、PairBook 活跃配对与双腿合并历史。
+                self.proxy_read("arb.status", serde_json::json!({}))
             }
             ("POST", "/api/account-trading/set") => {
                 // 多账户扇出（PR B of #518）：交易开关写 —— body 即

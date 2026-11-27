@@ -5,46 +5,32 @@ use super::CoreConfig;
 use super::{PolicyParseError, UnverifiedExpiryPolicy};
 use rust_decimal::Decimal;
 
-/// Issue #176 (R7.1 L4 fail-closed): the deleted `cash` policy must be a
-/// REFUSAL, not a silent downgrade to `receivable`. A deployment that still
-/// says `BK_UNVERIFIED_EXPIRY_POLICY=cash` gets a distinguishable error so the
-/// boot path can refuse with a reason (and `parser` never yields a policy).
+/// Operator decision 2026-11-27: `cash` is the default unverified-expiry
+/// settlement policy, while `receivable` remains available via env opt-in.
+/// Unknown spellings are still refused fail-closed.
 #[test]
-fn the_removed_cash_policy_is_refused_not_downgraded() {
-    let err = UnverifiedExpiryPolicy::parse("cash").expect_err("cash is gone");
+fn unverified_expiry_policy_parses_cash_and_receivable_and_defaults_to_cash() {
     assert_eq!(
-        err,
-        PolicyParseError::RemovedCash,
-        "the removed spelling gets its own error variant (explains WHY)"
+        UnverifiedExpiryPolicy::parse("cash").unwrap(),
+        UnverifiedExpiryPolicy::Cash
     );
-    // The message names the issue and the reason the model was removed.
-    let msg = err.to_string();
-    assert!(msg.contains("cash"), "{msg}");
-    assert!(msg.contains("#176"), "{msg}");
-    assert!(msg.contains("L1"), "{msg}");
-
-    // Case/whitespace spelling variants are the same refusal.
     assert_eq!(
-        UnverifiedExpiryPolicy::parse("  CASH ").unwrap_err(),
-        PolicyParseError::RemovedCash
+        UnverifiedExpiryPolicy::parse("  CASH ").unwrap(),
+        UnverifiedExpiryPolicy::Cash
     );
-
-    // A typo is a DIFFERENT error (never silently accepted either).
-    assert_eq!(
-        UnverifiedExpiryPolicy::parse("cashflow").unwrap_err(),
-        PolicyParseError::Unknown("cashflow".to_string())
-    );
-
-    // The one surviving value parses, and it is the default.
     assert_eq!(
         UnverifiedExpiryPolicy::parse("receivable").unwrap(),
         UnverifiedExpiryPolicy::Receivable
     );
     assert_eq!(
-        UnverifiedExpiryPolicy::default(),
-        UnverifiedExpiryPolicy::Receivable
+        UnverifiedExpiryPolicy::parse("cashflow").unwrap_err(),
+        PolicyParseError::Unknown("cashflow".to_string())
     );
-    assert_eq!(UnverifiedExpiryPolicy::default().as_str(), "receivable");
+    assert_eq!(
+        UnverifiedExpiryPolicy::default(),
+        UnverifiedExpiryPolicy::Cash
+    );
+    assert_eq!(UnverifiedExpiryPolicy::default().as_str(), "cash");
 }
 
 /// Issue #1189 (PR-D): the account row wins; a missing row falls back to

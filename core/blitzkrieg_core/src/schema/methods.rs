@@ -430,6 +430,10 @@ pub mod method {
     /// with the four leg fields + `pairs`, or `configured: false` with null
     /// legs and an empty array — never a partial shape.
     pub const ARB_CONFIG_GET: &str = "arb.config.get";
+    /// Clear the cross-venue arb leg configuration (`arb.config.clear`).
+    pub const ARB_CONFIG_CLEAR: &str = "arb.config.clear";
+    /// Live cross-venue arbitrage cockpit status (`arb.status`).
+    pub const ARB_STATUS: &str = "arb.status";
 
     // ── Smart Money Reverse-to-Strategy (RFC #249) ──────────────────────────
     pub const SMART_MONEY_SCAN: &str = "smart_money.scan";

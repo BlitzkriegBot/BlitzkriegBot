@@ -110,6 +110,7 @@ pub(super) fn core_with_cross_venue_arb(virtual_cap: Option<Decimal>) -> Core {
         leg_b_venue: "kalshi".into(),
         leg_b_account: blitzkrieg_market_api::DEFAULT_ACCOUNT_ID.to_string(),
         pairs: vec!["BTC".into()],
+        round_duration_sec: None,
     })
     .expect("the leg configuration lands (memory-only core)");
     c

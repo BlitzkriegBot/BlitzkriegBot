@@ -579,6 +579,7 @@ fn arb_leg_config_is_not_broadcast_to_non_arb_strategies() {
         leg_b_venue: "kalshi".into(),
         leg_b_account: "kalshi".into(),
         pairs: vec!["BTC".into()],
+        round_duration_sec: None,
     };
     e.set_arb_leg_config(Some(arb_cfg.clone()));
 

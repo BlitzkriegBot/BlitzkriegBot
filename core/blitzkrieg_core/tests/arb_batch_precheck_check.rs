@@ -299,6 +299,7 @@ fn arb_core_live(pot: Decimal, default_venue: Option<&str>, nofast: bool) -> Cor
         leg_b_venue: "kalshi".into(),
         leg_b_account: "arb-b".into(),
         pairs: vec!["BTC".into()],
+        round_duration_sec: None,
     })
     .expect("the leg configuration lands (memory-only core)");
     c

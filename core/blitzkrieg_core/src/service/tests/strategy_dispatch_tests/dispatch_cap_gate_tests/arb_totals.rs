@@ -45,6 +45,7 @@ fn arb_totals_ride_every_account_slice_of_the_arb_row_only() {
         leg_b_venue: "kalshi".into(),
         leg_b_account: "arb-b".into(),
         pairs: vec!["BTC".into()],
+        round_duration_sec: None,
     })
     .expect("the A≠B leg configuration lands");
     let now = 1_700_000_000_000i64;

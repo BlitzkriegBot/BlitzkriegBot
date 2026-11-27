@@ -279,6 +279,7 @@ fn arb_core_live(pot: Decimal) -> Core {
         leg_b_venue: "kalshi".into(),
         leg_b_account: "arb-b".into(),
         pairs: vec!["BTC".into()],
+        round_duration_sec: None,
     })
     .expect("the leg configuration lands (memory-only core)");
     c
@@ -598,6 +599,7 @@ fn the_pair_book_never_feeds_back_into_judgment_paths() {
         leg_b_venue: "kalshi".into(),
         leg_b_account: "arb-b".into(),
         pairs: vec!["BTC".into()],
+        round_duration_sec: None,
     })
     .expect("the leg configuration lands (memory-only core)");
 
@@ -822,6 +824,7 @@ fn a_pair_declaration_with_identical_leg_accounts_is_refused() {
             leg_b_venue: "kalshi".into(),
             leg_b_account: default_account_id().to_string(),
             pairs: vec!["BTC".into()],
+            round_duration_sec: None,
         })
         .expect(
             "the same-account leg configuration lands (the set validation does \

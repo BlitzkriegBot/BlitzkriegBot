@@ -64,6 +64,7 @@ const FILES = [
   ['蓝图', 'src', 'pages', 'BlueprintPage.vue'],
   ['智能交易', 'src', 'pages', 'SmartTradingPage.vue'],
   ['策略', 'src', 'pages', 'Strategies.vue'],
+  ['套利', 'src', 'pages', 'ArbitragePage.vue'],
   ['插件', 'src', 'pages', 'Plugins.vue'],
   ['设置壳', 'src', 'pages', 'SettingsPage.vue'],
   ['设置·通用', 'src', 'pages', 'settings', 'SettingsGeneral.vue'],

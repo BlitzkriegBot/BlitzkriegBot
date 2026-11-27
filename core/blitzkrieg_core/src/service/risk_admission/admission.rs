@@ -465,7 +465,8 @@ impl Core {
             // the operator can see the mismatch.
             if req.side == Side::Buy
                 && let Some(engine) = self.engine.as_ref()
-                && let Some(market) = engine.market_for_token(&req.token_id)
+                && let Some(market) =
+                    engine.market_for_account_token(req.account_id.as_str(), &req.token_id)
                 && let market_decl = market.round_duration_sec
                 && market_decl > 0
                 && let Some(account_grid) = self
@@ -478,25 +479,27 @@ impl Core {
                 // Cross-venue arb spans two leg accounts that may anchor on
                 // different round durations (e.g. polymarket 300s + kalshi 900s).
                 // Admit the leg when it is a configured atomic cross-venue arb
-                // leg and the market's duration matches the partner leg's grid.
+                // leg and the market's duration matches the shared arb duration
+                // (or legacy partner leg's grid).
                 let arb_partner_grid_ok = engine.strategy_atomic_batch(&req.strategy)
                     && self.arb_leg_config.as_ref().is_some_and(|arb| {
                         let acct = req.account_id.as_str();
-                        arb.leg_account_for_venue(&market.venue) == Some(acct) && {
-                            let partner = if acct == arb.leg_a_account.trim() {
-                                arb.leg_b_account.trim()
-                            } else {
-                                arb.leg_a_account.trim()
-                            };
-                            let partner_grid = self
-                                .config
-                                .account_round_durations
-                                .get(partner)
-                                .copied()
-                                .filter(|d| *d > 0)
-                                .unwrap_or(self.config.default_round_duration_sec);
-                            partner_grid == market_decl
-                        }
+                        arb.leg_account_for_venue(&market.venue) == Some(acct)
+                            && (arb.round_duration_sec == Some(market_decl) || {
+                                let partner = if acct == arb.leg_a_account.trim() {
+                                    arb.leg_b_account.trim()
+                                } else {
+                                    arb.leg_a_account.trim()
+                                };
+                                let partner_grid = self
+                                    .config
+                                    .account_round_durations
+                                    .get(partner)
+                                    .copied()
+                                    .filter(|d| *d > 0)
+                                    .unwrap_or(self.config.default_round_duration_sec);
+                                partner_grid == market_decl
+                            })
                     });
                 if !arb_partner_grid_ok {
                     return Err(CoreError::new(

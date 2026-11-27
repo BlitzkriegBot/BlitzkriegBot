@@ -247,6 +247,7 @@ fn replay(events: Vec<TimedEvent>) -> blitzkrieg_core::backtest::BacktestReport 
             leg_b_venue: "kalshi".into(),
             leg_b_account: "kalshi".into(),
             pairs: vec!["BTC".into()],
+            round_duration_sec: None,
         })
         .expect("the leg configuration lands (memory-only core)");
     b.run().expect("replay runs")

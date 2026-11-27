@@ -796,6 +796,7 @@ mod tests {
             leg_b_venue: "polymarket".into(),
             leg_b_account: "paper".into(),
             pairs: vec!["BTC".into()],
+            round_duration_sec: None,
         })
         .unwrap();
         s.clear_arb_config().unwrap();

@@ -215,6 +215,7 @@ pub const METHODS: &[MethodSpec] = &[
     read(method::BLUEPRINT_LOAD),
     read(method::BLUEPRINT_LOAD_SOURCE),
     read(method::ARB_CONFIG_GET),
+    read(method::ARB_STATUS),
     read(method::SMART_MONEY_SCAN),
     read(method::SMART_MONEY_ANALYZE),
     // ── Action: live execution / gate / dispatch state ─────────────────────
@@ -278,6 +279,7 @@ pub const METHODS: &[MethodSpec] = &[
     write(method::BLUEPRINT_SAVE_SOURCE),
     read(method::BLUEPRINT_SCHEMA),
     write(method::ARB_CONFIG_SET),
+    write(method::ARB_CONFIG_CLEAR),
     // ── Ingest: refused today, relaxation argument in the module docs ──────
     ingest_refused(method::BOOK_SNAPSHOT),
     ingest_refused(method::TOP_OF_BOOK),

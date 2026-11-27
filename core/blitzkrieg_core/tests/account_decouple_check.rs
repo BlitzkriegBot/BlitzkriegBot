@@ -410,6 +410,7 @@ fn decouple_core(accounts_path: Option<&Path>, pot: Option<Decimal>, enable_defa
         leg_b_venue: "kalshi".into(),
         leg_b_account: default_account_id().to_string(),
         pairs: vec!["BTC".into()],
+        round_duration_sec: None,
     })
     .expect("the leg configuration lands (memory-only core)");
     c

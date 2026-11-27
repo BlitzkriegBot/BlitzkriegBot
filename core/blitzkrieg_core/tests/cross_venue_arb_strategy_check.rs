@@ -74,6 +74,7 @@ fn legs_config() -> CrossVenueArbConfig {
         leg_b_venue: "kalshi".into(),
         leg_b_account: "account-b".into(),
         pairs: vec!["BTC".into()],
+        round_duration_sec: None,
     }
 }
 

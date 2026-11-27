@@ -239,13 +239,14 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
 -- Cross-account arbitrage legs. v1 holds exactly one row (id = 1); it belongs
 -- to two accounts, so it is NOT folded into a single account's settings.
 CREATE TABLE IF NOT EXISTS arb_pairs (
-  id            INTEGER PRIMARY KEY CHECK (id = 1),
-  leg_a_venue   TEXT NOT NULL,
-  leg_a_account TEXT NOT NULL,
-  leg_b_venue   TEXT NOT NULL,
-  leg_b_account TEXT NOT NULL,
-  pairs_json    TEXT NOT NULL,
-  updated_at_ms INTEGER NOT NULL
+  id                 INTEGER PRIMARY KEY CHECK (id = 1),
+  leg_a_venue        TEXT NOT NULL,
+  leg_a_account      TEXT NOT NULL,
+  leg_b_venue        TEXT NOT NULL,
+  leg_b_account      TEXT NOT NULL,
+  pairs_json         TEXT NOT NULL,
+  round_duration_sec INTEGER,
+  updated_at_ms      INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (

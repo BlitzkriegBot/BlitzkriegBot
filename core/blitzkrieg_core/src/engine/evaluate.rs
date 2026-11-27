@@ -894,9 +894,25 @@ impl Engine {
                     // cache mid-round (the lua_momentum poisoning). Unbound
                     // instances keep the historic every-rollover dispatch,
                     // byte-identical.
-                    if s.strategy.arb_leg_accounts().is_none()
-                        && Engine::instance_round_family_sec(&self.account_round_durations, s)
-                            .is_some_and(|f| f != feed_duration)
+                    let arb_locked_dur = if s.strategy.arb_leg_accounts().is_some() {
+                        self.arb_leg_config
+                            .as_ref()
+                            .and_then(|c| c.round_duration_sec)
+                            .filter(|d| *d > 0)
+                    } else {
+                        None
+                    };
+                    if let Some(d) = arb_locked_dur {
+                        if d != feed_duration {
+                            continue;
+                        }
+                    } else if s.strategy.arb_leg_accounts().is_none()
+                        && Engine::instance_round_family_sec(
+                            &self.account_round_durations,
+                            self.arb_leg_config.as_ref(),
+                            s,
+                        )
+                        .is_some_and(|f| f != feed_duration)
                     {
                         continue;
                     }
@@ -1305,13 +1321,29 @@ impl Engine {
                     // admission conflict check.
                     let (slot, tleft, markets_ref) = if leg_accounts.is_some() {
                         // Cross-venue arb spans two leg accounts that may be
-                        // anchored to different round durations (e.g. 5m vs 15m):
-                        // expose the full scanner table so the strategy can pair
-                        // matching expiry windows across both venues.
-                        (round.slot, round.time_left_sec, self.scanner.markets())
-                    } else {
-                        match Engine::instance_round_family_sec(&self.account_round_durations, s)
+                        // anchored to different round durations (e.g. 5m vs 15m).
+                        // When a shared `round_duration_sec` is locked on
+                        // `arb_leg_config`, feed ONLY that shared family so both
+                        // venues always pair on the exact same round duration.
+                        match self
+                            .arb_leg_config
+                            .as_ref()
+                            .and_then(|c| c.round_duration_sec)
+                            .filter(|d| *d > 0)
                             .and_then(|f| family_views.get(&f))
+                        {
+                            Some((clock, markets)) => {
+                                (clock.slot, clock.time_left_sec, &markets[..])
+                            }
+                            None => (round.slot, round.time_left_sec, self.scanner.markets()),
+                        }
+                    } else {
+                        match Engine::instance_round_family_sec(
+                            &self.account_round_durations,
+                            self.arb_leg_config.as_ref(),
+                            s,
+                        )
+                        .and_then(|f| family_views.get(&f))
                         {
                             Some((clock, markets)) => {
                                 (clock.slot, clock.time_left_sec, &markets[..])

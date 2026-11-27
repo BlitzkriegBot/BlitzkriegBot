@@ -54,7 +54,7 @@ async fn risk_set_systemic_persists_to_the_db_and_the_boot_rearms_it() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"maxPositionSize":2,"maxSingleLossUsd":"0.75","reason":"persist me"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"accountId":"default","maxPositionSize":2,"maxSingleLossUsd":"0.75","reason":"persist me"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -133,7 +133,7 @@ async fn risk_set_systemic_persists_size_pct_and_reloads_on_boot() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"sizePct":"2.5","reason":"webui"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"accountId":"default","sizePct":"2.5","reason":"webui"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -190,7 +190,7 @@ async fn risk_set_systemic_persists_max_positions_and_share_band_on_boot() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"maxPositions":20,"minShares":"5","maxShares":"200","reason":"webui"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"accountId":"default","maxPositions":20,"minShares":"5","maxShares":"200","reason":"webui"}}"#.to_string(),
     )
     .await;
     assert!(applied.get("error").is_none(), "set failed: {applied}");
@@ -218,7 +218,7 @@ async fn risk_set_systemic_persists_max_positions_and_share_band_on_boot() {
         &core,
         &registry,
         &peer,
-        r#"{"jsonrpc":"2.0","id":3,"method":"risk.setSystemic","params":{"maxShares":"0","reason":"unlimited"}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":3,"method":"risk.setSystemic","params":{"accountId":"default","maxShares":"0","reason":"unlimited"}}"#.to_string(),
     )
     .await;
     assert!(
@@ -274,6 +274,166 @@ async fn boot_reconciles_legacy_size_pct_and_policy_budget_ratio_fail_closed() {
         dec!(4),
         "must pick tighter 4% instead of widening to 10%"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn risk_set_systemic_and_exit_require_account_id() {
+    let cfg = CoreConfig {
+        trade_log_path: None,
+        order_log_path: None,
+        position_log_path: None,
+        allowed_round_secs: crate::account::config::TEST_ALLOWED_ROUNDS.to_vec(),
+        ..Default::default()
+    };
+    let core = Arc::new(AsyncMutex::new(Core::new(cfg)));
+    let registry = crate::market::registry::MarketPluginRegistry::new();
+    let peer = PeerAuth::SameUid { uid: own_uid() };
+
+    let sys_err = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"maxPositionSize":5}}"#
+            .to_string(),
+    )
+    .await;
+    assert!(
+        sys_err.get("error").is_some(),
+        "missing accountId must be rejected: {sys_err}"
+    );
+
+    let exit_err = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":2,"method":"risk.setExit","params":{"stopLossPct":"8"}}"#
+            .to_string(),
+    )
+    .await;
+    assert!(
+        exit_err.get("error").is_some(),
+        "missing accountId on risk.setExit must be rejected: {exit_err}"
+    );
+}
+
+#[tokio::test]
+async fn non_default_account_sizing_replays_on_boot_without_polluting_default() {
+    use crate::account::{Account, AccountId, AccountLedgers, AccountStatus, CredentialKeys};
+    use rust_decimal_macros::dec;
+    let dir = std::env::temp_dir().join(format!("bk-acct-b-sizing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("risk.sqlite");
+    let make_book = || {
+        AccountLedgers::new(
+            vec![
+                Account {
+                    id: AccountId::from("default"),
+                    name: "default".into(),
+                    market_type: blitzkrieg_market_api::MarketType::Prediction,
+                    status: AccountStatus::Active,
+                    credential_keys: CredentialKeys::default(),
+                    venue: String::new(),
+                    trading_enabled: true,
+                    strategies: Vec::new(),
+                    rounds: Vec::new(),
+                    opening_equity: None,
+                    updated_at_ms: 0,
+                },
+                Account {
+                    id: AccountId::from("acct_b"),
+                    name: "acct_b".into(),
+                    market_type: blitzkrieg_market_api::MarketType::Prediction,
+                    status: AccountStatus::Active,
+                    credential_keys: CredentialKeys::default(),
+                    venue: String::new(),
+                    trading_enabled: true,
+                    strategies: Vec::new(),
+                    rounds: Vec::new(),
+                    opening_equity: None,
+                    updated_at_ms: 0,
+                },
+            ],
+            AccountId::from("default"),
+        )
+    };
+    let cfg = CoreConfig {
+        dry_seed_balance: dec!(1000),
+        trade_log_path: None,
+        order_log_path: None,
+        position_log_path: None,
+        allowed_round_secs: crate::account::config::TEST_ALLOWED_ROUNDS.to_vec(),
+        ..Default::default()
+    };
+    let mut c = Core::with_account_book(cfg.clone(), make_book());
+    c.open_account_risk_db(&db_path)
+        .expect("temp risk db opens");
+    c.store = Some(Arc::new(
+        crate::store::SqliteStore::open(&db_path).expect("temp store opens"),
+    ));
+    let core = Arc::new(AsyncMutex::new(c));
+    let registry = crate::market::registry::MarketPluginRegistry::new();
+    let peer = PeerAuth::SameUid { uid: own_uid() };
+
+    let res = rpc(
+        &core,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":1,"method":"risk.setSystemic","params":{"accountId":"acct_b","sizePct":"7.5","maxPositions":12,"minShares":"3","maxShares":"80"}}"#.to_string(),
+    )
+    .await;
+    assert!(res.get("error").is_none(), "acct_b write failed: {res}");
+
+    {
+        let guard = core.lock().await;
+        assert_eq!(guard.config().size_pct, dec!(0));
+        assert_eq!(
+            guard.config().account_size_pct.get("acct_b").copied(),
+            Some(dec!(7.5))
+        );
+        assert_eq!(
+            guard.config().account_max_positions.get("acct_b").copied(),
+            Some(12)
+        );
+    }
+
+    let mut c2 = Core::with_account_book(cfg, make_book());
+    c2.open_account_risk_db(&db_path).expect("reopen risk db");
+    assert_eq!(c2.config().size_pct, dec!(0));
+    assert_eq!(
+        c2.config().account_size_pct.get("acct_b").copied(),
+        Some(dec!(7.5))
+    );
+    assert_eq!(
+        c2.config().account_max_positions.get("acct_b").copied(),
+        Some(12)
+    );
+    assert_eq!(
+        c2.config().account_min_shares.get("acct_b").copied(),
+        Some(dec!(3))
+    );
+    assert_eq!(
+        c2.config().account_max_shares.get("acct_b").copied(),
+        Some(dec!(80))
+    );
+
+    let core2 = Arc::new(AsyncMutex::new(c2));
+    let limits_b = rpc(
+        &core2,
+        &registry,
+        &peer,
+        r#"{"jsonrpc":"2.0","id":2,"method":"risk.limits","params":{"accountId":"acct_b"}}"#
+            .to_string(),
+    )
+    .await;
+    assert_eq!(
+        limits_b["result"]["account"]["id"],
+        serde_json::json!("acct_b")
+    );
+    assert_eq!(limits_b["result"]["sizePct"], serde_json::json!("7.5"));
+    assert_eq!(limits_b["result"]["maxPositions"], serde_json::json!(12));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

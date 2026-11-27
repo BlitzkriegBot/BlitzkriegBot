@@ -41,14 +41,24 @@ pub struct RiskLimitsResult {
 }
 
 impl RiskLimitsResult {
-    /// The live readout: systemic limits + exit resolution exactly as they
-    /// stand in the risk gate RIGHT NOW (hot edits included).
+    /// The live readout for the default account: systemic limits + exit
+    /// resolution exactly as they stand in the risk gate RIGHT NOW.
     pub fn snapshot(systemic: &SystemicRiskLimits, exit: &ExitConfig) -> Self {
+        Self::snapshot_for(default_account_id().as_str(), systemic, exit)
+    }
+
+    /// #271: per-account live readout so `risk.limits` echoes the requested
+    /// account's own limits and `account.id` instead of hardcoding `default`.
+    pub fn snapshot_for(
+        account_id: &str,
+        systemic: &SystemicRiskLimits,
+        exit: &ExitConfig,
+    ) -> Self {
         Self {
             version: "1.1".into(),
             account: RiskAccountLimitsView {
-                id: default_account_id().as_str().to_owned(),
-                limits: systemic.account.clone(),
+                id: account_id.to_owned(),
+                limits: systemic.account_for(account_id).clone(),
             },
             exit: RiskExitView {
                 stop_loss_pct: exit.stop_loss_pct,

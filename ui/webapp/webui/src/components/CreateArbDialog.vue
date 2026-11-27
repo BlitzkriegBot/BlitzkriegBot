@@ -380,7 +380,7 @@ const legBCred = computed<LegCredStatus | null>(() =>
  *  里（dry 模式不拦、策略照跑模拟成交），面板无条件拦是超owner ——
  *  dry 下创建不得被「腿凭证未就绪」挡（dry run 不需要账户凭证），
  *  live 下维持原门。 */
-const isDry = computed(() => (store.snapshot?.mode ?? 'dry') === 'dry')
+const isDry = computed(() => store.snapshot?.mode === 'dry')
 
 /** dry 模式的凭证门豁免（有名字的独立谓词）：两腿凭证本就绪时豁免无感；
  *  未就绪时确认页照列缺失变量（切 live 前操作员仍需读到），只是不再阻断。 */

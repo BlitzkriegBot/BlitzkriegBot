@@ -121,7 +121,8 @@ const editBufs = ref<Record<string, string>>({})
 
 function syncBuffers(d: RiskLimitsDoc): void {
   const next: Record<string, string> = {}
-  for (const r of ROW_DEFS) next[r.field] = r.bound()?.value ?? '0'
+  // issue 278: 读不到限额时留空而非填 '0'（0 在风控语义中代表关闭该限额）。
+  for (const r of ROW_DEFS) next[r.field] = r.bound()?.value ?? ''
   next['stopLossPct'] = String(d.exit.stopLossPct)
   next['takeProfitPct'] = String(d.exit.takeProfitPct)
   next['forceExitSec'] = String(d.exit.forceExitSec)

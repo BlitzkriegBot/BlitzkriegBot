@@ -137,16 +137,17 @@ check('保存走 store.setAccountRounds，错误原文透出到卡内（refusal 
 })
 
 // ── 4. HftPage：无裸 900 回落 ─────────────────────────────────────────────────
-check('HftPage 挂单过期轮长走 durationSec → round_duration.get → 900 回落链', () => {
+check('HftPage 挂单过期轮长走 durationSec → round_duration.get 链且未知时不伪造 900', () => {
   assert.match(hft, /identityDurSec/, '缺 identityDurSec 回落链 computed')
   const chain = hft.match(/const identityDurSec = computed<number \| null>\(\(\) => \{[\s\S]*?\n\}\)/)
   assert.ok(chain, 'identityDurSec 形状残缺')
   assert.match(chain[0], /venueRound\.value\?\.durationSec/, '回落链第一级必须是身份所钟行的 durationSec（轮次多族）')
   assert.match(chain[0], /roundDurHintSec\.value/, '回落链第二级必须是 round_duration.get 生效值')
-  assert.match(hft, /const dur = identityDurSec\.value \?\? 900/, '终级回落 900（现行为）必须显式成链')
-  // 裸常量回落被删：任何 `* 900` / `= 900` 的裸数学都不许回来。
+  assert.match(hft, /const dur = identityDurSec\.value[\s\S]*?if \(dur == null \|\| dur <= 0\) return false/, '轮长未知时不伪造 900s（issue 278）')
+  // 裸常量回落被删：任何 `* 900` / `= 900` / `?? 900` 的裸数学都不许回来。
   assert.doesNotMatch(hft, /\* 900\b/, '裸 `* 900` 数学回归 —— 轮长必须走回落链')
   assert.doesNotMatch(hft, /const roundDurSec = 900/, 'const roundDurSec = 900 裸常量回归')
+  assert.doesNotMatch(hft, /\?\?\s*900\b/, '裸 `?? 900` 回归 —— 轮长未知时不得猜测 900s')
 })
 
 // ── 4b. 周期切换入口在行情页倒计时卡（2026-10-24 操作者指令）──────────────────

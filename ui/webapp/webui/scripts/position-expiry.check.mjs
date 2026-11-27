@@ -95,12 +95,12 @@ check('a venue start-ts expires at start+duration, not (id+1)*duration', () => {
 check('the button and the verb routing share the one predicate', () => {
   // TradesTables button state calls the local `expired(p)` wrapper...
   assert.match(tables, /function expired\(p: Position\): boolean \{/)
-  assert.match(tables, /positionExpired\(p, props\.identityDurSec \?\? 900\)/)
+  assert.match(tables, /positionExpired\(p, props\.identityDurSec\)/)
   // ...and HftPage routes the verb through the same imported predicate.
   // (issue 1199 P0-4: the import gained `isKnownPnl` — the assertion pins
   // that `positionExpired` still comes from lib/trades, not the member list.)
   assert.match(page, /import \{[^}]*\bpositionExpired\b[^}]*\} from '@\/lib\/trades'/)
-  assert.match(page, /positionExpired\(position, identityDurSec\.value \?\? 900\)/)
+  assert.match(page, /positionExpired\(position, identityDurSec\.value\)/)
   // The old divergent form (remainingSec-only routing) must stay dead.
   assert.doesNotMatch(page, /const expired = position\.remainingSec !== undefined/)
 })

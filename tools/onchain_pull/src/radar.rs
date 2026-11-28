@@ -13,7 +13,7 @@
 
 use crate::fetch::{DATA_API_BASE, JsonFetcher};
 use crate::request::parse_round_slug;
-use crate::reverse::{FillSample, ReverseAnalysis, StrategyArchetype, analyze_fills};
+use crate::reverse::{FillSample, ReverseAnalysis, StrategyArchetype};
 use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -197,25 +197,86 @@ pub fn parse_trades_to_samples(rows: &[Value], market_filter: Option<&str>) -> V
     out
 }
 
-/// Pull recent trades for a single wallet and run [`analyze_fills`].
+/// Pull recent trades for a single wallet and run [`analyze_fills_with_min`].
 pub async fn analyze_wallet_trades(
     fetcher: &dyn JsonFetcher,
     wallet: &str,
     market: Option<&str>,
 ) -> Result<ReverseAnalysis, String> {
+    let default_min = if target_duration_sec(market) == Some(900) {
+        10
+    } else {
+        crate::reverse::MIN_BUY_FILLS
+    };
+    analyze_wallet_trades_with_min(fetcher, wallet, market, default_min).await
+}
+
+/// Pull recent trades for a single wallet with explicit `min_buy_fills` floor.
+/// When filtering to `15m` rounds (3x lower frequency than `5m`), a single
+/// 500-row page is often dominated by 5m fills; automatically follow up to 2
+/// extra pages via `pagination.next_cursor` (or `offset`) until `min_buy_fills`
+/// is reached or the stream ends.
+pub async fn analyze_wallet_trades_with_min(
+    fetcher: &dyn JsonFetcher,
+    wallet: &str,
+    market: Option<&str>,
+    min_buy_fills: usize,
+) -> Result<ReverseAnalysis, String> {
     let w = wallet.trim();
     if !w.starts_with("0x") || w.len() != 42 {
         return Err(format!("invalid wallet address: {w}"));
     }
-    let url = format!("{DATA_API_BASE}/v2/trades?user={w}&limit=500");
-    let raw = fetcher.get_json(&url).await?;
-    let rows = raw
-        .get("data")
-        .and_then(Value::as_array)
-        .or_else(|| raw.as_array())
-        .ok_or_else(|| "unexpected /v2/trades response shape (expected data array)".to_string())?;
-    let samples = parse_trades_to_samples(rows, market);
-    Ok(analyze_fills(w, &samples))
+    let min_fills = min_buy_fills.max(5);
+    let max_pages: usize = if target_duration_sec(market) == Some(900) {
+        3
+    } else {
+        1
+    };
+
+    let mut samples = Vec::new();
+    let mut cursor: Option<String> = None;
+    for page in 0..max_pages {
+        let url = match &cursor {
+            Some(c) => format!("{DATA_API_BASE}/v2/trades?user={w}&limit=500&cursor={c}"),
+            None if page == 0 => format!("{DATA_API_BASE}/v2/trades?user={w}&limit=500"),
+            None => format!(
+                "{DATA_API_BASE}/v2/trades?user={w}&limit=500&offset={}",
+                page * 500
+            ),
+        };
+        let raw = match fetcher.get_json(&url).await {
+            Ok(v) => v,
+            Err(_) if page > 0 => break,
+            Err(e) => return Err(e),
+        };
+        let rows = raw
+            .get("data")
+            .and_then(Value::as_array)
+            .or_else(|| raw.as_array())
+            .ok_or_else(|| {
+                "unexpected /v2/trades response shape (expected data array)".to_string()
+            })?;
+        samples.extend(parse_trades_to_samples(rows, market));
+
+        let buy_count = samples
+            .iter()
+            .filter(|s| !s.side.eq_ignore_ascii_case("SELL"))
+            .count();
+        if buy_count >= min_fills || rows.len() < 500 {
+            break;
+        }
+        cursor = raw
+            .get("pagination")
+            .and_then(|p| p.get("next_cursor"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+    }
+
+    Ok(crate::reverse::analyze_fills_with_min(
+        w, &samples, min_fills,
+    ))
 }
 
 /// Scan Polymarket Crypto leaderboard, inspect top wallets' 5m/15m trades,
@@ -224,7 +285,7 @@ pub async fn scan_leaderboard(
     fetcher: &dyn JsonFetcher,
     req: &RadarScanRequest,
 ) -> Result<RadarScanResult, String> {
-    let limit = req.limit.clamp(1, 30);
+    let limit = req.limit.clamp(1, 50);
     let period = match req.time_period.trim().to_ascii_lowercase().as_str() {
         "day" => "day",
         "week" => "week",
@@ -232,19 +293,41 @@ pub async fn scan_leaderboard(
         "all" => "all",
         _ => "week",
     };
-    let url = format!(
+    let pnl_url = format!(
         "{DATA_API_BASE}/v2/leaderboard?category=crypto&time_period={period}&sort_by=PNL&limit={limit}"
     );
-    let raw = fetcher.get_json(&url).await?;
-    let entries = raw
+    let raw = fetcher.get_json(&pnl_url).await?;
+    let mut entries: Vec<Value> = raw
         .get("data")
         .and_then(Value::as_array)
         .or_else(|| raw.as_array())
-        .ok_or_else(|| "unexpected /v2/leaderboard response shape".to_string())?;
+        .ok_or_else(|| "unexpected /v2/leaderboard response shape".to_string())?
+        .clone();
 
-    let min_fills = req.min_buy_fills.max(1);
+    // For 15m scans, many top-PNL crypto wallets only trade long-dated price
+    // markets or 5m rounds; also blend in high-volume (`sort_by=VOL`) crypto
+    // traders (best-effort, deduped below) to surface active 15m specialists.
+    if target_duration_sec(req.market.as_deref()) == Some(900) {
+        let vol_url = format!(
+            "{DATA_API_BASE}/v2/leaderboard?category=crypto&time_period={period}&sort_by=VOL&limit={limit}"
+        );
+        if let Ok(vol_raw) = fetcher.get_json(&vol_url).await
+            && let Some(vol_entries) = vol_raw
+                .get("data")
+                .and_then(Value::as_array)
+                .or_else(|| vol_raw.as_array())
+        {
+            entries.extend(vol_entries.iter().cloned());
+        }
+    }
+
+    let min_fills = req.min_buy_fills.max(5);
+    let mut seen_wallets = std::collections::HashSet::new();
     let mut targets: Vec<(usize, String, String, f64, f64)> = Vec::new();
-    for (idx, row) in entries.iter().take(limit).enumerate() {
+    for row in entries.iter() {
+        if targets.len() >= limit * 2 {
+            break;
+        }
         let Some(wallet) = val_str(
             row,
             &[
@@ -261,6 +344,11 @@ pub async fn scan_leaderboard(
         if !wallet.starts_with("0x") || wallet.len() != 42 {
             continue;
         }
+        let key = wallet.to_ascii_lowercase();
+        if !seen_wallets.insert(key) {
+            continue;
+        }
+        let idx = targets.len();
         let label = val_str(row, &["user_name", "userName", "name", "pseudonym"])
             .map(str::to_string)
             .unwrap_or_else(|| format!("{}…{}", &wallet[..6], &wallet[wallet.len() - 4..]));
@@ -271,12 +359,14 @@ pub async fn scan_leaderboard(
     let scanned = targets.len();
     let market = req.market.as_deref();
 
-    // Fan out per-wallet trade fetches with bounded concurrency (6 in-flight)
-    // instead of 30 sequential round-trips, cutting scan wall time ~6x while
+    // Fan out per-wallet trade fetches with bounded concurrency (8 in-flight)
+    // instead of sequential round-trips, cutting scan wall time while
     // preserving leaderboard rank order.
     let mut ranked: Vec<(usize, RadarCandidate)> = stream::iter(targets)
         .map(|(idx, wallet, label, pnl, vol)| async move {
-            let analysis = analyze_wallet_trades(fetcher, &wallet, market).await.ok()?;
+            let analysis = analyze_wallet_trades_with_min(fetcher, &wallet, market, min_fills)
+                .await
+                .ok()?;
             let fp = &analysis.fingerprint;
             if fp.buy_fills < min_fills || analysis.archetype == StrategyArchetype::Unclassifiable {
                 return None;
@@ -307,7 +397,7 @@ pub async fn scan_leaderboard(
                 },
             ))
         })
-        .buffer_unordered(6)
+        .buffer_unordered(8)
         .filter_map(|x| async move { x })
         .collect()
         .await;
@@ -430,6 +520,108 @@ mod tests {
         assert_eq!(c.label, "sniper_btc");
         assert_eq!(c.archetype, StrategyArchetype::LateFavorite);
         assert_eq!(c.buy_fills, 24);
+        assert!(c.blueprint.is_some());
+    }
+
+    #[tokio::test]
+    async fn radar_scan_15m_blends_vol_leaderboard_and_paginates_trades() {
+        let w_pnl = "0x3333333333333333333333333333333333333333";
+        let w_vol = "0x4444444444444444444444444444444444444444";
+        let mut routes = HashMap::new();
+        routes.insert(
+            format!(
+                "{DATA_API_BASE}/v2/leaderboard?category=crypto&time_period=week&sort_by=PNL&limit=10"
+            ),
+            serde_json::json!({
+                "data": [
+                    { "rank": 1, "user_id": w_pnl, "user_name": "long_bettor", "pnl": 9000.0, "volume": 50000.0 }
+                ]
+            }),
+        );
+        routes.insert(
+            format!(
+                "{DATA_API_BASE}/v2/leaderboard?category=crypto&time_period=week&sort_by=VOL&limit=10"
+            ),
+            serde_json::json!({
+                "data": [
+                    { "rank": 1, "user_id": w_vol, "user_name": "bot_15m", "pnl": 1800.0, "volume": 420000.0 }
+                ]
+            }),
+        );
+        routes.insert(
+            format!("{DATA_API_BASE}/v2/trades?user={w_pnl}&limit=500"),
+            serde_json::json!({
+                "data": [{ "slug": "btc-100k-nov", "condition_id": "0xlong", "side": "BUY", "outcome_index": 0, "price": 0.6, "size": 100.0, "timestamp": 1_795_670_000 }]
+            }),
+        );
+        // Page 1 for w_vol: 494 5m trades + 6 15m trades (full 500-row page, below min=10)
+        let mut page1 = Vec::with_capacity(500);
+        for i in 0..494 {
+            let start = 1_795_670_000 + (i as i64) * 300;
+            page1.push(serde_json::json!({
+                "slug": format!("btc-updown-5m-{start}"),
+                "condition_id": format!("0x5m_{i}"),
+                "side": "BUY",
+                "outcome_index": 0,
+                "price": 0.90,
+                "size": 10.0,
+                "timestamp": start + 260
+            }));
+        }
+        for i in 0..6 {
+            let start = 1_795_670_000 + (i as i64) * 900;
+            page1.push(serde_json::json!({
+                "slug": format!("btc-updown-15m-{start}"),
+                "condition_id": format!("0x15m_a_{i}"),
+                "side": "BUY",
+                "outcome_index": 0,
+                "price": 0.87,
+                "size": 10.0,
+                "timestamp": start + 680
+            }));
+        }
+        // Page 2 for w_vol: 6 more 15m trades via cursor=p2
+        let mut page2 = Vec::new();
+        for i in 0..6 {
+            let start = 1_795_660_000 + (i as i64) * 900;
+            page2.push(serde_json::json!({
+                "slug": format!("eth-updown-15m-{start}"),
+                "condition_id": format!("0x15m_b_{i}"),
+                "side": "BUY",
+                "outcome_index": 0,
+                "price": 0.89,
+                "size": 10.0,
+                "timestamp": start + 700
+            }));
+        }
+        routes.insert(
+            format!("{DATA_API_BASE}/v2/trades?user={w_vol}&limit=500"),
+            serde_json::json!({ "data": page1, "pagination": { "next_cursor": "p2" } }),
+        );
+        routes.insert(
+            format!("{DATA_API_BASE}/v2/trades?user={w_vol}&limit=500&cursor=p2"),
+            serde_json::json!({ "data": page2, "pagination": { "next_cursor": null } }),
+        );
+
+        let fetcher = MockFetcher { routes };
+        let res = scan_leaderboard(
+            &fetcher,
+            &RadarScanRequest {
+                market: Some("15m".into()),
+                min_buy_fills: 10,
+                limit: 10,
+                time_period: "WEEK".into(),
+            },
+        )
+        .await
+        .expect("15m scan succeeds");
+
+        assert_eq!(res.scanned_wallets, 2);
+        assert_eq!(res.qualified_count, 1);
+        let c = &res.candidates[0];
+        assert_eq!(c.wallet, w_vol);
+        assert_eq!(c.archetype, StrategyArchetype::LateFavorite);
+        assert_eq!(c.buy_fills, 12);
         assert!(c.blueprint.is_some());
     }
 }

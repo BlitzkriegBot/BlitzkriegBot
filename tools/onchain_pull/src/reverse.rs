@@ -128,6 +128,16 @@ fn round2(v: f64) -> f64 {
 /// Compute a deterministic [`WalletFingerprint`], classify its
 /// [`StrategyArchetype`], and synthesize a v1 Blueprint JSON when classifiable.
 pub fn analyze_fills(wallet: &str, samples: &[FillSample]) -> ReverseAnalysis {
+    analyze_fills_with_min(wallet, samples, MIN_BUY_FILLS)
+}
+
+/// Same as [`analyze_fills`], with a caller-specified minimum buy-fill floor
+/// (clamped to `>= 5` so tiny samples still fail closed).
+pub fn analyze_fills_with_min(
+    wallet: &str,
+    samples: &[FillSample],
+    min_buy_fills: usize,
+) -> ReverseAnalysis {
     let mut buy_prices: Vec<f64> = Vec::new();
     let mut time_lefts: Vec<i64> = Vec::new();
     let mut assets: BTreeSet<String> = BTreeSet::new();
@@ -272,7 +282,7 @@ pub fn analyze_fills(wallet: &str, samples: &[FillSample]) -> ReverseAnalysis {
         profit_factor,
     };
 
-    let (archetype, reason) = classify_archetype(&fp);
+    let (archetype, reason) = classify_archetype_with_min(&fp, min_buy_fills.max(5));
     let blueprint = synthesize_blueprint(wallet, &fp, archetype);
     ReverseAnalysis {
         fingerprint: fp,
@@ -284,12 +294,24 @@ pub fn analyze_fills(wallet: &str, samples: &[FillSample]) -> ReverseAnalysis {
 
 /// Deterministic archetype classifier (fail-closed on small/noisy samples).
 pub fn classify_archetype(fp: &WalletFingerprint) -> (StrategyArchetype, String) {
-    if fp.buy_fills < MIN_BUY_FILLS {
+    classify_archetype_with_min(fp, MIN_BUY_FILLS)
+}
+
+/// Duration-aware archetype classifier with configurable minimum buy-fill floor.
+/// Scales the "late round" time-left ceiling to 40% of the round duration
+/// (`120s` for 5m, `360s` for 15m) so 15m late-favorite wallets are not
+/// dropped into the `entry_px >= 0.85 && time_left > 120` dead zone.
+pub fn classify_archetype_with_min(
+    fp: &WalletFingerprint,
+    min_buy_fills: usize,
+) -> (StrategyArchetype, String) {
+    let min_fills = min_buy_fills.max(5);
+    if fp.buy_fills < min_fills {
         return (
             StrategyArchetype::Unclassifiable,
             format!(
                 "样本不足（仅 {} 笔买入，需 ≥ {} 笔），拒绝逆向以防过拟合",
-                fp.buy_fills, MIN_BUY_FILLS
+                fp.buy_fills, min_fills
             ),
         );
     }
@@ -308,18 +330,30 @@ pub fn classify_archetype(fp: &WalletFingerprint) -> (StrategyArchetype, String)
             ),
         );
     }
-    if fp.entry_px_p50 >= 0.80 && fp.time_left_p50 <= 120 && fp.hold_to_settlement_ratio >= 0.80 {
+    let round_dur = fp
+        .durations_sec
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(300)
+        .max(300);
+    let late_max_tl = (round_dur * 40 / 100).max(120);
+    if fp.entry_px_p50 >= 0.80
+        && fp.time_left_p50 <= late_max_tl
+        && fp.hold_to_settlement_ratio >= 0.75
+    {
         return (
             StrategyArchetype::LateFavorite,
             format!(
-                "尾盘顺势持有到期：入场中位价 {:.2}、剩余时间中位数 {}s、持有到期率 {:.1}%",
+                "尾盘顺势持有到期：入场中位价 {:.2}、剩余时间中位数 {}s（阈值 ≤ {}s）、持有到期率 {:.1}%",
                 fp.entry_px_p50,
                 fp.time_left_p50,
+                late_max_tl,
                 fp.hold_to_settlement_ratio * 100.0
             ),
         );
     }
-    if (0.55..0.85).contains(&fp.entry_px_p50) && fp.time_left_p50 > 60 {
+    if (0.52..0.90).contains(&fp.entry_px_p50) && fp.time_left_p50 > 60 {
         return (
             StrategyArchetype::MidRoundMomentum,
             format!(
@@ -481,5 +515,29 @@ mod tests {
         assert_eq!(out.archetype, StrategyArchetype::PairArb);
         assert!(out.fingerprint.pair_ratio >= 0.99);
         assert!(out.blueprint.is_none());
+    }
+
+    #[test]
+    fn fifteen_min_late_favorite_at_240s_left_classifies_and_honors_min_fills() {
+        let samples: Vec<FillSample> = (0..12)
+            .map(|i| {
+                let end = 1_795_670_000 + (i as i64) * 900;
+                FillSample {
+                    condition_id: format!("0xcond15m_{i}"),
+                    asset: "BTC".into(),
+                    duration_sec: 900,
+                    end_ts_sec: end,
+                    fill_ts_sec: end - (220 + (i % 5) as i64 * 10),
+                    side: "BUY".into(),
+                    outcome_index: 0,
+                    price: 0.86 + (i % 4) as f64 * 0.02,
+                    size_usd: 15.0,
+                    winning_outcome: Some(0),
+                }
+            })
+            .collect();
+        let out = analyze_fills_with_min("0x15mdeadbeef", &samples, 10);
+        assert_eq!(out.archetype, StrategyArchetype::LateFavorite);
+        assert!(out.blueprint.is_some());
     }
 }

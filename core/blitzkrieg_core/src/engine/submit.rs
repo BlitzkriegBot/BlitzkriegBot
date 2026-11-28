@@ -1189,6 +1189,9 @@ impl Engine {
             None
         };
         hosted.strategy.set_arb_leg_config(scope_cfg);
+        hosted
+            .strategy
+            .set_spot_freshness_max_ms(self.cfg.spot_freshness_max_ms);
         for (asset, buf) in &self.spot {
             if let Some((ts_ms, price)) = buf.latest_sample() {
                 hosted.strategy.on_spot(asset, price, ts_ms);

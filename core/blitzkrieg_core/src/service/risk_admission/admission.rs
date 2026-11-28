@@ -559,6 +559,24 @@ impl Core {
             // ask dropped to 0.33 or 0.06), crossing the book would buy a dead
             // outcome under the guise of "price improvement". Refuse with
             // WouldCross (does not count toward venue-reject freeze).
+            // LIVE pre-flight ask-liquidity guard: if the live best ask is
+            // already strictly above a Taker BUY limit, a FAK/FOK order has
+            // zero executable liquidity at limit — reject locally without
+            // burning an API round-trip or tripping venue rejection strikes.
+            if self.config.mode == Mode::Live
+                && req.mode == FillPolicy::Taker
+                && let Some(book) = self.books.get(&req.token_id)
+                && let Some(best_ask) = book.best_ask()
+                && best_ask > req.price
+            {
+                return Err(CoreError::new(
+                    CoreErrorCode::WouldCross,
+                    format!(
+                        "no_ask_liquidity_at_limit: live best ask {best_ask} exceeds                          taker buy limit {} (strategy {}, token {})",
+                        req.price, req.strategy, req.token_id
+                    ),
+                ));
+            }
             if req.mode == FillPolicy::Taker
                 && req.price >= Decimal::new(80, 2)
                 && let Some(book) = self.books.get(&req.token_id)

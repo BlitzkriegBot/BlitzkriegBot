@@ -464,6 +464,9 @@ async fn poly_rest_loop(
         }
     };
 
+    const MAX_VENUE_BOOK_LAG_MS: i64 = 5_000;
+    let mut clock_offsets: std::collections::VecDeque<i64> =
+        std::collections::VecDeque::with_capacity(20);
     let mut interval_ms = base_ms;
     loop {
         // Parse the token set into ids. A set with nothing parseable in it is
@@ -506,7 +509,39 @@ async fn poly_rest_loop(
                 let now = now_ms();
                 let mut batch: Vec<BatchBook> = Vec::with_capacity(books.len());
                 let mut venue_ms: Vec<i64> = Vec::with_capacity(books.len());
+                let mut poll_lags: Vec<i64> = books
+                    .iter()
+                    .map(|b| now - b.timestamp.timestamp_millis())
+                    .filter(|lag| lag.abs() < 600_000)
+                    .collect();
+                let calibrated_offset_ms = if !poll_lags.is_empty() {
+                    poll_lags.sort_unstable();
+                    let med = poll_lags[poll_lags.len() / 2];
+                    if clock_offsets.len() == 20 {
+                        clock_offsets.pop_front();
+                    }
+                    clock_offsets.push_back(med);
+                    let mut sorted: Vec<i64> = clock_offsets.iter().copied().collect();
+                    sorted.sort_unstable();
+                    Some(sorted[sorted.len() / 2])
+                } else {
+                    None
+                };
                 for book in books {
+                    let b_ts = book.timestamp.timestamp_millis();
+                    venue_ms.push(b_ts);
+                    if let Some(offset) = calibrated_offset_ms {
+                        let lag_ms = (now - b_ts) - offset;
+                        if lag_ms > MAX_VENUE_BOOK_LAG_MS {
+                            tracing::warn!(
+                                token = %book.asset_id,
+                                lag_ms,
+                                max_lag_ms = MAX_VENUE_BOOK_LAG_MS,
+                                "dropping stale venue book snapshot (venue_ts lag exceeded budget)"
+                            );
+                            continue;
+                        }
+                    }
                     let bids: Vec<(Decimal, Decimal)> =
                         book.bids.iter().map(|l| (l.price, l.size)).collect();
                     let asks: Vec<(Decimal, Decimal)> =
@@ -523,7 +558,6 @@ async fn poly_rest_loop(
                     // poll log line (`venue_lag_ms`) so a capture can tell a slow
                     // path from a quiet book. It stays out of the archive line,
                     // which replays byte-for-byte on the local clock alone.
-                    venue_ms.push(book.timestamp.timestamp_millis());
                     // #932: the venue's own minimum rides the batch — None
                     // only when the venue's answer lacks the field.
                     batch.push((

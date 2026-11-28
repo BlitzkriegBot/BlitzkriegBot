@@ -965,15 +965,27 @@ impl Core {
         // Fee applies to the incremental delta (not the cumulative), so partial
         // fills charge exactly once per share; rollbacks (delta <= 0) charge none.
         if d.delta > Decimal::ZERO {
+            let model_fee_usd = fee_usd;
+            if let Some(vf) = d.venue_fee_usd.filter(|v| *v >= Decimal::ZERO) {
+                fee_usd = vf;
+            }
             match d.side {
                 Side::Buy => {
                     // Release the notional reserved at the LIMIT price for these
                     // shares, and pay the execution price in cash.
                     ledger.settle_buy_fill(&d.order_id, notional, reserved_release);
-                    ledger.charge_fee(fee_usd);
+                    if let Some(vf) = d.venue_fee_usd.filter(|v| *v >= Decimal::ZERO) {
+                        ledger.charge_fee_from_receipt(vf, model_fee_usd);
+                    } else {
+                        ledger.charge_fee(fee_usd);
+                    }
                 }
                 Side::Sell => {
-                    ledger.settle_sell_fill(notional, fee_usd);
+                    if let Some(vf) = d.venue_fee_usd.filter(|v| *v >= Decimal::ZERO) {
+                        ledger.settle_sell_fill_from_receipt(notional, vf, model_fee_usd);
+                    } else {
+                        ledger.settle_sell_fill(notional, fee_usd);
+                    }
                 }
             }
             // A maker fill's modeled rebate rides the same journal as #388's

@@ -831,6 +831,10 @@ impl EngineStrategy for LuaEngineAdapter {
         self.inner.on_spot(asset, &price.to_string(), now_ms);
     }
 
+    fn set_spot_freshness_max_ms(&mut self, max_ms: Option<i64>) {
+        self.inner.set_spot_freshness_max_ms(max_ms);
+    }
+
     fn confirmed_tokens(&self) -> HashSet<String> {
         self.inner.confirmed_tokens().into_iter().collect()
     }

@@ -600,7 +600,7 @@ async fn sdk_place<S: alloy::signers::Signer + Sync>(
         Side::Sell => SdkSide::Sell,
     };
     let (order_type, post_only) = match order.fill_policy {
-        FillPolicy::Taker => (SdkOrderType::FOK, false),
+        FillPolicy::Taker => (SdkOrderType::FAK, false),
         FillPolicy::Maker | FillPolicy::MakerThenTaker => (SdkOrderType::GTC, true),
     };
 
@@ -1147,6 +1147,11 @@ pub fn map_sdk_err(raw: &str) -> CoreError {
         CoreErrorCode::MarketHalted
     } else if lower.contains("auth") {
         CoreErrorCode::NotAuthenticated
+    } else if lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("too many requests")
+    {
+        CoreErrorCode::RateLimited
     } else if lower.contains("timeout") {
         CoreErrorCode::Timeout
     } else {

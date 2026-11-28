@@ -364,6 +364,10 @@ pub trait EngineStrategy: Send + Sync {
     /// Lua strategies so `bk.spot(asset)` reads live spot prices. Default no-op.
     fn on_spot(&mut self, _asset: &str, _price: Decimal, _now_ms: i64) {}
 
+    /// Push the engine's spot-freshness budget (ms) into hosted strategies so
+    /// `bk.spot` / `bk.spot_info` enforce the same staleness gate as `momentum_ok`.
+    fn set_spot_freshness_max_ms(&mut self, _max_ms: Option<i64>) {}
+
     /// Tokens whose setup broke since the last call; the host cancels their
     /// resting entry bids. Drains: each break is returned exactly once.
     fn take_breaks(&mut self) -> Vec<(String, Decimal)> {

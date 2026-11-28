@@ -416,6 +416,8 @@ impl Engine {
         let config_json = engine_strategy_config_json(&cfg.trend, &cfg.spread_arb);
         for s in &mut self.strategies {
             s.strategy.on_config(&config_json);
+            s.strategy
+                .set_spot_freshness_max_ms(cfg.spot_freshness_max_ms);
         }
         self.cfg = cfg;
     }

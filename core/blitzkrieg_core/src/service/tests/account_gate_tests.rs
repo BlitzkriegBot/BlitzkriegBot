@@ -556,3 +556,67 @@ fn emit_daily_trip_reports_realized_only_when_unrealized_null() {
         "unexpected gate message"
     );
 }
+
+#[test]
+fn opening_positions_does_not_shrink_opening_equity_or_trip_daily_loss() {
+    let mut c = daily_core(PositionConfig {
+        max_daily_loss_usd: dec!(100),
+        max_daily_loss_equity_pct: dec!(20), // 20% of $1000 = $200 cap
+        ..Default::default()
+    });
+    let acct = crate::model::default_account_id();
+    let t0 = 1_700_000_000_000;
+    c.roll_daily_budget(t0);
+    assert_eq!(
+        c.positions
+            .daily_state_for(acct.as_str())
+            .opening_equity_usd,
+        SEED
+    );
+
+    // Simulate spending $800 of cash (80% of $1000) to open a position:
+    // cash drops to $200, open position cost is $800 -> total equity stays $1000.
+    // Pre-fix, `roll_daily_budget` passed bare cash ($200), shrinking
+    // `opening_equity_usd` from $1000 to $200 and falsely tripping a -$60 loss.
+    c.accounts.get_mut(&acct).unwrap().seed(dec!(200));
+    let pos = c.positions.open(
+        crate::position::OpenParams {
+            strategy: "s1".into(),
+            asset: "BTC".into(),
+            direction: SignalDirection::Up,
+            token_id: "tok".into(),
+            condition_id: "cond".into(),
+            account_id: acct.clone(),
+            venue: "polymarket".into(),
+            partner_token_id: String::new(),
+            entry_price: dec!(0.8),
+            expires_at_ms: t0 + 300_000,
+            was_maker: false,
+            target_exit_price: None,
+            round_duration_sec: 300,
+            round_slot: 1,
+        },
+        t0 + 1_000,
+    );
+    c.positions.apply_entry_fill(
+        &pos.id,
+        dec!(1000),
+        dec!(0.8),
+        Decimal::ZERO,
+        OrderRole::Taker,
+    );
+    c.positions.set_daily_realized_for_test(&acct, dec!(-60));
+    c.roll_daily_budget(t0 + 2_000);
+
+    assert_eq!(
+        c.positions
+            .daily_state_for(acct.as_str())
+            .opening_equity_usd,
+        SEED,
+        "opening_equity_usd must not shrink when cash moves into open positions"
+    );
+    assert!(
+        !c.positions.daily_loss_tripped_for(acct.as_str()),
+        "-$60 realized on $1000 equity (20% cap = $200) must NOT trip"
+    );
+}

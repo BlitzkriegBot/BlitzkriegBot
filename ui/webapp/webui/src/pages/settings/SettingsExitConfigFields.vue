@@ -14,11 +14,17 @@ const emit = defineEmits<{
   (e: 'update:field', key: string, value: string): void
 }>()
 
+const INLINE_KEYS = new Set<keyof RiskExitView>([
+  'forceExitSec',
+  'trailingEnabled',
+  'strategyExitMakerFirst',
+])
+
 const groupedFields = computed(() =>
   EXIT_ADVANCED_GROUPS.map((g) => ({
     ...g,
-    fields: EXIT_FIELD_DEFS.filter((f) => f.group === g.id),
-  })),
+    fields: EXIT_FIELD_DEFS.filter((f) => f.group === g.id && !INLINE_KEYS.has(f.key)),
+  })).filter((g) => g.fields.length > 0),
 )
 
 function isSupported(f: ExitFieldDef): boolean {

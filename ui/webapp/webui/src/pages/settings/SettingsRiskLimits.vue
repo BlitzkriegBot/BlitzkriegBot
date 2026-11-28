@@ -21,6 +21,7 @@ import CardHeader from '@/components/ui/card/CardHeader.vue'
 import Badge from '@/components/ui/badge/Badge.vue'
 import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
+import Switch from '@/components/ui/switch/Switch.vue'
 import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
 import SettingsExitConfigFields from './SettingsExitConfigFields.vue'
 import { buildExitPatchFromBuffers, syncExitBuffers } from './exit-config-fields'
@@ -180,10 +181,32 @@ function exitPriceText(v: unknown): string {
 
 const ceilingTpSupported = computed(() => riskDoc.value?.exit.ceilingTpPrice !== undefined)
 
+function trailingOn(): boolean {
+  return (editBufs.value['trailingEnabled'] ?? 'false') === 'true'
+}
+function setTrailing(on: boolean): void {
+  editBufs.value['trailingEnabled'] = String(on)
+}
+const trailingSupported = computed(() => riskDoc.value?.exit.trailingEnabled !== undefined)
+
+function makerFirstOn(): boolean {
+  return (editBufs.value['strategyExitMakerFirst'] ?? 'false') === 'true'
+}
+function setMakerFirst(on: boolean): void {
+  editBufs.value['strategyExitMakerFirst'] = String(on)
+}
+const makerFirstSupported = computed(() => riskDoc.value?.exit.strategyExitMakerFirst !== undefined)
+
 function buildExitPatch(): Record<string, string | number | boolean> | string {
   const e = riskDoc.value?.exit
   if (!e) return '读不到退出纪律当前值'
-  return buildExitPatchFromBuffers(e, editBufs.value)
+  const patch = buildExitPatchFromBuffers(e, editBufs.value)
+  if (typeof patch === 'string') return patch
+  if (e.trailingEnabled !== undefined) {
+    const tr = (editBufs.value['trailingEnabled'] ?? 'false') === 'true'
+    if (tr !== e.trailingEnabled) patch.trailingEnabled = tr
+  }
+  return patch
 }
 
 const riskRows = computed(() => ROW_DEFS.map((r) => ({ ...r, bound: r.bound() })))
@@ -465,6 +488,50 @@ onMounted(() => void loadRisk())
           </div>
 
           <slot name="advanced-policy" />
+
+          <div class="border-t border-line pt-2">
+            <div class="label-micro">核心退出开关</div>
+            <div class="mt-1 space-y-1">
+              <div class="flex items-center justify-between gap-3 py-1 text-[12px]">
+                <span class="text-faint-fg">到期前强平<span class="ml-1 text-[10.5px]">0 = 关闭</span></span>
+                <span class="flex items-center gap-1.5">
+                  <Input
+                    v-model="editBufs['forceExitSec']"
+                    class="num h-7 w-24 text-right text-[12px]"
+                    type="number"
+                    min="0"
+                    step="1"
+                    aria-label="强平"
+                  />
+                  <span class="w-8 text-[10.5px] text-faint-fg">秒</span>
+                </span>
+              </div>
+              <div class="flex items-center justify-between gap-3 border-t border-line py-1.5 text-[12px]">
+                <span class="text-faint-fg">移动止盈<span class="ml-1 text-[10.5px]">浮盈回吐即锁利离场</span></span>
+                <span class="flex items-center gap-2">
+                  <Switch
+                    :model-value="trailingOn()"
+                    :disabled="!trailingSupported"
+                    aria-label="移动止盈"
+                    @update:model-value="setTrailing"
+                  />
+                  <span class="w-8 text-[10.5px] text-faint-fg">{{ trailingSupported ? (trailingOn() ? '开' : '关') : '不支持' }}</span>
+                </span>
+              </div>
+              <div class="flex items-center justify-between gap-3 border-t border-line py-1.5 text-[12px]">
+                <span class="text-faint-fg">策略出场 maker-first<span class="ml-1 text-[10.5px]">止盈优先挂单，止损不转挂单</span></span>
+                <span class="flex items-center gap-2">
+                  <Switch
+                    :model-value="makerFirstOn()"
+                    :disabled="!makerFirstSupported"
+                    aria-label="策略出场 maker-first"
+                    @update:model-value="setMakerFirst"
+                  />
+                  <span class="w-8 text-[10.5px] text-faint-fg">{{ makerFirstSupported ? (makerFirstOn() ? '开' : '关') : '不支持' }}</span>
+                </span>
+              </div>
+            </div>
+          </div>
 
           <SettingsExitConfigFields
             :exit="riskDoc.exit"

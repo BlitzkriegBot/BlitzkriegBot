@@ -709,22 +709,30 @@ impl Core {
     /// the boundary is already counted in the new day.
     pub(super) fn roll_daily_budget(&mut self, now_ms: i64) {
         // `balance` is already gross of local reservations — adding `reserved`
-        // here would double-count resting BUY commitments. The daily budget is
-        // PER-ACCOUNT (operator verdict 2026-10-25, overriding the old §9.3
-        // global reading): each account's day opens on ITS OWN ledger equity,
-        // and one account's losses never burn a sibling's budget.
+        // here would double-count resting BUY commitments. However, filled
+        // open positions have already debited `balance` at entry cost, so
+        // equity MUST include `open_cost` (`entry_price * shares`); otherwise
+        // opening positions looks like a 50%+ cash loss and `reconcile_same_day_base`
+        // shrinks `opening_equity_usd` mid-day and falsely trips DailyLoss.
         let accounts: Vec<(crate::account::AccountId, Decimal)> = self
             .accounts
             .account_list()
             .iter()
             .filter(|a| a.status == crate::account::AccountStatus::Active)
             .map(|a| {
-                (a.id.clone(), {
-                    self.accounts
-                        .ledger_of(&a.id)
-                        .map(|l| l.balance())
-                        .unwrap_or_default()
-                })
+                let cash = self
+                    .accounts
+                    .ledger_of(&a.id)
+                    .map(|l| l.balance())
+                    .unwrap_or_default();
+                let open_cost: Decimal = self
+                    .positions
+                    .open_positions()
+                    .iter()
+                    .filter(|p| p.account_id == a.id && p.shares > Decimal::ZERO)
+                    .map(|p| p.entry_price * p.shares)
+                    .sum();
+                (a.id.clone(), cash + open_cost)
             })
             .collect();
         for (id, equity) in accounts {

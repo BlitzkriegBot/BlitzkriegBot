@@ -554,6 +554,9 @@ impl Engine {
                     .or_insert_with(|| PriceBuffer::new(180))
                     .push(price, at);
                 self.spot_last_trade_time.insert(asset.clone(), at);
+                for s in &mut self.strategies {
+                    s.strategy.on_spot(&asset, price, at);
+                }
                 self.feed_kline_price(&asset, price, now_ms);
                 return Vec::new();
             }

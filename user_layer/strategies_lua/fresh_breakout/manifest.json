@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "34abf3cdcac174d00d4ab368968e022da7741bd0aa8d0d5f9a2d33bbf89fe0dc",
+  "sha256": "146899b01ac2b143a22761649b61436a7fbefe0382fc9e5f72a33dc539f93bc2",
   "author": "BlitzkriegBot",
   "description": "Late-mid fresh breakout favorite for 5m binary rounds. Tracks legs that traded <= neutral_cap (default 0.55) earlier in the round, and with 45-60s left buys a leg staying continuously inside 0.88-0.94 for >= breakout_confirm_ms (default 4000ms) with >= min_spot_buffer_bps (default 10 bps) directional spot cushion beyond round open. Armed with bk_thesis_death exit at <= thesis_exit_bid (default 0.72) to cap tail reversals.",
   "holds_to_settlement": true,
@@ -67,6 +67,12 @@
       "default": "0.72",
       "min": "0",
       "max": "0.90"
+    },
+    "thesis_exit_confirm_ms": {
+      "type": "int",
+      "default": "3000",
+      "min": "0",
+      "max": "30000"
     }
   }
 }

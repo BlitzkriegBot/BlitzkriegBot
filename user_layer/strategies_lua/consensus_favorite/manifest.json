@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "api": "1.0",
   "entry": "strategy.lua",
-  "sha256": "a446643cf71b0a796eba80abff5dc8720ebb9e7c2ca7df6ddd579bccd7fbd9ed",
+  "sha256": "a0eb78fc0a5a0a5ea0903940a707021048902eca6e750e188dce9c46622f980b",
   "author": "BlitzkriegBot",
   "description": "Multi-asset aligned-direction favorite for 5m binary rounds. With 30-90s left, buys the favorite priced inside 0.85-0.94 when >= 4 assets agree at >= 0.85 and directional spot cushion >= min_spot_buffer_bps (default 8 bps). Armed with bk_thesis_death exit at <= thesis_exit_bid (default 0.72) to cap tail reversals.",
   "holds_to_settlement": true,
@@ -22,13 +22,13 @@
     },
     "peer_min_px": {
       "type": "decimal",
-      "default": "0.85",
+      "default": "0.88",
       "min": "0.55",
       "max": "0.98"
     },
     "min_px": {
       "type": "decimal",
-      "default": "0.85",
+      "default": "0.90",
       "min": "0.50",
       "max": "0.98"
     },
@@ -67,6 +67,12 @@
       "default": "0.72",
       "min": "0",
       "max": "0.90"
+    },
+    "thesis_exit_confirm_ms": {
+      "type": "int",
+      "default": "3000",
+      "min": "0",
+      "max": "30000"
     }
   }
 }

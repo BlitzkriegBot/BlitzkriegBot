@@ -360,6 +360,10 @@ pub trait EngineStrategy: Send + Sync {
     /// dispatch (vtable grows but every existing behaviour is identical).
     fn on_kline(&mut self, _kline: &crate::kline::Kline) {}
 
+    /// Latest spot price tick for one asset (`DataEvent::Spot`), forwarded to
+    /// Lua strategies so `bk.spot(asset)` reads live spot prices. Default no-op.
+    fn on_spot(&mut self, _asset: &str, _price: Decimal, _now_ms: i64) {}
+
     /// Tokens whose setup broke since the last call; the host cancels their
     /// resting entry bids. Drains: each break is returned exactly once.
     fn take_breaks(&mut self) -> Vec<(String, Decimal)> {

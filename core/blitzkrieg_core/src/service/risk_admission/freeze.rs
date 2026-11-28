@@ -634,8 +634,11 @@ impl Core {
         let previous = self.clear_account_gate(account);
         let previous_reason = previous.as_ref().map(|g| g.reason.clone());
 
-        // 清 session trip latch：解冻后当日余下时间可交易，不再被旧 latch 重拒。
-        self.positions.clear_daily_tripped_for(&id);
+        // 清 session trip latch 并重置风控基线（保留当日真实 realized_pnl_usd 账本）：
+        // 解冻后从当前总权益与当前已实现盈亏重新起算完整风控额度，不再在下一笔
+        // 盈利/小亏平仓时立即秒冻。
+        let current_equity = self.account_total_equity(&id);
+        self.positions.clear_daily_tripped_for(&id, current_equity);
 
         // 阻断 6：entries_allowed 仅由 gate 得出（clear 后复读），显示
         // 与执行同源，不再并读 entry_open。

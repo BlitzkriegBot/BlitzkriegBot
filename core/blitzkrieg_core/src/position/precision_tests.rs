@@ -422,6 +422,7 @@ fn a_corrupt_daily_loss_file_does_not_read_as_a_fresh_day() {
     let st = DailyLossState {
         day_index: Some(20_400),
         realized_pnl_usd: dec!(-18.5),
+        risk_baseline_pnl_usd: Decimal::ZERO,
         opening_equity_usd: dec!(1000),
         equity_basis: Some(EquityBasis::Dry),
         tripped: false,

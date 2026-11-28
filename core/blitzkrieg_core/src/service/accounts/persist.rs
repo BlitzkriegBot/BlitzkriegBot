@@ -983,25 +983,55 @@ impl Core {
         // global toggle (INHERIT is retired), so nothing is fanned out here
         // and the account's scopes stay silent until the operator enables
         // strategies for it on the strategies page.
-        let assignments: Vec<(String, Vec<String>)> = self
+        let all_accounts: Vec<(String, Vec<String>)> = self
             .accounts
             .account_list()
             .iter()
-            .filter(|a| !a.strategies.is_empty())
             .map(|a| (a.id.as_str().to_string(), a.strategies.clone()))
             .collect();
-        for (account, strategies) in &assignments {
-            // A set member's scope is built ENABLED — being in the account's
-            // enablement set IS the operator's intent to run it there.
-            // Unknown names are skipped with a warning by the rebuild (the
-            // registered set is what the strategy dir loaded this boot).
-            self.set_account_scopes_at_boot(account, strategies);
+        let default_id = crate::account::default_account_id();
+        let assignments: Vec<(String, Vec<String>)> = all_accounts
+            .iter()
+            .filter(|(_, s)| !s.is_empty())
+            .cloned()
+            .collect();
+        for (account, strategies) in &all_accounts {
+            if strategies.is_empty() {
+                // SQLite says this account runs ZERO strategies. Strip any
+                // zombie enabled scopes that `install_engine` may have armed
+                // from a stale legacy `strategy-state*.json` (keeping explicit
+                // CLI `--enable-strategy` requests on `default` only).
+                let allowed: &[String] = if account == default_id.as_str() {
+                    &self.config.requested_strategies
+                } else {
+                    &[]
+                };
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.enforce_account_enabled_set(account, allowed);
+                }
+            } else {
+                // A set member's scope is built ENABLED — being in the
+                // account's enablement set IS the operator's intent to run it
+                // there. Unknown names are skipped with a warning by the
+                // rebuild (the registered set is what the strategy dir loaded
+                // this boot).
+                self.set_account_scopes_at_boot(account, strategies);
+            }
         }
         let armed = self.enabled_strategy_names();
-        // Refresh the legacy strategy-state mirror after SQLite assignments
-        // are armed so `strategy-state.dry.json` never stays stale at `[]`.
+        // Refresh the legacy strategy-state mirror with ONLY the `default`
+        // account's own authoritative set — NEVER the cross-account union
+        // `armed`. Writing non-default accounts' strategies (e.g.
+        // `polysimulator`) into `strategy-state*.json` would resurrect them on
+        // `default` on the next boot when `install_engine` replays the file.
+        let default_mirror: Vec<String> = self
+            .accounts
+            .account(&default_id)
+            .map(|a| a.strategies.clone())
+            .unwrap_or_default();
         if let Some(state_path) = self.config.strategy_state_path.as_deref()
-            && let Err(e) = crate::strategy_state::save(std::path::Path::new(state_path), &armed)
+            && let Err(e) =
+                crate::strategy_state::save(std::path::Path::new(state_path), &default_mirror)
         {
             tracing::error!(
                 path = %state_path,

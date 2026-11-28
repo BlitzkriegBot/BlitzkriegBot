@@ -1424,4 +1424,19 @@ impl Engine {
         }
         kept_exits_only
     }
+
+    /// Disable every scope belonging to `account` whose strategy is NOT in
+    /// `allowed`, while keeping those scopes registered (disabled) so template
+    /// discovery (`supported_strategies` / `strategy_refs`) stays intact.
+    /// Used at boot to strip zombie scopes on accounts whose SQLite
+    /// `strategies` set is empty (e.g. `default` after a stale legacy
+    /// `strategy-state*.json` pre-enabled strategies in `install_engine`).
+    pub fn enforce_account_enabled_set(&mut self, account: &str, allowed: &[String]) {
+        self.bump_inputs();
+        for s in &mut self.strategies {
+            if s.account_id == account && !allowed.iter().any(|a| a == s.strategy.name()) {
+                s.enabled = false;
+            }
+        }
+    }
 }

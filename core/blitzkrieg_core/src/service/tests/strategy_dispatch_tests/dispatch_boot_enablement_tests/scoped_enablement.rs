@@ -255,3 +255,78 @@ fn default_toggle_persists_and_boot_does_not_resurrect() {
     assert!(crate::strategy_state::load(&state_path).contains(&"spread_arb".to_string()));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// P0 跨账户策略隔离回归测试：当 `default` 账户在 SQLite 中 `strategies = []`，
+/// 而另一个账户 `paper` 启用了策略时：
+/// 1. 即使旧的 `strategy-state.json` 里残留了 `paper` 的策略（并在 `install_engine`
+///    阶段提前点亮了 `default` 的 scope），`apply_account_strategy_assignments_at_boot`
+///    必须把 `default` 的僵尸 scope 全部关掉（0 个启用）；
+/// 2. 写回 `strategy-state.json` 时只能写 `default` 自己的策略集（`[]`），绝不能
+///    把 `paper` 的策略污染进去，防止下次重启在 `default` 上幽灵复活。
+#[test]
+fn non_default_account_strategies_never_leak_into_default_via_state_file() {
+    let dir = std::env::temp_dir().join(format!("bk-non-default-no-leak-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let accounts_path = dir.join("accounts.toml");
+    let env_path = dir.join(".env");
+    std::fs::write(
+        &env_path,
+        "ACCOUNT_LIST=default,paper\nACCOUNT_DEFAULT_NAME=\"main\"\nACCOUNT_PAPER_NAME=\"paper\"\nACCOUNT_PAPER_STRATEGIES=\"trend_follow\"\n",
+    )
+    .expect("fixture");
+    let state_path = dir.join("strategy-state.json");
+    // Pre-poison the legacy mirror with paper's strategy (the exact failure mode).
+    crate::strategy_state::save(&state_path, &["trend_follow".to_string()]).expect("poison state");
+
+    let mut c = Core::with_account_book(
+        CoreConfig {
+            accounts_config_path: Some(accounts_path.to_string_lossy().into_owned()),
+            strategy_state_path: Some(state_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+        crate::account::config::load_account_ledgers_single_source(
+            &accounts_path,
+            Some(&env_path),
+            1,
+            crate::account::config::TEST_ALLOWED_ROUNDS,
+        )
+        .unwrap(),
+    );
+    c.open_account_risk_db(dir.join("store.sqlite"))
+        .expect("settings store opens");
+    c.enable_engine(Engine::new(EngineConfig::default()));
+    crate::strategies::test_support::host_disabled(
+        c.engine.as_mut().unwrap(),
+        EngineConfig::default().trend,
+        EngineConfig::default().spread_arb,
+    );
+    // Simulate `install_engine` pre-enabling `default` from the poisoned state file.
+    let _ = c.set_strategy_enabled("trend_follow", true);
+
+    c.apply_account_strategy_assignments_at_boot().unwrap();
+
+    // `default` must have ZERO enabled scopes.
+    let default_enabled: Vec<String> = c
+        .engine
+        .as_ref()
+        .unwrap()
+        .hosted()
+        .iter()
+        .filter(|s| s.account_id == "default" && s.enabled)
+        .map(|s| s.strategy.name().to_string())
+        .collect();
+    assert!(
+        default_enabled.is_empty(),
+        "default has empty SQLite strategies and must NOT keep zombie enabled scopes: {default_enabled:?}"
+    );
+
+    // The legacy mirror must be healed back to `default`'s own set (`[]`), NOT `paper`'s.
+    assert_eq!(
+        crate::strategy_state::load(&state_path),
+        Vec::<String>::new(),
+        "strategy-state.json must never carry non-default accounts' strategies"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

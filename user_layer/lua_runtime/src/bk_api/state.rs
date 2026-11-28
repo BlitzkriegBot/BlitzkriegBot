@@ -147,6 +147,10 @@ pub struct BkState {
     /// a host actually feeds klines — with no E29 aggregator there is no
     /// source, so `bk.kline` honestly returns `nil`.
     pub klines: HashMap<(String, String), Kline>,
+    /// Latest spot price per asset symbol (`bk.spot(asset)`), decimal STRINGS.
+    /// Populated by `LuaStrategy::on_spot` from `DataEvent::Spot`. Empty until
+    /// a spot tick arrives (`bk.spot(asset)` returns `nil`).
+    pub spots: HashMap<String, String>,
     /// #427: the confirmed cross-venue mappings (`bk.unified_events()`),
     /// pushed by the adapter from the ctx's view. Empty until a host pushes
     /// one — single-venue deployments answer an empty table, never an error.
@@ -247,6 +251,11 @@ impl BkState {
             self.fresh.insert(symbol.clone(), f);
         }
         self.books.insert(symbol, update);
+    }
+
+    /// Overwrite the latest spot price for one asset (decimal string).
+    pub fn put_spot(&mut self, asset: &str, price: String) {
+        self.spots.insert(asset.to_ascii_uppercase(), price);
     }
 }
 

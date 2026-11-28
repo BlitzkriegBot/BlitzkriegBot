@@ -148,6 +148,14 @@ impl LuaStrategy {
         Arc::clone(&self.state)
     }
 
+    /// Record the latest spot price for one asset (`bk.spot(asset)`).
+    pub fn on_spot(&mut self, asset: &str, price: &str, now_ms: i64) {
+        if let Ok(mut st) = self.state.lock() {
+            st.set_now(now_ms);
+            st.put_spot(asset, price.to_string());
+        }
+    }
+
     /// A snapshot of the observable health (call/error counters, the last
     /// deterministic Lua error, the poison flag) — the same record
     /// `diagnostics()` serializes, as plain data. `None` only when the health
@@ -956,5 +964,19 @@ mod tests {
         assert!(s.take_poison_alert().is_none());
         let h = s.health.lock().expect("health");
         assert!(h.poisoned, "poison flag not set in health");
+    }
+
+    /// `bk.spot(asset)` returns the latest decimal-string spot price pushed via
+    /// `on_spot`, case-insensitively, and `nil` for unseen assets.
+    #[test]
+    fn bk_spot_returns_latest_price_and_nil_for_unseen() {
+        let mut s = strategy(
+            "function bk_evaluate()                local btc = bk.spot('btc')                local eth = bk.spot('ETH')                if btc == nil or eth ~= nil then return {} end                return { entries = { { token = '0xup', price = '0.90', reason = btc } } }              end",
+        );
+        assert!(s.evaluate(&eval_ctx(1_000, 60)).entries.is_empty());
+        s.on_spot("BTC", "91234.56", 2_000);
+        let intents = s.evaluate(&eval_ctx(2_000, 60));
+        assert_eq!(intents.entries.len(), 1);
+        assert_eq!(intents.entries[0].reason, "91234.56");
     }
 }

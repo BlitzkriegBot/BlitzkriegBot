@@ -827,6 +827,10 @@ impl EngineStrategy for LuaEngineAdapter {
         self.inner.on_kline(kline);
     }
 
+    fn on_spot(&mut self, asset: &str, price: Decimal, now_ms: i64) {
+        self.inner.on_spot(asset, &price.to_string(), now_ms);
+    }
+
     fn confirmed_tokens(&self) -> HashSet<String> {
         self.inner.confirmed_tokens().into_iter().collect()
     }

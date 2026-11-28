@@ -443,6 +443,22 @@ pub fn install_bk(lua: &Lua, state: Arc<Mutex<BkState>>) -> mlua::Result<()> {
         )?;
     }
 
+    // -- bk.spot(asset) -----------------------------------------------------
+    {
+        let st = Arc::clone(&state);
+        bk.raw_set(
+            "spot",
+            lua.create_function(move |lua, asset: String| {
+                let st = st.lock().expect("bk state mutex");
+                let key = asset.to_ascii_uppercase();
+                match st.spots.get(&key) {
+                    Some(px) => Ok(Value::String(lua.create_string(px.as_str())?)),
+                    None => Ok(Value::Nil),
+                }
+            })?,
+        )?;
+    }
+
     // -- bk.holdings() ------------------------------------------------------
     {
         let st = Arc::clone(&state);

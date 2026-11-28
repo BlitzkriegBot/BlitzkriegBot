@@ -12,12 +12,20 @@
 --   entry thesis : macro 4-coin consensus favorite held for $1 redemption
 --   enforcement  : bk_thesis_death returns true when fresh best_bid/mid <= thesis_exit_bid (default 0.72)
 
+local thesis_breach_since = {}
+local thesis_slot_seen = nil
+
 function bk_thesis_death(h)
     local params = bk.params and bk.params() or {}
     local exit_bid = tonumber(params["thesis_exit_bid"])
     if exit_bid == nil then exit_bid = 0.72 end
     if exit_bid <= 0 or h == nil or h.token_id == nil then
         return false
+    end
+    local round = bk.round and bk.round() or nil
+    if round ~= nil and round.slot ~= nil and round.slot ~= thesis_slot_seen then
+        thesis_breach_since = {}
+        thesis_slot_seen = round.slot
     end
     local book = bk.book and bk.book(h.token_id) or nil
     if book == nil or book.fresh ~= true then
@@ -27,7 +35,25 @@ function bk_thesis_death(h)
     if px == nil or px <= 0 then
         px = tonumber(book.mid)
     end
-    return px ~= nil and px > 0 and px <= exit_bid
+    if px == nil or px <= 0 then
+        return false
+    end
+    if px > exit_bid then
+        thesis_breach_since[h.token_id] = nil
+        return false
+    end
+    local confirm_ms = tonumber(params["thesis_exit_confirm_ms"])
+    if confirm_ms == nil then confirm_ms = 3000 end
+    local now_ms = bk.now_ms and bk.now_ms() or nil
+    if confirm_ms <= 0 or now_ms == nil then
+        return true
+    end
+    local since = thesis_breach_since[h.token_id]
+    if since == nil then
+        thesis_breach_since[h.token_id] = now_ms
+        return false
+    end
+    return (now_ms - since) >= confirm_ms
 end
 
 -- BEGIN common/decimal.lua
@@ -271,12 +297,12 @@ function bk_evaluate()
 
     local params = bk.params()
     local maker = int_p(params, "maker_entry", 0) == 1
-    local lo = num_p(params, "min_px", 0.85)
+    local lo = num_p(params, "min_px", 0.90)
     local hi = num_p(params, "max_px", 0.94)
     local t_min = int_p(params, "min_time_left", 30)
     local t_max = int_p(params, "max_time_left", 90)
     local min_cons = int_p(params, "min_consensus", 3)
-    local peer_th = num_p(params, "peer_min_px", 0.85)
+    local peer_th = num_p(params, "peer_min_px", 0.88)
     local min_spot_bps = num_p(params, "min_spot_buffer_bps", 8)
     local tl = round.time_left_sec
     local held = held_index()

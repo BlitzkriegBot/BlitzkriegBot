@@ -129,17 +129,26 @@ pub struct AuditRuntime {
     pub last_at_ms: i64,
     /// Last audit that was written to the log even though it passed (heartbeat).
     pub last_heartbeat_ms: i64,
-    /// The baseline the anchored cash identity is measured from. Taken at the
-    /// first audit whose structural checks pass and NEVER moved while the books
-    /// are wrong — re-anchoring would hide the drift it exists to expose.
+    /// The baseline the anchored cash identity is measured from (active account).
+    /// Taken at the first audit whose structural checks pass and NEVER moved
+    /// while the books are wrong — re-anchoring would hide the drift it exists
+    /// to expose.
     pub anchor: Option<CashIdentity>,
+    /// Per-account baselines so `run_accounting_audit` audits EVERY active
+    /// account (not only `active_id` — e.g. `polysimulator` when `active_id`
+    /// is an empty `default` book).
+    pub anchors_by_account: HashMap<String, CashIdentity>,
     pub report: Option<AuditReport>,
-    /// Consecutive cross-source-only failures; two in a row halt (a single one
-    /// can be a stale venue read).
+    /// Consecutive cross-source-only failures (active account); two in a row
+    /// halt (a single one can be a stale venue read).
     pub cross_source_failures: u32,
-    /// New entries are currently blocked by a failing audit.
+    /// Per-account consecutive cross-source-only failure counts.
+    pub cross_source_failures_by_account: HashMap<String, u32>,
+    /// New entries are currently blocked by a failing audit (any account).
     pub halted: bool,
     pub halt_reason: String,
+    /// Per-account audit halts (`account_id -> halt_reason`).
+    pub halted_accounts: HashMap<String, String>,
     pub runs: u64,
     pub failures: u64,
     /// Where each audit appends its verdict (None = no persistence).

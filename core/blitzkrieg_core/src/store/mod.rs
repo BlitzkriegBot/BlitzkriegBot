@@ -15,6 +15,7 @@
 
 mod sqlite;
 
+pub(crate) use sqlite::mark_fallback_trades_reconciled;
 pub use sqlite::{DEFAULTS_ACCOUNT_ID, SqliteStore};
 
 use rust_decimal::Decimal;

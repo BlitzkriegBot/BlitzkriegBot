@@ -620,3 +620,130 @@ fn opening_positions_does_not_shrink_opening_equity_or_trip_daily_loss() {
         "-$60 realized on $1000 equity (20% cap = $200) must NOT trip"
     );
 }
+
+/// Audit finding #1: `run_accounting_audit` must audit EVERY active account,
+/// not just `active_id`. When `active_id` is an empty `default` book and a
+/// sibling active account (`polysimulator`) develops a stray reservation, the
+/// audit must catch it, halt `polysimulator` entries, and leave `default` free.
+#[test]
+fn run_accounting_audit_catches_drift_on_non_active_account() {
+    use crate::account::{Account, AccountId, AccountLedgers, AccountStatus, CredentialKeys};
+
+    let default_id = AccountId::from("default");
+    let poly_id = AccountId::from("polysimulator");
+    let book = AccountLedgers::new(
+        vec![
+            Account {
+                id: default_id.clone(),
+                name: "default".into(),
+                market_type: blitzkrieg_market_api::MarketType::Prediction,
+                status: AccountStatus::Active,
+                credential_keys: CredentialKeys::default(),
+                venue: String::new(),
+                trading_enabled: true,
+                strategies: Vec::new(),
+                rounds: Vec::new(),
+                opening_equity: None,
+                updated_at_ms: 0,
+            },
+            Account {
+                id: poly_id.clone(),
+                name: "polysimulator".into(),
+                market_type: blitzkrieg_market_api::MarketType::Prediction,
+                status: AccountStatus::Active,
+                credential_keys: CredentialKeys::default(),
+                venue: String::new(),
+                trading_enabled: true,
+                strategies: Vec::new(),
+                rounds: Vec::new(),
+                opening_equity: None,
+                updated_at_ms: 0,
+            },
+        ],
+        default_id.clone(),
+    );
+    let mut c = crate::service::Core::with_account_book(
+        crate::service::CoreConfig {
+            mode: Mode::Dry,
+            risk: RiskConfig {
+                max_order_notional: dec!(10_000),
+                ..Default::default()
+            },
+            dry_seed_balance: SEED,
+            auto_exits_enabled: false,
+            audit_halt_entries: true,
+            ..Default::default()
+        },
+        book,
+    );
+    let t0 = 1_700_000_000_000;
+    // Establish clean anchors on both accounts.
+    c.run_accounting_audit(t0);
+    assert!(!c.audit_blocks_entries());
+
+    // Inject a stray reservation on the NON-ACTIVE account `polysimulator`.
+    c.accounts
+        .get_mut(&poly_id)
+        .unwrap()
+        .reserve("ghost-order-1", dec!(10))
+        .unwrap();
+    c.run_accounting_audit(t0 + 1_000);
+
+    assert!(
+        c.audit_blocks_entries(),
+        "audit must notice structural drift on non-active account"
+    );
+    assert!(
+        c.audit_entry_gate_for(&poly_id).is_err(),
+        "polysimulator entries must be halted"
+    );
+    assert!(
+        c.audit_entry_gate_for(&default_id).is_ok(),
+        "clean default account stays unblocked"
+    );
+}
+
+/// Audit finding #3: a high-price Taker BUY (>= 0.70) must be refused when
+/// the live mirrored book's best ask has already collapsed >25% below the
+/// intended limit (preventing falling-knife fills like 0.93 -> 0.33 or 0.88 -> 0.06).
+#[test]
+fn high_price_taker_buy_refused_when_book_collapsed() {
+    let mut c = gate_core();
+    let t0 = 1_700_000_000_000;
+    // Mirror a collapsed book (best ask = 0.33) for token `tok`.
+    c.book_snapshot(
+        "tok",
+        vec![(dec!(0.30), dec!(100))],
+        vec![(dec!(0.33), dec!(100))],
+        t0,
+    );
+    let mut req = entry_req("late_fav_knife");
+    req.mode = FillPolicy::Taker;
+    req.price = dec!(0.93);
+    req.size = dec!(10);
+    let err = c
+        .place(req, 0, t0 + 100)
+        .expect_err("collapsed ask must refuse high-price taker buy");
+    assert_eq!(err.code, CoreErrorCode::WouldCross);
+    assert!(
+        err.message.contains("adverse_book_collapse"),
+        "unexpected error: {}",
+        err.message
+    );
+
+    // A normal book near the limit (best ask = 0.92) still passes cleanly.
+    c.book_snapshot(
+        "tok",
+        vec![(dec!(0.90), dec!(100))],
+        vec![(dec!(0.92), dec!(100))],
+        t0 + 200,
+    );
+    let mut ok_req = entry_req("late_fav_ok");
+    ok_req.mode = FillPolicy::Taker;
+    ok_req.price = dec!(0.93);
+    ok_req.size = dec!(10);
+    assert!(
+        c.place(ok_req, 0, t0 + 300).is_ok(),
+        "normal high-price taker buy near best ask must succeed"
+    );
+}

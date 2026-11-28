@@ -435,12 +435,31 @@ impl Core {
             }))
             .collect();
         if !venue_tokens.is_empty() {
-            let flipped = self
+            let mem_flipped = self
                 .positions
                 .backfill_fallback_to_venue_tokens(&venue_tokens);
+            let db_flipped = self
+                .trade_log
+                .as_ref()
+                .map(|log| {
+                    match log.mark_fallback_reconciled_by_tokens(&venue_tokens, snap.now_ms) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = ?e,
+                                "reconcile backfill: SQLite fallback->reconciled update failed"
+                            );
+                            0
+                        }
+                    }
+                })
+                .unwrap_or(0);
+            let flipped = mem_flipped.max(db_flipped);
             if flipped > 0 {
                 tracing::info!(
                     flipped,
+                    mem_flipped,
+                    db_flipped,
                     "reconcile backfill: venue cash truth confirmed {} fallback-closed position(s); source marked reconciled, fallback exit price kept (issue 991: estimated prices are never re-labeled venue)",
                     flipped
                 );

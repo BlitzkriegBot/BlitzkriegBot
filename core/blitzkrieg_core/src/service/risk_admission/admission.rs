@@ -548,11 +548,34 @@ impl Core {
         // Entry gates apply to opening BUY orders only; exits (SELL) are never
         // blocked by capacity, breaker or cooldowns.
         if entry_gates && req.side == Side::Buy {
-            // A failing accounting audit blocks NEW entries (issue #189). It is
-            // deliberately not the kill switch: that also blocks closes (#174), so
-            // a drifted ledger would trap the bot in whatever it holds. Only the
-            // opening side is refused, and only until an audit passes again.
-            self.audit_entry_gate()?;
+            // A failing accounting audit blocks NEW entries for the affected
+            // account (issue #189, multi-account audit fix). Exits (SELL) are
+            // never blocked so a drifted ledger never traps a position.
+            self.audit_entry_gate_for(&req.account_id)?;
+            // Adverse-selection ("falling knife") guard for high-probability
+            // favorite Taker BUY entries: when a strategy submits a high-price
+            // Taker BUY (>= 0.70) and the live mirrored book's best ask has
+            // already collapsed >= 25% below the limit (e.g. intent 0.93 while
+            // ask dropped to 0.33 or 0.06), crossing the book would buy a dead
+            // outcome under the guise of "price improvement". Refuse with
+            // WouldCross (does not count toward venue-reject freeze).
+            if req.mode == FillPolicy::Taker
+                && req.price >= Decimal::new(80, 2)
+                && let Some(book) = self.books.get(&req.token_id)
+                && let Some(best_ask) = book.best_ask()
+                && best_ask > Decimal::ZERO
+                && best_ask <= req.price * Decimal::new(75, 2)
+            {
+                return Err(CoreError::new(
+                    CoreErrorCode::WouldCross,
+                    format!(
+                        "adverse_book_collapse: live best ask {best_ask} dropped >25% below \
+                         high-price taker buy limit {} (strategy {}, token {}) — refusing \
+                         falling-knife entry",
+                        req.price, req.strategy, req.token_id
+                    ),
+                ));
+            }
             // KI-10: only the ORDER'S OWN strategy's streak can block it — a
             // losing leg no longer vetoes every other strategy's entries.
             if self.breaker.is_halted(&req.strategy, now_ms) {

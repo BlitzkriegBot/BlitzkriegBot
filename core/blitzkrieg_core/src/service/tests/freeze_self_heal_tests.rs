@@ -139,6 +139,40 @@ fn open_intent_insufficient_position_still_counts() {
     );
 }
 
+/// Microstructure book-miss rejections (`CoreErrorCode::WouldCross` — e.g.
+/// PolySimulator cancelling an unfilled Taker order that rested `live`, or a
+/// post-only order crossing the book) prove the venue is responsive and must
+/// never trip the consecutive-rejection account freeze.
+#[test]
+fn would_cross_rejections_do_not_feed_freeze_streak() {
+    let mut c = core();
+    let err = crate::model::CoreError::new(
+        blitzkrieg_market_api::CoreErrorCode::WouldCross,
+        "polysimulator taker order 1734972 rested live instead of crossing immediately — cancelled",
+    );
+    for i in 0..FREEZE_ON_REJECTS as i64 + 2 {
+        let (id, _) = c
+            .place_pending(open_req(&format!("taker-miss-{i}")), i * 1_000 + 1)
+            .unwrap();
+        c.reject_live_result(&id, Some(err.clone()), i * 1_000 + 100)
+            .unwrap();
+    }
+    assert!(
+        c.account_freeze_reason("default", now_ms()).is_none(),
+        "WouldCross book misses must never freeze the account"
+    );
+    assert!(
+        !c.is_killed(),
+        "the global kill switch stays quiet on WouldCross book misses"
+    );
+    let stats = c.engine_stats();
+    assert_eq!(stats["venueRejected"], FREEZE_ON_REJECTS as u64 + 2);
+    assert!(
+        c.placement_blocked("taker-miss-0", 101),
+        "per-intent cooldown backoff still applies to WouldCross"
+    );
+}
+
 /// Auto-frozen (sweep-failure streak on a venue-bound account) + the venue
 /// accepts an order again (`confirm_live` → mark_live): the freeze lifts
 /// itself, the auto ledger clears, and the account can place NEW orders again.

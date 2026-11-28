@@ -492,6 +492,13 @@ impl Core {
         // below; only the freeze counters are exempt. Opening intents with
         // the same reason stay counted — for them the refusal is a real gate.
         let benign_close = is_close_intent(internal_key) && is_position_already_gone(&err.message);
+        // Microstructure book-miss rejections (`WouldCross`: post-only would
+        // cross the book, or PolySimulator cancelling a Taker order that rested
+        // `live` instead of crossing immediately) prove the venue IS healthy
+        // and responsive — they must never trip the consecutive-rejection
+        // account freeze. Per-intent backoff and strategy stats still record them.
+        let benign_book_miss = err.code == blitzkrieg_market_api::CoreErrorCode::WouldCross;
+        let freeze_exempt = benign_close || benign_book_miss;
         if benign_close {
             if !self.place_cooldowns.contains_key(internal_key) {
                 tracing::warn!(
@@ -501,11 +508,11 @@ impl Core {
                     "benign close-intent rejection (Insufficient position) — backoff retry continues, freeze streak not fed"
                 );
             }
-        } else {
+        } else if !freeze_exempt {
             self.freeze_book.consecutive_venue_rejects =
                 self.freeze_book.consecutive_venue_rejects.saturating_add(1);
         }
-        let account_streak = if benign_close {
+        let account_streak = if freeze_exempt {
             0
         } else {
             let streak = self

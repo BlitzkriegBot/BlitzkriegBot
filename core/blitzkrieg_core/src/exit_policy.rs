@@ -235,6 +235,11 @@ impl ExitConfig {
             stop_loss_pct: self.holder_stop_pct,
             stop_min_pct: self.holder_stop_pct,
             tight_stop_pct: self.holder_stop_pct,
+            // Hold-to-settlement strategies enter near expiry (5-90s left) and
+            // intend to hold to $1 settlement; the scanner's `min_time_left_sec`
+            // (e.g. 180s scaled to 60s on 5m) must not immediately trigger a
+            // `TimeExit` milliseconds after entry.
+            min_time_left_sec: 0,
             ..self.clone()
         }
     }

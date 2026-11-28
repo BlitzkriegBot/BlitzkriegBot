@@ -29,26 +29,44 @@ export interface AccountRiskLimitsView {
   maxOrderNotionalUsd: RiskBound
 }
 
-/** The exit triple Gate 4 binds per entry (plain numbers, not Bounds). */
+/** The exit resolution Gate 4 binds per entry (full ExitConfig surface). */
 export interface RiskExitView {
   stopLossPct: number | string
   takeProfitPct: number | string
   forceExitSec: number
-  /**
-   * 移动止盈总开关（trailing stop 武装与否）。老内核缺省 → undefined：
-   * 开关降级为不可用态，不造默认值。
-   */
   trailingEnabled?: boolean
-  /**
-   * issue 935：持有到期策略的真实停损带宽（出厂 50）——面板通用 12% 不绑
-   * holder，只显示 12% 会误读内核姿势。老内核缺省 → undefined，如实降级。
-   */
   holderStopPct?: number | string
-  /**
-   * issue 935：策略出场 maker-first 总开关（出厂 false，字节保持）。
-   * 老内核缺省 → undefined，开关降级为不可用态，不造默认值。
-   */
   strategyExitMakerFirst?: boolean
+  // Full ExitConfig options (additive optional — undefined on older kernels)
+  ceilingTpPrice?: number | string
+  minTimeLeftSec?: number
+  simpleExitEnabled?: boolean
+  dynamicStopEnabled?: boolean
+  stopTightenStartSec?: number
+  stopMinPct?: number | string
+  trailingMinHighPct?: number | string
+  minTrailPct?: number | string
+  proportionalTrailEnabled?: boolean
+  proportionalTrailPct?: number | string
+  proportionalTrailMinPct?: number | string
+  proportionalTrailMinGivebackPct?: number | string
+  tightStopEnabled?: boolean
+  tightStopPct?: number | string
+  ratchetEnabled?: boolean
+  ratchetConfirmTicks?: number
+  ratchetConfirmTolerancePct?: number | string
+  maxBidWickPct?: number | string
+  maxLastPriceAgeSec?: number
+  staleProfitPct?: number | string
+  staleProfitBidUnchangedSec?: number
+  stagnantProfitPct?: number | string
+  stagnantDurationSec?: number
+  depthCollapseThresholdPct?: number | string
+  exitGraceSec?: number
+  makerExitsForTpOnly?: boolean
+  makerFirstExitEnabled?: boolean
+  exitMakerTimeoutMs?: number
+  maxBookAgeSec?: number
 }
 
 /** The whole `risk.limits` readout. */
@@ -124,11 +142,39 @@ export interface RiskSetExitBody {
   accountId?: string
   stopLossPct?: string | number
   takeProfitPct?: string | number
+  ceilingTpPrice?: string | number
+  holderStopPct?: string | number
   forceExitSec?: number
-  /** 移动止盈武装开关（出厂 false，issue 356 校准）；热配升格后进请求体。 */
+  minTimeLeftSec?: number
+  simpleExitEnabled?: boolean
+  dynamicStopEnabled?: boolean
+  stopTightenStartSec?: number
+  stopMinPct?: string | number
   trailingEnabled?: boolean
-  /** issue 935：策略出场 maker-first 总开关（出厂 false，字节保持）。 */
+  trailingMinHighPct?: string | number
+  minTrailPct?: string | number
+  proportionalTrailEnabled?: boolean
+  proportionalTrailPct?: string | number
+  proportionalTrailMinPct?: string | number
+  proportionalTrailMinGivebackPct?: string | number
+  tightStopEnabled?: boolean
+  tightStopPct?: string | number
+  ratchetEnabled?: boolean
+  ratchetConfirmTicks?: number
+  ratchetConfirmTolerancePct?: string | number
+  maxBidWickPct?: string | number
+  maxLastPriceAgeSec?: number
+  staleProfitPct?: string | number
+  staleProfitBidUnchangedSec?: number
+  stagnantProfitPct?: string | number
+  stagnantDurationSec?: number
+  depthCollapseThresholdPct?: string | number
+  exitGraceSec?: number
+  makerExitsForTpOnly?: boolean
+  makerFirstExitEnabled?: boolean
   strategyExitMakerFirst?: boolean
+  exitMakerTimeoutMs?: number
+  maxBookAgeSec?: number
   reason?: string
 }
 

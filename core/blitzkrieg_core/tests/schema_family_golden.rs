@@ -98,6 +98,7 @@ fn family_03_risk_limits_result() {
             trailing_enabled: true,
             holder_stop_pct: d("0.12"),
             strategy_exit_maker_first: true,
+            ..Default::default()
         },
         size_pct: None,
         max_positions: None,

@@ -1189,6 +1189,11 @@ impl Engine {
             None
         };
         hosted.strategy.set_arb_leg_config(scope_cfg);
+        for (asset, buf) in &self.spot {
+            if let Some((ts_ms, price)) = buf.latest_sample() {
+                hosted.strategy.on_spot(asset, price, ts_ms);
+            }
+        }
         self.strategies.push(hosted);
         Ok(name)
     }

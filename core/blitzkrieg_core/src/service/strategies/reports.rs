@@ -132,7 +132,7 @@ impl Core {
             holds += num("holdTimeSec");
         }
         let decided = wins + losses;
-        let n = decided as f64;
+        let total = (decided + flats) as f64;
         s["totalTrades"] = serde_json::json!(decided + flats);
         s["wins"] = serde_json::json!(wins);
         s["losses"] = serde_json::json!(losses);
@@ -145,7 +145,7 @@ impl Core {
         s["attributedGrossPnl"] = serde_json::json!(gross);
         s["totalFees"] = serde_json::json!(fees);
         s["attributedNetPnl"] = serde_json::json!(net);
-        s["avgHoldTimeSec"] = serde_json::json!(if n > 0.0 { holds / n } else { 0.0 });
+        s["avgHoldTimeSec"] = serde_json::json!(if total > 0.0 { holds / total } else { 0.0 });
         s["bestTradePnl"] = serde_json::json!(if rows.is_empty() { 0.0 } else { best });
         s["worstTradePnl"] = serde_json::json!(if rows.is_empty() { 0.0 } else { worst });
         s

@@ -119,10 +119,7 @@ const frozenClock = computed(() =>
 )
 const marketName = computed(() => {
   if (!identityVenue.value) return snap.value?.marketActiveName ?? null
-  const row = (snap.value?.round?.prices ?? []).find(
-    (r) => typeof r.venue === 'string' && r.venue !== '' && r.venue === identityVenue.value,
-  )
-  return row ? row.venue : (snap.value?.marketActiveName ?? null)
+  return identityVenue.value
 })
 /**
  * 倒计时卡徽章的短文案：prediction 在徽章里只说「二元预测」——徽章宽度

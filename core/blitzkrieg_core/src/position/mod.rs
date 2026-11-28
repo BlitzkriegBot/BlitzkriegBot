@@ -293,6 +293,14 @@ pub struct DailyLossState {
     pub day_index: Option<i64>,
     /// Realized PnL accrued since the day opened (USD, negative = loss).
     pub realized_pnl_usd: Decimal,
+    /// Risk-gate baseline for the current session / post-unfreeze epoch (USD).
+    /// The daily-loss breaker evaluates `(realized_pnl_usd - risk_baseline_pnl_usd)
+    /// + unrealized_pnl_usd` so operator unfreeze and process restart give a
+    /// fresh risk budget from that point forward without erasing the day's
+    /// honest accounting truth in `realized_pnl_usd`. Reset to `0` at UTC day
+    /// rollover and `reset_daily_for_account`.
+    #[serde(default, skip_serializing_if = "Decimal::is_zero")]
+    pub risk_baseline_pnl_usd: Decimal,
     /// Cash equity when the day opened — the base the percentage cap is
     /// measured against. Fixed for the day on purpose: a shrinking equity must
     /// not shrink the budget it is being measured against. The one thing that
@@ -332,6 +340,7 @@ impl Default for DailyLossState {
         Self {
             day_index: None,
             realized_pnl_usd: Decimal::ZERO,
+            risk_baseline_pnl_usd: Decimal::ZERO,
             opening_equity_usd: Decimal::ZERO,
             equity_basis: None,
             tripped: false,
@@ -1143,7 +1152,18 @@ impl PositionManager {
         // equity — that would erase realized losses through a half-written file.
         let (daily, daily_budget_unreadable) = match &daily_store {
             Some(store) => match store.load() {
-                Ok(loaded) => (loaded, false),
+                Ok(mut loaded) => {
+                    // Restart resets the risk-gate baseline to the persisted
+                    // realized PnL and clears the cached opening equity so the
+                    // first `roll_daily_budget` tick re-anchors to current
+                    // total equity, while preserving `realized_pnl_usd` as the
+                    // honest full-day accounting total.
+                    for st in loaded.values_mut() {
+                        st.risk_baseline_pnl_usd = st.realized_pnl_usd;
+                        st.opening_equity_usd = Decimal::ZERO;
+                    }
+                    (loaded, false)
+                }
                 Err(DailyLossLoadError::Missing) => (Default::default(), false),
                 Err(DailyLossLoadError::Corrupt(e)) => {
                     tracing::error!(
@@ -1190,7 +1210,11 @@ impl PositionManager {
             // keeping the in-memory state when the new file has none.
             if let Some(store) = &self.daily_store {
                 match store.load() {
-                    Ok(loaded) => {
+                    Ok(mut loaded) => {
+                        for st in loaded.values_mut() {
+                            st.risk_baseline_pnl_usd = st.realized_pnl_usd;
+                            st.opening_equity_usd = Decimal::ZERO;
+                        }
                         self.daily_by_account = loaded;
                         self.daily_budget_unreadable = false;
                     }

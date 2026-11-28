@@ -95,7 +95,8 @@ impl PositionManager {
     /// unrealized half is a JUDGEMENT input, never an accounting entry.
     /// Per-account: the account's own realized, the account's own paper.
     fn daily_drawdown_input(&self, account: &str) -> Decimal {
-        let realized = self.daily_bucket(account).realized_pnl_usd;
+        let bucket = self.daily_bucket(account);
+        let realized = bucket.realized_pnl_usd - bucket.risk_baseline_pnl_usd;
         if self.config.daily_loss_marks_unrealized {
             realized + self.unrealized_pnl_usd_for(account)
         } else {
@@ -193,19 +194,20 @@ impl PositionManager {
         let previous_day_index = daily.day_index;
         let previous_realized = daily.realized_pnl_usd;
         let previous_tripped = daily.tripped;
-        let carried_pnl = if previous_day_index.is_none() {
+        let (carried_pnl, carried_baseline) = if previous_day_index.is_none() {
             // First stamp of the day (fresh process, or before this field
             // existed): it only starts the clock. Whatever was realized before
             // the first tick belongs to TODAY, so it is carried, never zeroed.
-            previous_realized
+            (previous_realized, daily.risk_baseline_pnl_usd)
         } else {
             // A real boundary: the closed day's result is reported, then the new
             // day starts from zero.
-            Decimal::ZERO
+            (Decimal::ZERO, Decimal::ZERO)
         };
         *daily = DailyLossState {
             day_index: Some(today),
             realized_pnl_usd: carried_pnl,
+            risk_baseline_pnl_usd: carried_baseline,
             opening_equity_usd: equity_usd.max(Decimal::ZERO),
             equity_basis: Some(basis),
             tripped: false,
@@ -253,6 +255,7 @@ impl PositionManager {
         *daily = DailyLossState {
             day_index: daily.day_index,
             realized_pnl_usd: Decimal::ZERO,
+            risk_baseline_pnl_usd: Decimal::ZERO,
             opening_equity_usd: equity_usd.max(Decimal::ZERO),
             equity_basis: Some(basis),
             tripped: false,
@@ -399,7 +402,7 @@ impl PositionManager {
             daily.tripped_reported = true;
             let (day_index, realized, opening, at_ms) = (
                 daily.day_index.unwrap_or(0),
-                daily.realized_pnl_usd,
+                daily.realized_pnl_usd - daily.risk_baseline_pnl_usd,
                 daily.opening_equity_usd,
                 daily.tripped_at_ms,
             );
@@ -441,6 +444,7 @@ impl PositionManager {
                 account = %account,
                 day = daily.day_index.unwrap_or(0),
                 realized = %daily.realized_pnl_usd,
+                risk_baseline = %daily.risk_baseline_pnl_usd,
                 limit = %limit,
                 equity = %daily.opening_equity_usd,
                 "daily loss limit reached — new entries frozen for this account until the next UTC day"
@@ -480,14 +484,26 @@ impl PositionManager {
         }
     }
 
-    /// Clear the session trip latch for an account (used by `account.unfreeze`):
-    /// mid-day unfreeze re-opens entries for the rest of the day — the latch is
-    /// not re-armed because `emit_daily_trip` only gates newly-latched trips.
-    pub(crate) fn clear_daily_tripped_for(&mut self, account: &AccountId) {
+    /// Clear the session trip latch AND reset the risk-gate baseline for an
+    /// account (used by `account.unfreeze`): mid-day unfreeze starts a fresh
+    /// risk budget from the account's current realized PnL and current total
+    /// equity, while keeping `realized_pnl_usd` untouched as the honest
+    /// full-day accounting total.
+    pub(crate) fn clear_daily_tripped_for(
+        &mut self,
+        account: &AccountId,
+        current_equity_usd: Decimal,
+    ) {
         if let Some(daily) = self.daily_by_account.get_mut(account) {
             daily.tripped = false;
             daily.tripped_at_ms = 0;
             daily.tripped_limit_usd = Decimal::ZERO;
+            daily.tripped_reported = false;
+            daily.risk_baseline_pnl_usd = daily.realized_pnl_usd;
+            if current_equity_usd > Decimal::ZERO {
+                daily.opening_equity_usd = current_equity_usd;
+            }
         }
+        self.persist_daily();
     }
 }

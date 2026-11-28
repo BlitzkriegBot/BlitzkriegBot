@@ -164,6 +164,85 @@ impl SqliteStore {
     }
 }
 
+/// Persist `source = "reconciled"` for fallback-closed trade rows matching
+/// `predicate` in SQLite (living inside `store/` per #280 raw-SQL boundary).
+/// Keeps `exit_price` and `original_fallback_price` unchanged (issue #991).
+pub(crate) fn mark_fallback_trades_reconciled(
+    db: &crate::db::Database,
+    mode: crate::model::Mode,
+    predicate: impl Fn(&crate::contracts::trades::TradeRecord) -> bool,
+    now_ms: i64,
+) -> Result<usize, crate::contracts::store::StoreError> {
+    use crate::contracts::store::StoreError;
+    use crate::contracts::trades::TradeRecord;
+    use crate::db::trades::mode_key;
+    use rusqlite::params;
+
+    const SELECT_FALLBACK_ROWS: &str = "\
+SELECT account_id, id, exit_time, payload_json FROM trades
+WHERE mode = ?1 AND source = 'fallback'";
+    const UPDATE_SOURCE_RECONCILED: &str = "\
+UPDATE trades SET source = 'reconciled', payload_json = ?5, written_at_ms = ?6
+WHERE mode = ?1 AND account_id = ?2 AND id = ?3 AND exit_time = ?4 AND source = 'fallback'";
+
+    db.with_connection(|conn| {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| StoreError::Backend(format!("trades transaction failed: {e}")))?;
+        let candidates: Vec<(String, String, i64, String)> = {
+            let mut stmt = tx.prepare(SELECT_FALLBACK_ROWS).map_err(|e| {
+                StoreError::Backend(format!("trades fallback scan prepare failed: {e}"))
+            })?;
+            let mapped = stmt
+                .query_map(params![mode_key(mode)], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(|e| {
+                    StoreError::Backend(format!("trades fallback scan query failed: {e}"))
+                })?;
+            let mut rows = Vec::new();
+            for row in mapped {
+                rows.push(row.map_err(|e| {
+                    StoreError::Backend(format!("trades fallback scan row failed: {e}"))
+                })?);
+            }
+            rows
+        };
+        let mut flipped = 0usize;
+        for (account_id, id, exit_time, payload) in candidates {
+            let Ok(mut record) = serde_json::from_str::<TradeRecord>(&payload) else {
+                continue;
+            };
+            if record.source != "fallback" || !predicate(&record) {
+                continue;
+            }
+            record.source = "reconciled".to_string();
+            let rewritten = serde_json::to_string(&record).map_err(|e| {
+                StoreError::Backend(format!(
+                    "reconciled trade payload could not be serialized: {e}"
+                ))
+            })?;
+            let updated = tx
+                .execute(
+                    UPDATE_SOURCE_RECONCILED,
+                    params![mode_key(mode), account_id, id, exit_time, rewritten, now_ms,],
+                )
+                .map_err(|e| {
+                    StoreError::Backend(format!("trades fallback reconcile update failed: {e}"))
+                })?;
+            flipped += updated;
+        }
+        tx.commit()
+            .map_err(|e| StoreError::Backend(format!("trades commit failed: {e}")))?;
+        Ok(flipped)
+    })
+}
+
 impl SqliteStore {
     /// Merge wire field changes onto an existing risk row (the stored row,
     /// or the factory posture when the account has none) — the DB-side twin

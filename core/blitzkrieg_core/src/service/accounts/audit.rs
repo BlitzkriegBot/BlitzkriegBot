@@ -15,66 +15,56 @@ use crate::service::AUDIT_HEARTBEAT_MS;
 use super::Core;
 
 impl Core {
-    /// Assemble the audit's input from the core's own state. Cheap enough to run
-    /// on the maintenance tick: a handful of sums over live orders, open
-    /// positions and the reservation table.
+    /// Assemble the audit's input for the active account.
+    #[allow(dead_code)]
     pub(crate) fn build_audit_input(&self, now_ms: i64) -> AuditInput {
-        // The audit's cash identity describes the ACTIVE account's book (§9.5,
-        // E28): `reserved` reads the active ledger, so the live-BUY notional it
-        // is compared against must count only the ACTIVE account's orders. A
-        // sibling account's live BUY is spoken for in ITS book — counting it
-        // here made `reservations_match_open_buys` drift by that notional
-        // whenever any other account held an open order.
         let active_id = self.accounts.active_id().clone();
+        self.build_audit_input_for(&active_id, now_ms)
+    }
+
+    /// Assemble the audit's input for a specific account's book. Cheap enough
+    /// to run on the maintenance tick for every active account: a handful of
+    /// sums over live orders, open positions and the reservation table.
+    pub(crate) fn build_audit_input_for(&self, account_id: &AccountId, now_ms: i64) -> AuditInput {
         let mut open_buy_notional = Decimal::ZERO;
         let mut open_buys = 0usize;
         for o in self.ome.live_orders() {
-            if o.side != Side::Buy || o.account_id != active_id {
+            if o.side != Side::Buy || o.account_id != *account_id {
                 continue;
             }
             open_buys += 1;
             open_buy_notional += o.price * (o.size - o.filled_size).max(Decimal::ZERO);
         }
+        let ledger = self.accounts.ledger_of(account_id).ok();
         // A reservation is "stray" when the order behind it is not a tracked live
         // BUY: nobody can ever release it, so it is a permanent phantom hold.
-        let stray_reservations: Vec<(OrderId, Decimal)> = self
-            .accounts
-            .active_ledger()
-            .reservations_snapshot()
-            .into_iter()
-            .filter(|(id, _)| {
-                !self
-                    .ome
-                    .get(id)
-                    .map(|o| o.side == Side::Buy && o.status.is_live())
-                    .unwrap_or(false)
+        let stray_reservations: Vec<(OrderId, Decimal)> = ledger
+            .map(|l| {
+                l.reservations_snapshot()
+                    .into_iter()
+                    .filter(|(id, _)| {
+                        !self
+                            .ome
+                            .get(id)
+                            .map(|o| o.side == Side::Buy && o.status.is_live())
+                            .unwrap_or(false)
+                    })
+                    .collect()
             })
-            .collect();
-        // E28 (§9.2): every fold below scopes to the ACTIVE account — the
-        // identity describes ONE book, so a sibling account's realized PnL,
-        // pending redemption, or open position must not move it (they once
-        // did: the global summary/global receivable/all-books positions fold
-        // made `trade_ledger_identity` drift by exactly what the sibling
-        // account traded).
+            .unwrap_or_default();
+        // E28 (§9.2): every fold below scopes to `account_id` — the identity
+        // describes ONE book, so a sibling account's realized PnL, pending
+        // redemption, or open position must not move it.
         let (realized, seen_trades, trade_log) = match self.trade_log.as_ref() {
             Some(log) => {
                 use crate::contracts::trades::{TradeRead, TradeScope};
-                // One scoped SQL aggregate over the ACTIVE account's book — the
-                // identity is a per-account invariant (§9.2), so a global fold
-                // here would drift by exactly what a sibling account traded
-                // (that is the E28 bug this scoping exists to prevent).
                 match log.trade_totals(TradeScope::Account(crate::contracts::store::AccountScope {
-                    account: &active_id,
+                    account: account_id,
                 })) {
                     Ok(t) => (t.net_pnl, t.total_trades, TradeLogStatus::Readable),
                     Err(e) => {
-                        // An unreadable ledger is not a flat one. Reporting zero
-                        // here would silently satisfy the cash identity, so the
-                        // failure is loud and the trade leg is left unverified
-                        // (`TradeLogStatus::Unreadable` makes the audit fail
-                        // instead of PASSing — R7.1 L4).
                         tracing::error!(
-                            account = %active_id,
+                            account = %account_id,
                             error = ?e,
                             "accounting audit cannot read the trade ledger — \
                              the trade leg of the cash identity is UNVERIFIED"
@@ -91,51 +81,33 @@ impl Core {
             .positions
             .open_positions()
             .iter()
-            .filter(|p| p.account_id == active_id)
+            .filter(|p| p.account_id == *account_id)
         {
             spent += p.flows.entry_cost_usd + p.flows.entry_fee_usd;
             received += p.flows.proceeds_usd - p.flows.exit_fee_usd;
-            // The modeled maker rebate the ledger already credited rides the
-            // position's RECEIVED side until the close folds it into the trade
-            // record's net — the identity must cover the cash at every
-            // instant, not only after the position settles.
             received += p.flows.maker_rebate_usd;
         }
         let open_positions = self
             .positions
             .open_positions()
             .iter()
-            .filter(|p| p.account_id == active_id)
+            .filter(|p| p.account_id == *account_id)
             .count();
-        // E28: the audit's cash identity describes the ACTIVE account's book
-        // (§9.5). Cross-account isolation is asserted by the dedicated gate
-        // (account-cross-isolation-check.mjs), not by widening this identity.
-        let active = self.accounts.active_ledger();
-        // The venue report comparable to THIS book is the report of the venue
-        // the active account is BOUND to (#505): a sibling venue's cash is a
-        // different book's truth, and comparing across books once produced a
-        // phantom `venue_free_cash` drift of exactly (other venue's cash −
-        // this book's balance).
-        let active_venue = self.accounts.active_venue().to_string();
+        let account_venue = self
+            .accounts
+            .account(account_id)
+            .map(|a| a.venue.clone())
+            .unwrap_or_default();
         let venue_free = self
             .freeze_book
             .venue_free_by_venue
-            .get(&active_venue)
+            .get(&account_venue)
             .map(|(t, b)| (*t, *b));
-        let ledger_realigned = self.audit.last_realign.get(&active_venue).copied();
-        // The venue leg compares the ledger against a PAPER site's own figure
-        // when this venue declared itself SIMULATED (its plugin's declaration
-        // snapshot — the same `set_plugin_modes` injection the strategy
-        // handshake reads): the paper site freezes its reported free cash on a
-        // resting BUY and never nets the reservation back out, so the leg's
-        // `balance − reserved` expectation is fee-level cents off by
-        // construction and two strikes halted new entries over arithmetic that
-        // could never agree (external operator report, issue #669). The
-        // declaration is the plugin's identity — it cannot change mid-session.
+        let ledger_realigned = self.audit.last_realign.get(&account_venue).copied();
         let venue_simulated = self
             .plugin_modes
             .iter()
-            .find(|p| p.name == active_venue)
+            .find(|p| p.name == account_venue)
             .map(|p| {
                 p.modes.iter().any(|m| {
                     m.capabilities
@@ -147,32 +119,30 @@ impl Core {
             now_ms,
             live: self.config.mode == Mode::Live,
             identity: CashIdentity {
-                balance: active.balance(),
-                // Settled but not yet redeemed: owed to US — this book's us,
-                // not the process's (each claim carries the account it was
-                // booked from, E28 §9.2).
-                receivable: self.settlement.receivable_usd_for(active_id.as_str())
-                    + self.settlement.merge_receivable_usd_for(active_id.as_str()),
+                balance: ledger.map(|l| l.balance()).unwrap_or(Decimal::ZERO),
+                receivable: self.settlement.receivable_usd_for(account_id.as_str())
+                    + self
+                        .settlement
+                        .merge_receivable_usd_for(account_id.as_str()),
                 realized,
                 spent,
                 received,
             },
-            reserved: active.reserved(),
-            ledger_balanced: active.is_balanced(),
-            unfunded_reserved: active.unfunded_reserved(),
+            reserved: ledger.map(|l| l.reserved()).unwrap_or(Decimal::ZERO),
+            ledger_balanced: ledger.map(|l| l.is_balanced()).unwrap_or(true),
+            unfunded_reserved: ledger
+                .map(|l| l.unfunded_reserved())
+                .unwrap_or(Decimal::ZERO),
             open_buy_notional,
             open_buys,
             stray_reservations,
             venue_free: venue_free.map(|(_, b)| b),
             venue_free_at_ms: venue_free.map(|(t, _)| t),
             ledger_realigned,
-            // Issue #921: whether the correction above was ALREADY spent — the
-            // attribution mark the previous audit left on this venue's slot.
-            // `None` = fresh evidence (or nothing to explain).
             realign_explained_at: self
                 .audit
                 .realign_explained
-                .get(active_venue.as_str())
+                .get(account_venue.as_str())
                 .copied(),
             open_positions,
             seen_trades,
@@ -181,132 +151,180 @@ impl Core {
         }
     }
 
-    /// Run the accounting audit now and act on its verdict: alert, persist, and
-    /// block/halt new entries. Returns the report (also kept for the panel).
+    /// Run the accounting audit across EVERY active account (and always the
+    /// active display account) so a non-active live account (e.g.
+    /// `polysimulator` while `active_id` is an empty `default` book) is never
+    /// blind to drift, stray reservations, or ledger mismatches.
     ///
-    /// Called from `tick` on `audit_interval_sec`, and directly by tests.
+    /// Returns the active account's report (preserving the single-account
+    /// return contract for callers and tests).
     pub fn run_accounting_audit(&mut self, now_ms: i64) -> AuditReport {
-        let active_venue = self.accounts.active_venue().to_string();
-        let input = self.build_audit_input(now_ms);
-        let report = crate::reconcile::audit_accounting(&input, self.audit.anchor.as_ref());
-        // Issue #921: an audit that CLAIMS the venue's own correction as the
-        // residual's explanation marks it spent — the pure audit cannot mutate
-        // its input, so the caller carries the attribution into the per-venue
-        // slot. The NEXT audit then reads it as `realign_explained_at` and the
-        // same correction cannot excuse a second residual. A NEWER correction
-        // (written by `realign_venue_cash`) clears the slot first: fresh
-        // evidence, spendable once again.
-        if let Some(at_ms) = report.realign_claimed_at {
-            self.audit
-                .realign_explained
-                .insert(active_venue.clone(), at_ms);
-            tracing::info!(
-                venue = %active_venue,
-                correction_at_ms = at_ms,
-                "trade-leg residual attributed to the venue's own ledger correction — \
-                 one-shot excuse claimed; a lingering residual next audit comes back unexplained (issue #921)"
-            );
+        let active_id = self.accounts.active_id().clone();
+        let mut target_ids: Vec<AccountId> = self
+            .accounts
+            .account_list()
+            .iter()
+            .filter(|a| a.status == crate::account::AccountStatus::Active)
+            .map(|a| a.id.clone())
+            .collect();
+        if !target_ids.contains(&active_id) {
+            target_ids.push(active_id.clone());
         }
 
-        // Anchor: taken at the first audit the STRUCTURAL checks pass, then never
-        // moved while anything is failing — re-anchoring on a failure would hide
-        // exactly the movement the identity exists to expose.
-        if self.audit.anchor.is_none() && !report.structural_failure {
-            self.audit.anchor = Some(input.identity);
-        }
-        self.audit.runs += 1;
-        if report.ok {
-            self.audit.cross_source_failures = 0;
-        } else {
-            self.audit.failures += 1;
-            if report.structural_failure {
-                // Local inconsistency: no fetch race to forgive.
-                self.audit.cross_source_failures = 0;
+        let mut active_report: Option<AuditReport> = None;
+
+        for account_id in target_ids {
+            let acct_key = account_id.as_str().to_string();
+            let is_active = account_id == active_id;
+            let account_venue = self
+                .accounts
+                .account(&account_id)
+                .map(|a| a.venue.clone())
+                .unwrap_or_default();
+            let input = self.build_audit_input_for(&account_id, now_ms);
+            let anchor = self
+                .audit
+                .anchors_by_account
+                .get(&acct_key)
+                .or(if is_active {
+                    self.audit.anchor.as_ref()
+                } else {
+                    None
+                });
+            let report = crate::reconcile::audit_accounting(&input, anchor);
+
+            if let Some(at_ms) = report.realign_claimed_at
+                && !account_venue.is_empty()
+            {
+                self.audit
+                    .realign_explained
+                    .insert(account_venue.clone(), at_ms);
+                tracing::info!(
+                    account = %acct_key,
+                    venue = %account_venue,
+                    correction_at_ms = at_ms,
+                    "trade-leg residual attributed to the venue's own ledger correction — \
+                     one-shot excuse claimed; a lingering residual next audit comes back unexplained (issue #921)"
+                );
+            }
+
+            if !self.audit.anchors_by_account.contains_key(&acct_key) && !report.structural_failure
+            {
+                self.audit
+                    .anchors_by_account
+                    .insert(acct_key.clone(), input.identity);
+                if is_active {
+                    self.audit.anchor = Some(input.identity);
+                }
+            }
+
+            if is_active {
+                self.audit.runs += 1;
+            }
+            let cross_failures = self
+                .audit
+                .cross_source_failures_by_account
+                .entry(acct_key.clone())
+                .or_insert(0);
+            if report.ok {
+                *cross_failures = 0;
             } else {
-                self.audit.cross_source_failures += 1;
+                self.audit.failures += 1;
+                if report.structural_failure {
+                    *cross_failures = 0;
+                } else {
+                    *cross_failures += 1;
+                }
+            }
+            let cross_strike = *cross_failures >= 2;
+            if is_active {
+                self.audit.cross_source_failures = *cross_failures;
+            }
+
+            let should_halt = !report.ok
+                && (report.structural_failure || cross_strike)
+                && self.config.audit_halt_entries;
+            let was_halted = self.audit.halted_accounts.contains_key(&acct_key);
+            let mut resumed = false;
+
+            if should_halt && !was_halted {
+                self.audit
+                    .halted_accounts
+                    .insert(acct_key.clone(), report.note.clone());
+                let message = format!(
+                    "accounting audit FAILED [{}] — new entries blocked until it passes: {}",
+                    acct_key, report.note
+                );
+                tracing::error!(account = %acct_key, drift = %report.drift_usd, "{}", message);
+                eprintln!("core: accounting audit FAILED — see the error log line above");
+                self.note_error(
+                    &CoreError::new(CoreErrorCode::Internal, message.clone()),
+                    now_ms,
+                );
+                self.emit(Event::RiskAlert {
+                    code: CoreErrorCode::Internal,
+                    message,
+                });
+            } else if should_halt {
+                self.audit
+                    .halted_accounts
+                    .insert(acct_key.clone(), report.note.clone());
+            } else if was_halted {
+                self.audit.halted_accounts.remove(&acct_key);
+                resumed = true;
+                let message = format!(
+                    "accounting audit recovered [{}] — new entries resumed ({})",
+                    acct_key, report.note
+                );
+                tracing::info!(account = %acct_key, "{message}");
+                eprintln!("core: accounting audit recovered — see the info log line above");
+                self.emit(Event::RiskAlert {
+                    code: CoreErrorCode::Internal,
+                    message,
+                });
+            } else if !report.ok {
+                let message = if report.realign_claimed_at.is_some() {
+                    format!(
+                        "accounting audit drift [{}] (venue correction claimed as the residual, issue 921): {}",
+                        acct_key, report.note
+                    )
+                } else {
+                    format!("accounting audit drift [{}]: {}", acct_key, report.note)
+                };
+                tracing::warn!(account = %acct_key, drift = %report.drift_usd, "{}", message);
+                eprintln!("core: accounting audit drift — see the warn log line above");
+                self.emit(Event::RiskAlert {
+                    code: CoreErrorCode::Internal,
+                    message,
+                });
+            }
+
+            if is_active {
+                let heartbeat = self.audit.last_heartbeat_ms == 0
+                    || now_ms - self.audit.last_heartbeat_ms >= AUDIT_HEARTBEAT_MS;
+                if !report.ok || should_halt || was_halted || resumed || heartbeat {
+                    self.audit.last_heartbeat_ms = now_ms;
+                    self.persist_audit_report(&report);
+                }
+                active_report = Some(report);
+            } else if !report.ok || should_halt || resumed {
+                self.persist_audit_report(&report);
             }
         }
-        let cross_strike = self.audit.cross_source_failures >= 2;
-        // A halt is warranted by a structural failure immediately, by a venue
-        // mismatch only after it repeats (a single stale read must not stop
-        // entries), and only when the operator left the brake enabled.
-        let should_halt = !report.ok
-            && (report.structural_failure || cross_strike)
-            && self.config.audit_halt_entries;
-        let was_halted = self.audit.halted;
-        let mut resumed = false;
 
-        if should_halt && !was_halted {
+        // Sync process-level halt view with per-account halt map.
+        if let Some(reason) = self.audit.halted_accounts.get(active_id.as_str()).cloned() {
             self.audit.halted = true;
-            self.audit.halt_reason = report.note.clone();
-            let message = format!(
-                "accounting audit FAILED — new entries blocked until it passes: {}",
-                report.note
-            );
-            // The reason rides the structured channels (tracing / error slot /
-            // RiskAlert); the stream write stays a static literal — kernel
-            // text reaching the stream sink is the cleartext-logging shape
-            // CodeQL flags (#693 family).
-            tracing::error!(drift = %report.drift_usd, "{}", message);
-            eprintln!("core: accounting audit FAILED — see the error log line above");
-            // The halt is an error of the highest order (entries are blocked), so
-            // it also lands in the one panel-visible slot (#180).
-            self.note_error(
-                &CoreError::new(CoreErrorCode::Internal, message.clone()),
-                now_ms,
-            );
-            self.emit(Event::RiskAlert {
-                code: CoreErrorCode::Internal,
-                message,
-            });
-        } else if should_halt {
-            self.audit.halt_reason = report.note.clone();
-        } else if was_halted {
+            self.audit.halt_reason = reason;
+        } else if let Some((acct, reason)) = self.audit.halted_accounts.iter().next() {
+            self.audit.halted = true;
+            self.audit.halt_reason = format!("[{acct}] {reason}");
+        } else {
             self.audit.halted = false;
             self.audit.halt_reason.clear();
-            resumed = true;
-            let message = format!(
-                "accounting audit recovered — new entries resumed ({})",
-                report.note
-            );
-            tracing::info!("{message}");
-            eprintln!("core: accounting audit recovered — see the info log line above");
-            self.emit(Event::RiskAlert {
-                code: CoreErrorCode::Internal,
-                message,
-            });
-        } else if !report.ok {
-            // Failing but not (yet) halting: still loud, still persisted.
-            // Issue #921: a residual explained by the venue's own correction is
-            // named AS the venue's correction — a plain cross-source drift is
-            // not to be confused with it, and the excuse being claimed once is
-            // stated in the same breath.
-            let message = if report.realign_claimed_at.is_some() {
-                format!(
-                    "accounting audit drift (venue correction claimed as the residual, issue 921): {}",
-                    report.note
-                )
-            } else {
-                format!("accounting audit drift: {}", report.note)
-            };
-            tracing::warn!(drift = %report.drift_usd, "{}", message);
-            eprintln!("core: accounting audit drift — see the warn log line above");
-            self.emit(Event::RiskAlert {
-                code: CoreErrorCode::Internal,
-                message,
-            });
         }
 
-        // Persist on every failure, every halt/resume, and otherwise as a
-        // heartbeat — a healthy audit is the evidence that the check RAN. The
-        // very first audit is written too: a fresh process must be able to prove
-        // it checked before anything went wrong.
-        let heartbeat = self.audit.last_heartbeat_ms == 0
-            || now_ms - self.audit.last_heartbeat_ms >= AUDIT_HEARTBEAT_MS;
-        if !report.ok || should_halt || was_halted || resumed || heartbeat {
-            self.audit.last_heartbeat_ms = now_ms;
-            self.persist_audit_report(&report);
-        }
+        let report = active_report.expect("active account is always audited");
         self.audit.report = Some(report.clone());
         self.audit.last_at_ms = now_ms;
         report
@@ -320,7 +338,7 @@ impl Core {
 
     /// New entries are blocked by a failing accounting audit (issue #189).
     pub fn audit_blocks_entries(&self) -> bool {
-        self.audit.halted
+        self.audit.halted || !self.audit.halted_accounts.is_empty()
     }
 
     /// Why new entries are blocked (empty when they are not).
@@ -328,12 +346,18 @@ impl Core {
         &self.audit.halt_reason
     }
 
-    /// The gate itself: refuses a NEW entry while the audit is failing. Exits
-    /// (SELL) never consult this — a drifted ledger must not be able to trap the
-    /// bot in a position, which is what routing this through the kill switch did
-    /// (#174).
-    pub(crate) fn audit_entry_gate(&self) -> CoreResult<()> {
-        if self.audit.halted {
+    /// The gate itself: refuses a NEW entry for `account_id` while that
+    /// account's accounting audit is failing (or when a process-wide halt is
+    /// active with no per-account map populated). Exits (SELL) never consult
+    /// this — a drifted ledger must not be able to trap the bot in a position.
+    pub(crate) fn audit_entry_gate_for(&self, account_id: &AccountId) -> CoreResult<()> {
+        if let Some(reason) = self.audit.halted_accounts.get(account_id.as_str()) {
+            return Err(CoreError::new(
+                CoreErrorCode::RiskRejected,
+                format!("accounting audit halted new entries [{account_id}]: {reason}"),
+            ));
+        }
+        if self.audit.halted && self.audit.halted_accounts.is_empty() {
             return Err(CoreError::new(
                 CoreErrorCode::RiskRejected,
                 format!(
@@ -343,6 +367,12 @@ impl Core {
             ));
         }
         Ok(())
+    }
+
+    /// Active-account entry gate wrapper kept for existing callers/tests.
+    #[allow(dead_code)]
+    pub(crate) fn audit_entry_gate(&self) -> CoreResult<()> {
+        self.audit_entry_gate_for(self.accounts.active_id())
     }
 
     /// Mutable ledger access, for tests that must put the books into the exact

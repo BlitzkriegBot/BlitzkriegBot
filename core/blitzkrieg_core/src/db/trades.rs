@@ -242,6 +242,38 @@ impl TradeLog {
         self.write(|tx| self.retract_account_in(tx, scope, now))
     }
 
+    /// Persist `source = "reconciled"` for fallback-closed rows matching
+    /// `condition_id` so the durable SQLite ledger stays aligned with
+    /// `PositionManager::backfill_fallback_to_venue` even across restarts.
+    /// Keeps `exit_price` and `original_fallback_price` unchanged (issue #991).
+    pub fn mark_fallback_reconciled_by_condition(
+        &self,
+        condition_id: &str,
+        now_ms: i64,
+    ) -> Result<usize, StoreError> {
+        crate::store::mark_fallback_trades_reconciled(
+            &self.db,
+            self.mode,
+            |rec| rec.condition_id == condition_id,
+            now_ms,
+        )
+    }
+
+    /// Persist `source = "reconciled"` for fallback-closed rows whose
+    /// `token_id` is in `tokens`.
+    pub fn mark_fallback_reconciled_by_tokens(
+        &self,
+        tokens: &std::collections::HashSet<&str>,
+        now_ms: i64,
+    ) -> Result<usize, StoreError> {
+        crate::store::mark_fallback_trades_reconciled(
+            &self.db,
+            self.mode,
+            |rec| tokens.contains(rec.token_id.as_str()),
+            now_ms,
+        )
+    }
+
     // -- write helpers, all inside a caller-owned transaction -----------------
 
     fn append_in(
@@ -1790,5 +1822,62 @@ mod tests {
             dec!(3)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mark_fallback_reconciled_persists_to_sqlite_without_mutating_pnl() {
+        let db = TempDb::new();
+        let l = log(&db, Mode::Live);
+        let mut fb_cond = close_for("polysimulator", "hft-10", 1_000, dec!(-8.59));
+        fb_cond.condition_id = "cond-a".into();
+        fb_cond.token_id = "tok-a".into();
+        fb_cond.source = "fallback".into();
+        let mut fb_tok = close_for("polysimulator", "hft-11", 2_000, dec!(-3.33));
+        fb_tok.condition_id = "cond-b".into();
+        fb_tok.token_id = "tok-b".into();
+        fb_tok.source = "fallback".into();
+        let mut venue_row = close_for("polysimulator", "hft-12", 3_000, dec!(1.20));
+        venue_row.condition_id = "cond-a".into();
+        venue_row.token_id = "tok-a".into();
+        venue_row.source = "venue".into();
+        append(&l, &fb_cond).unwrap();
+        append(&l, &fb_tok).unwrap();
+        append(&l, &venue_row).unwrap();
+
+        let flipped_cond = l
+            .mark_fallback_reconciled_by_condition("cond-a", 9_000)
+            .unwrap();
+        assert_eq!(flipped_cond, 1);
+        assert_eq!(
+            l.mark_fallback_reconciled_by_condition("cond-a", 9_001)
+                .unwrap(),
+            0
+        );
+
+        let mut tokens = std::collections::HashSet::new();
+        tokens.insert("tok-b");
+        let flipped_tok = l
+            .mark_fallback_reconciled_by_tokens(&tokens, 9_002)
+            .unwrap();
+        assert_eq!(flipped_tok, 1);
+
+        let rows = l
+            .load_trades(
+                TradeScope::AllAccounts,
+                0,
+                std::num::NonZeroU32::new(10).unwrap(),
+            )
+            .unwrap();
+        let by_id: std::collections::HashMap<&str, &TradeRecord> =
+            rows.iter().map(|r| (r.id.as_str(), r)).collect();
+        assert_eq!(by_id["hft-10"].source, "reconciled");
+        assert_eq!(by_id["hft-10"].net_pnl_usd, dec!(-8.59));
+        assert_eq!(by_id["hft-11"].source, "reconciled");
+        assert_eq!(by_id["hft-12"].source, "venue");
+        assert_eq!(
+            l.trade_totals(TradeScope::AllAccounts).unwrap().unverified,
+            None,
+            "reconciled rows are no longer counted as unverified fallback"
+        );
     }
 }

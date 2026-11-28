@@ -1174,6 +1174,30 @@ impl Core {
                 // never fired) accrues onto the same flows.
                 self.positions
                     .apply_entry_fill(&id, d.delta, px, fee_usd, d.role);
+                if d.delta > Decimal::ZERO
+                    && d.limit_price >= Decimal::new(80, 2)
+                    && px > Decimal::ZERO
+                    && px <= d.limit_price * Decimal::new(75, 2)
+                {
+                    let msg = format!(
+                        "adverse_entry_fill_slippage: order {} ({} {}) intended limit {} \
+                         but filled at {} (>25% below limit — likely in-flight outcome collapse)",
+                        d.order_id, d.strategy, d.asset, d.limit_price, px
+                    );
+                    tracing::warn!(
+                        order = %d.order_id,
+                        strategy = %d.strategy,
+                        asset = %d.asset,
+                        limit = %d.limit_price,
+                        fill_price = %px,
+                        "{}",
+                        msg
+                    );
+                    self.emit(Event::RiskAlert {
+                        code: CoreErrorCode::RiskRejected,
+                        message: msg,
+                    });
+                }
                 if maker_rebate_usd != Decimal::ZERO {
                     self.positions.accrue_maker_rebate(&id, maker_rebate_usd);
                 }

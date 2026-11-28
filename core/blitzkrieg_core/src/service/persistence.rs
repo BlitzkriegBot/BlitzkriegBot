@@ -316,9 +316,32 @@ impl Core {
     /// #987, issue 991: reconcile backfill — mark fallback-closed positions on
     /// `condition_id` `source == "reconciled"` when venue cash truth arrives,
     /// keeping the fallback exit price (issue 991: a price that was estimated
-    /// is never re-labeled `venue`). Returns the number of rows marked.
+    /// is never re-labeled `venue`). Updates BOTH the in-memory closed list
+    /// and the durable SQLite `trades` table so the marker survives restarts.
+    /// Returns the number of rows marked.
     pub fn backfill_fallback_to_venue(&mut self, condition_id: &str) -> usize {
-        self.positions.backfill_fallback_to_venue(condition_id)
+        let mem = self.positions.backfill_fallback_to_venue(condition_id);
+        let db = self
+            .trade_log
+            .as_ref()
+            .map(|log| {
+                match log.mark_fallback_reconciled_by_condition(
+                    condition_id,
+                    blitzkrieg_market_api::net::now_ms(),
+                ) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::warn!(
+                            condition_id,
+                            error = ?e,
+                            "fallback->reconciled SQLite backfill failed"
+                        );
+                        0
+                    }
+                }
+            })
+            .unwrap_or(0);
+        mem.max(db)
     }
 
     /// Persist the current OPEN position set (best effort). Positions are few and

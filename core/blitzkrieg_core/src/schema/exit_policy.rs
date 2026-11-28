@@ -24,24 +24,105 @@ pub struct SetExitParams {
     /// 止盈（入场价百分比）：兜底入袋规则。出厂 100（近确定二元的胜利入袋）。
     #[serde(default, with = "crate::decimal::opt")]
     pub take_profit_pct: Option<Decimal>,
-    /// 强平秒数（轮剩余时间降到该值即硬性离场）。**0 = 关闭强平**（出厂
-    /// 校准值：旧的 120s 截止切掉了后来赔付的轮）。负值拒绝。
+    /// 价格天花板止盈（绝对价格，0 = 关闭，出厂 0.98）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub ceiling_tp_price: Option<Decimal>,
+    /// 持有到期策略保护止损带宽（%，出厂 50）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub holder_stop_pct: Option<Decimal>,
+    /// 强平秒数（轮剩余时间降到该值即硬性离场）。0 = 关闭强平。
     #[serde(default)]
     pub force_exit_sec: Option<i64>,
-    /// 移动止盈总开关（trailing stop 是否武装）。**出厂 false** —— 10-02
-    /// #356 校准裁决（「操盘手从不卖进利润，全部持有到期 REDEEM」），但
-    /// spread_arb 一类「入场→坐山车→止损」的价差策略正是它该管的形态：
-    /// 单边持仓到期特征暴露了旧校准的局限，故升格为热配项。true/false
-    /// 都是合法值（bool 没有「非法值」可拒）。
+    /// 轮次最小剩余时间退出（秒，0 = 仅到期结算）。
+    #[serde(default)]
+    pub min_time_left_sec: Option<i64>,
+    /// 简单退出模式开关（出厂 true）。
+    #[serde(default)]
+    pub simple_exit_enabled: Option<bool>,
+    /// 动态收紧止损开关（出厂 true）。
+    #[serde(default)]
+    pub dynamic_stop_enabled: Option<bool>,
+    /// 动态止损开始收紧的剩余秒数（出厂 300）。
+    #[serde(default)]
+    pub stop_tighten_start_sec: Option<i64>,
+    /// 动态止损收紧下限（%，出厂 10）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub stop_min_pct: Option<Decimal>,
+    /// 移动止盈总开关（出厂 false）。
     #[serde(default)]
     pub trailing_enabled: Option<bool>,
-    /// #935 fix 2：策略出场 maker-first 总开关。**出厂 false**（字节保持）。
-    /// on 时：策略出场建议里带 `use_maker` 且 reason 是利润侧
-    /// （take_profit / trailing_stop）的平仓先挂 maker（`maker_timeout_ms`
-    /// 期满升 taker）；保护侧（stop_loss / time_exit）永不转 maker
-    /// （#915 反事实：挂单止损对崩腿 0/2 无效）。
+    /// 移动止盈启动所需最高浮盈（%，出厂 15）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub trailing_min_high_pct: Option<Decimal>,
+    /// 移动止盈最小回撤宽度（%，出厂 8）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub min_trail_pct: Option<Decimal>,
+    /// 比例回撤移动止盈开关（出厂 true）。
+    #[serde(default)]
+    pub proportional_trail_enabled: Option<bool>,
+    /// 比例回撤系数（%，出厂 15）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub proportional_trail_pct: Option<Decimal>,
+    /// 启用比例回撤的最低最高浮盈（%，出厂 15）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub proportional_trail_min_pct: Option<Decimal>,
+    /// 比例回撤最小允许回吐（%，出厂 3）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub proportional_trail_min_giveback_pct: Option<Decimal>,
+    /// 紧止损开关（完整模式，出厂 true）。
+    #[serde(default)]
+    pub tight_stop_enabled: Option<bool>,
+    /// 紧止损百分比（完整模式，出厂 12）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub tight_stop_pct: Option<Decimal>,
+    /// 棘轮保底止盈开关（完整模式，出厂 false）。
+    #[serde(default)]
+    pub ratchet_enabled: Option<bool>,
+    /// 棘轮高点确认 tick 数（出厂 3）。
+    #[serde(default)]
+    pub ratchet_confirm_ticks: Option<u32>,
+    /// 棘轮高点确认容差（%，出厂 0.5）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub ratchet_confirm_tolerance_pct: Option<Decimal>,
+    /// 防插针买一偏离中价上限（%，出厂 8）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub max_bid_wick_pct: Option<Decimal>,
+    /// 记忆价判定有效期（秒，出厂 30）。
+    #[serde(default)]
+    pub max_last_price_age_sec: Option<i64>,
+    /// 滞涨止盈浮盈阈值（完整模式，%，出厂 20）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub stale_profit_pct: Option<Decimal>,
+    /// 滞涨止盈买一不变时长（秒，出厂 10）。
+    #[serde(default)]
+    pub stale_profit_bid_unchanged_sec: Option<i64>,
+    /// 停滞止盈浮盈阈值（完整模式，%，出厂 5）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub stagnant_profit_pct: Option<Decimal>,
+    /// 停滞止盈无进展时长（秒，出厂 30）。
+    #[serde(default)]
+    pub stagnant_duration_sec: Option<i64>,
+    /// 深度塌陷止盈阈值（完整模式，%，出厂 60）。
+    #[serde(default, with = "crate::decimal::opt")]
+    pub depth_collapse_threshold_pct: Option<Decimal>,
+    /// 完整模式开仓宽限期（秒，出厂 3）。
+    #[serde(default)]
+    pub exit_grace_sec: Option<i64>,
+    /// 仅止盈走挂单出场（完整模式，出厂 false）。
+    #[serde(default)]
+    pub maker_exits_for_tp_only: Option<bool>,
+    /// 固定止盈优先挂单（出厂 true）。
+    #[serde(default)]
+    pub maker_first_exit_enabled: Option<bool>,
+    /// 策略出场 maker-first 总开关（出厂 false）。
     #[serde(default)]
     pub strategy_exit_maker_first: Option<bool>,
+    /// 挂单出场追单超时（ms，出厂 250；0 = 沿用入场默认，负数 = 永不追单）。
+    #[serde(default)]
+    pub exit_maker_timeout_ms: Option<i64>,
+    /// 盘口定价有效期（秒，出厂 60）。
+    #[serde(default)]
+    pub max_book_age_sec: Option<i64>,
     /// Free-text note from the caller, echoed into the audit line.
     #[serde(default)]
     pub reason: Option<String>,
@@ -53,9 +134,39 @@ impl SetExitParams {
     pub fn is_empty(&self) -> bool {
         self.stop_loss_pct.is_none()
             && self.take_profit_pct.is_none()
+            && self.ceiling_tp_price.is_none()
+            && self.holder_stop_pct.is_none()
             && self.force_exit_sec.is_none()
+            && self.min_time_left_sec.is_none()
+            && self.simple_exit_enabled.is_none()
+            && self.dynamic_stop_enabled.is_none()
+            && self.stop_tighten_start_sec.is_none()
+            && self.stop_min_pct.is_none()
             && self.trailing_enabled.is_none()
+            && self.trailing_min_high_pct.is_none()
+            && self.min_trail_pct.is_none()
+            && self.proportional_trail_enabled.is_none()
+            && self.proportional_trail_pct.is_none()
+            && self.proportional_trail_min_pct.is_none()
+            && self.proportional_trail_min_giveback_pct.is_none()
+            && self.tight_stop_enabled.is_none()
+            && self.tight_stop_pct.is_none()
+            && self.ratchet_enabled.is_none()
+            && self.ratchet_confirm_ticks.is_none()
+            && self.ratchet_confirm_tolerance_pct.is_none()
+            && self.max_bid_wick_pct.is_none()
+            && self.max_last_price_age_sec.is_none()
+            && self.stale_profit_pct.is_none()
+            && self.stale_profit_bid_unchanged_sec.is_none()
+            && self.stagnant_profit_pct.is_none()
+            && self.stagnant_duration_sec.is_none()
+            && self.depth_collapse_threshold_pct.is_none()
+            && self.exit_grace_sec.is_none()
+            && self.maker_exits_for_tp_only.is_none()
+            && self.maker_first_exit_enabled.is_none()
             && self.strategy_exit_maker_first.is_none()
+            && self.exit_maker_timeout_ms.is_none()
+            && self.max_book_age_sec.is_none()
     }
 }
 

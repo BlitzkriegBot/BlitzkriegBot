@@ -747,3 +747,237 @@ fn high_price_taker_buy_refused_when_book_collapsed() {
         "normal high-price taker buy near best ask must succeed"
     );
 }
+
+/// Unfreezing after a daily-loss trip resets the risk-gate baseline to the
+/// account's current realized PnL and re-anchors opening equity to current
+/// total equity, while preserving `realized_pnl_usd` as honest accounting
+/// truth. Subsequent winning or small-loss closes must NOT immediately
+/// re-freeze the account; only a fresh full cap of new losses re-trips it.
+#[test]
+fn unfreeze_resets_risk_baseline_so_winning_close_does_not_refreeze() {
+    let mut c = daily_core(PositionConfig {
+        max_daily_loss_usd: Decimal::ZERO,
+        max_daily_loss_equity_pct: dec!(20), // 20% of equity
+        asset_cooldown_sec: 0,
+        loss_cooldown_sec: 0,
+        stop_loss_cooldown_sec: 0,
+        ..Default::default()
+    });
+    let acct = crate::model::default_account_id();
+    let t0 = 1_700_000_000_000;
+    // Account starts at $50, suffers -$14 realized loss (> 20% = $10), trips.
+    c.accounts.get_mut(&acct).unwrap().seed(dec!(50));
+    c.roll_daily_budget(t0);
+    c.positions.set_daily_realized_for_test(&acct, dec!(-14));
+    c.positions.set_daily_tripped_for_test(&acct, t0, dec!(10));
+    c.emit_daily_trip();
+    assert!(c.account_gate_blocked("default", t0 + 100));
+
+    // Current balance after the -$14 loss is $36. Operator unfreezes.
+    c.accounts.get_mut(&acct).unwrap().seed(dec!(36));
+    c.unfreeze_account("default", "op", t0 + 200)
+        .expect("unfreeze");
+    assert!(!c.account_gate_blocked("default", t0 + 300));
+    // Honest accounting truth is preserved, while baseline & opening equity reset.
+    let st = c.positions.daily_state_for("default");
+    assert_eq!(st.realized_pnl_usd, dec!(-14));
+    assert_eq!(st.risk_baseline_pnl_usd, dec!(-14));
+    assert_eq!(st.opening_equity_usd, dec!(36));
+    assert!(!c.positions.daily_loss_tripped_for("default"));
+
+    // Winning trade (+$2) closes: must NOT re-trip or re-freeze!
+    let pos = c.positions.open(
+        crate::position::OpenParams {
+            strategy: "s1".into(),
+            asset: "ETH".into(),
+            direction: SignalDirection::Down,
+            token_id: "tok_win".into(),
+            condition_id: "cond_win".into(),
+            account_id: acct.clone(),
+            venue: "polymarket".into(),
+            partner_token_id: String::new(),
+            entry_price: dec!(0.78),
+            expires_at_ms: t0 + 300_000,
+            was_maker: true,
+            target_exit_price: None,
+            round_duration_sec: 300,
+            round_slot: 1,
+        },
+        t0 + 400,
+    );
+    c.positions.apply_entry_fill(
+        &pos.id,
+        dec!(10),
+        dec!(0.78),
+        Decimal::ZERO,
+        OrderRole::Maker,
+    );
+    c.positions
+        .close(
+            &pos.id,
+            dec!(0.98),
+            ExitReason::TakeProfit,
+            true,
+            t0 + 500,
+            "venue",
+        )
+        .unwrap();
+    c.emit_daily_trip();
+    assert!(
+        !c.account_gate_blocked("default", t0 + 600),
+        "a winning close after unfreeze must never re-freeze the account"
+    );
+    assert_eq!(c.positions.daily_pnl_for("default"), dec!(-12));
+
+    // A fresh loss exceeding 20% of $36 (= $7.20) since unfreeze DOES re-trip.
+    // Current post-baseline PnL is +$2, so a -$9.50 loss brings it to -$7.50 <= -$7.20.
+    let pos2 = c.positions.open(
+        crate::position::OpenParams {
+            strategy: "s1".into(),
+            asset: "BTC".into(),
+            direction: SignalDirection::Up,
+            token_id: "tok_loss".into(),
+            condition_id: "cond_loss".into(),
+            account_id: acct.clone(),
+            venue: "polymarket".into(),
+            partner_token_id: String::new(),
+            entry_price: dec!(0.95),
+            expires_at_ms: t0 + 600_000,
+            was_maker: true,
+            target_exit_price: None,
+            round_duration_sec: 300,
+            round_slot: 2,
+        },
+        t0 + 700,
+    );
+    c.positions.apply_entry_fill(
+        &pos2.id,
+        dec!(10),
+        dec!(0.95),
+        Decimal::ZERO,
+        OrderRole::Maker,
+    );
+    c.positions
+        .close(
+            &pos2.id,
+            dec!(0.00),
+            ExitReason::StopLoss,
+            true,
+            t0 + 800,
+            "venue",
+        )
+        .unwrap();
+    c.emit_daily_trip();
+    assert!(
+        c.account_gate_blocked("default", t0 + 900),
+        "a fresh full-cap loss after unfreeze must trip the breaker again"
+    );
+}
+
+/// Restarting on a persisted same-day `daily-loss.json` resets the risk
+/// baseline to the persisted realized PnL and re-anchors opening equity on the
+/// first `roll_daily_budget` tick, so a fresh restart followed by winning
+/// trades never self-freezes on earlier-in-the-day losses.
+#[test]
+fn restart_resets_risk_baseline_and_reanchors_opening_equity() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "bk-restart-daily-baseline-{}-{}",
+        std::process::id(),
+        nanos
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let daily_path = dir.join("positions.daily-loss.json");
+    let t0 = 1_700_000_000_000;
+    let day = crate::position::utc_day_index(t0);
+    // Simulate a prior run that ended at -$14.22 realized and a crushed $20.71 opening equity.
+    std::fs::write(
+        &daily_path,
+        format!(
+            r#"{{
+  "accounts": {{
+    "default": {{
+      "dayIndex": {day},
+      "realizedPnlUsd": "-14.22",
+      "openingEquityUsd": "20.71",
+      "equityBasis": "dry",
+      "openedAtMs": {t0}
+    }}
+  }}
+}}"#
+        ),
+    )
+    .unwrap();
+
+    let mut c = daily_core(PositionConfig {
+        max_daily_loss_usd: Decimal::ZERO,
+        max_daily_loss_equity_pct: dec!(20),
+        daily_pnl_path: Some(daily_path.to_string_lossy().to_string()),
+        asset_cooldown_sec: 0,
+        loss_cooldown_sec: 0,
+        stop_loss_cooldown_sec: 0,
+        ..Default::default()
+    });
+    let acct = crate::model::default_account_id();
+    c.accounts.get_mut(&acct).unwrap().seed(dec!(48));
+    c.roll_daily_budget(t0 + 1_000);
+
+    let st = c.positions.daily_state_for("default");
+    assert_eq!(st.realized_pnl_usd, dec!(-14.22));
+    assert_eq!(st.risk_baseline_pnl_usd, dec!(-14.22));
+    assert_eq!(
+        st.opening_equity_usd,
+        dec!(48),
+        "restart must re-anchor opening equity to current total equity"
+    );
+    assert!(!c.positions.daily_loss_tripped_for("default"));
+
+    // Close a winning trade after restart: must NOT freeze!
+    let pos = c.positions.open(
+        crate::position::OpenParams {
+            strategy: "s1".into(),
+            asset: "SOL".into(),
+            direction: SignalDirection::Down,
+            token_id: "tok_sol".into(),
+            condition_id: "cond_sol".into(),
+            account_id: acct.clone(),
+            venue: "polymarket".into(),
+            partner_token_id: String::new(),
+            entry_price: dec!(0.78),
+            expires_at_ms: t0 + 300_000,
+            was_maker: true,
+            target_exit_price: None,
+            round_duration_sec: 300,
+            round_slot: 1,
+        },
+        t0 + 2_000,
+    );
+    c.positions.apply_entry_fill(
+        &pos.id,
+        dec!(10),
+        dec!(0.78),
+        Decimal::ZERO,
+        OrderRole::Maker,
+    );
+    c.positions
+        .close(
+            &pos.id,
+            dec!(0.99),
+            ExitReason::TakeProfit,
+            true,
+            t0 + 3_000,
+            "venue",
+        )
+        .unwrap();
+    c.emit_daily_trip();
+    assert!(
+        !c.account_gate_blocked("default", t0 + 4_000),
+        "winning trades after a fresh restart must not self-freeze on pre-restart losses"
+    );
+    assert_eq!(c.positions.daily_pnl_for("default"), dec!(-12.12));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

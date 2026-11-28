@@ -61,83 +61,336 @@ impl Core {
             .cloned()
             .unwrap_or_else(|| self.config.positions.exit.clone());
         let mut changes: Vec<ExitSetChange> = Vec::new();
-        let mut plan = |field: &'static str,
-                        from: Decimal,
-                        to: Option<Decimal>,
-                        effect: &'static str|
-         -> CoreResult<()> {
+        fn plan_pos_dec(
+            changes: &mut Vec<ExitSetChange>,
+            field: &'static str,
+            from: Decimal,
+            to: Option<Decimal>,
+        ) -> CoreResult<()> {
             let Some(to) = to else { return Ok(()) };
             if to <= Decimal::ZERO {
                 return Err(CoreError::new(
                     CoreErrorCode::InvalidParams,
-                    format!(
-                        "{field} must be > 0 (a percentage; there is no `off` \
-                             spelling here), got {to}; nothing was applied"
-                    ),
+                    format!("{field} must be > 0, got {to}; nothing was applied"),
                 ));
             }
             changes.push(ExitSetChange {
                 field,
                 from: from.to_string(),
                 to: to.to_string(),
-                effect,
+                effect: "live",
             });
             Ok(())
-        };
+        }
+        fn plan_nonneg_dec(
+            changes: &mut Vec<ExitSetChange>,
+            field: &'static str,
+            from: Decimal,
+            to: Option<Decimal>,
+        ) -> CoreResult<()> {
+            let Some(to) = to else { return Ok(()) };
+            if to < Decimal::ZERO {
+                return Err(CoreError::new(
+                    CoreErrorCode::InvalidParams,
+                    format!("{field} must be >= 0, got {to}; nothing was applied"),
+                ));
+            }
+            changes.push(ExitSetChange {
+                field,
+                from: from.to_string(),
+                to: to.to_string(),
+                effect: "live",
+            });
+            Ok(())
+        }
+        fn plan_nonneg_i64(
+            changes: &mut Vec<ExitSetChange>,
+            field: &'static str,
+            from: i64,
+            to: Option<i64>,
+        ) -> CoreResult<()> {
+            let Some(to) = to else { return Ok(()) };
+            if to < 0 {
+                return Err(CoreError::new(
+                    CoreErrorCode::InvalidParams,
+                    format!("{field} must be >= 0, got {to}; nothing was applied"),
+                ));
+            }
+            changes.push(ExitSetChange {
+                field,
+                from: from.to_string(),
+                to: to.to_string(),
+                effect: "live",
+            });
+            Ok(())
+        }
+        fn plan_pos_i64(
+            changes: &mut Vec<ExitSetChange>,
+            field: &'static str,
+            from: i64,
+            to: Option<i64>,
+        ) -> CoreResult<()> {
+            let Some(to) = to else { return Ok(()) };
+            if to <= 0 {
+                return Err(CoreError::new(
+                    CoreErrorCode::InvalidParams,
+                    format!("{field} must be > 0, got {to}; nothing was applied"),
+                ));
+            }
+            changes.push(ExitSetChange {
+                field,
+                from: from.to_string(),
+                to: to.to_string(),
+                effect: "live",
+            });
+            Ok(())
+        }
+        fn plan_bool(
+            changes: &mut Vec<ExitSetChange>,
+            field: &'static str,
+            from: bool,
+            to: Option<bool>,
+        ) {
+            if let Some(to) = to {
+                changes.push(ExitSetChange {
+                    field,
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    effect: "live",
+                });
+            }
+        }
 
-        plan(
+        plan_pos_dec(
+            &mut changes,
             "stopLossPct",
             current.stop_loss_pct,
             patch.stop_loss_pct,
-            "live",
         )?;
-        plan(
+        plan_pos_dec(
+            &mut changes,
             "takeProfitPct",
             current.take_profit_pct,
             patch.take_profit_pct,
-            "live",
         )?;
-
-        if let Some(sec) = patch.force_exit_sec {
-            if sec < 0 {
+        if let Some(v) = patch.ceiling_tp_price {
+            if v < Decimal::ZERO || v > Decimal::ONE {
                 return Err(CoreError::new(
                     CoreErrorCode::InvalidParams,
                     format!(
-                        "forceExitSec must be >= 0 (0 = the guillotine is OFF, \
-                             the calibrated default), got {sec}; nothing was applied"
+                        "ceilingTpPrice must be in [0, 1] (0 = off), got {v}; nothing was applied"
                     ),
                 ));
             }
             changes.push(ExitSetChange {
-                field: "forceExitSec",
-                from: current.force_exit_sec.to_string(),
-                to: sec.to_string(),
+                field: "ceilingTpPrice",
+                from: current.ceiling_tp_price.to_string(),
+                to: v.to_string(),
                 effect: "live",
             });
         }
-
-        // A bool has no illegal value to refuse — the patch either names it or
-        // it doesn't. The from/to audit strings are `true`/`false` verbatim,
-        // same convention as the decimal fields' `to_string`.
-        if let Some(on) = patch.trailing_enabled {
+        plan_pos_dec(
+            &mut changes,
+            "holderStopPct",
+            current.holder_stop_pct,
+            patch.holder_stop_pct,
+        )?;
+        plan_nonneg_i64(
+            &mut changes,
+            "forceExitSec",
+            current.force_exit_sec,
+            patch.force_exit_sec,
+        )?;
+        plan_nonneg_i64(
+            &mut changes,
+            "minTimeLeftSec",
+            current.min_time_left_sec,
+            patch.min_time_left_sec,
+        )?;
+        plan_bool(
+            &mut changes,
+            "simpleExitEnabled",
+            current.simple_exit_enabled,
+            patch.simple_exit_enabled,
+        );
+        plan_bool(
+            &mut changes,
+            "dynamicStopEnabled",
+            current.dynamic_stop_enabled,
+            patch.dynamic_stop_enabled,
+        );
+        plan_nonneg_i64(
+            &mut changes,
+            "stopTightenStartSec",
+            current.stop_tighten_start_sec,
+            patch.stop_tighten_start_sec,
+        )?;
+        plan_pos_dec(
+            &mut changes,
+            "stopMinPct",
+            current.stop_min_pct,
+            patch.stop_min_pct,
+        )?;
+        plan_bool(
+            &mut changes,
+            "trailingEnabled",
+            current.trailing_enabled,
+            patch.trailing_enabled,
+        );
+        plan_nonneg_dec(
+            &mut changes,
+            "trailingMinHighPct",
+            current.trailing_min_high_pct,
+            patch.trailing_min_high_pct,
+        )?;
+        plan_nonneg_dec(
+            &mut changes,
+            "minTrailPct",
+            current.min_trail_pct,
+            patch.min_trail_pct,
+        )?;
+        plan_bool(
+            &mut changes,
+            "proportionalTrailEnabled",
+            current.proportional_trail_enabled,
+            patch.proportional_trail_enabled,
+        );
+        plan_nonneg_dec(
+            &mut changes,
+            "proportionalTrailPct",
+            current.proportional_trail_pct,
+            patch.proportional_trail_pct,
+        )?;
+        plan_nonneg_dec(
+            &mut changes,
+            "proportionalTrailMinPct",
+            current.proportional_trail_min_pct,
+            patch.proportional_trail_min_pct,
+        )?;
+        plan_nonneg_dec(
+            &mut changes,
+            "proportionalTrailMinGivebackPct",
+            current.proportional_trail_min_giveback_pct,
+            patch.proportional_trail_min_giveback_pct,
+        )?;
+        plan_bool(
+            &mut changes,
+            "tightStopEnabled",
+            current.tight_stop_enabled,
+            patch.tight_stop_enabled,
+        );
+        plan_pos_dec(
+            &mut changes,
+            "tightStopPct",
+            current.tight_stop_pct,
+            patch.tight_stop_pct,
+        )?;
+        plan_bool(
+            &mut changes,
+            "ratchetEnabled",
+            current.ratchet_enabled,
+            patch.ratchet_enabled,
+        );
+        if let Some(ticks) = patch.ratchet_confirm_ticks {
+            if ticks == 0 {
+                return Err(CoreError::new(
+                    CoreErrorCode::InvalidParams,
+                    "ratchetConfirmTicks must be >= 1; nothing was applied".to_string(),
+                ));
+            }
             changes.push(ExitSetChange {
-                field: "trailingEnabled",
-                from: current.trailing_enabled.to_string(),
-                to: on.to_string(),
+                field: "ratchetConfirmTicks",
+                from: current.ratchet_confirm_ticks.to_string(),
+                to: ticks.to_string(),
                 effect: "live",
             });
         }
-
-        // #935 fix 2: same bool convention as trailingEnabled — no illegal
-        // value to refuse, the patch either names it or it doesn't.
-        if let Some(on) = patch.strategy_exit_maker_first {
+        plan_nonneg_dec(
+            &mut changes,
+            "ratchetConfirmTolerancePct",
+            current.ratchet_confirm_tolerance_pct,
+            patch.ratchet_confirm_tolerance_pct,
+        )?;
+        plan_nonneg_dec(
+            &mut changes,
+            "maxBidWickPct",
+            current.max_bid_wick_pct,
+            patch.max_bid_wick_pct,
+        )?;
+        plan_pos_i64(
+            &mut changes,
+            "maxLastPriceAgeSec",
+            current.max_last_price_age_sec,
+            patch.max_last_price_age_sec,
+        )?;
+        plan_nonneg_dec(
+            &mut changes,
+            "staleProfitPct",
+            current.stale_profit_pct,
+            patch.stale_profit_pct,
+        )?;
+        plan_nonneg_i64(
+            &mut changes,
+            "staleProfitBidUnchangedSec",
+            current.stale_profit_bid_unchanged_sec,
+            patch.stale_profit_bid_unchanged_sec,
+        )?;
+        plan_nonneg_dec(
+            &mut changes,
+            "stagnantProfitPct",
+            current.stagnant_profit_pct,
+            patch.stagnant_profit_pct,
+        )?;
+        plan_nonneg_i64(
+            &mut changes,
+            "stagnantDurationSec",
+            current.stagnant_duration_sec,
+            patch.stagnant_duration_sec,
+        )?;
+        plan_nonneg_dec(
+            &mut changes,
+            "depthCollapseThresholdPct",
+            current.depth_collapse_threshold_pct,
+            patch.depth_collapse_threshold_pct,
+        )?;
+        plan_nonneg_i64(
+            &mut changes,
+            "exitGraceSec",
+            current.exit_grace_sec,
+            patch.exit_grace_sec,
+        )?;
+        plan_bool(
+            &mut changes,
+            "makerExitsForTpOnly",
+            current.maker_exits_for_tp_only,
+            patch.maker_exits_for_tp_only,
+        );
+        plan_bool(
+            &mut changes,
+            "makerFirstExitEnabled",
+            current.maker_first_exit_enabled,
+            patch.maker_first_exit_enabled,
+        );
+        plan_bool(
+            &mut changes,
+            "strategyExitMakerFirst",
+            current.strategy_exit_maker_first,
+            patch.strategy_exit_maker_first,
+        );
+        if let Some(ms) = patch.exit_maker_timeout_ms {
             changes.push(ExitSetChange {
-                field: "strategyExitMakerFirst",
-                from: current.strategy_exit_maker_first.to_string(),
-                to: on.to_string(),
+                field: "exitMakerTimeoutMs",
+                from: current.exit_maker_timeout_ms.to_string(),
+                to: ms.to_string(),
                 effect: "live",
             });
         }
+        plan_pos_i64(
+            &mut changes,
+            "maxBookAgeSec",
+            current.max_book_age_sec,
+            patch.max_book_age_sec,
+        )?;
         if changes.is_empty() {
             return Err(CoreError::new(
                 CoreErrorCode::InvalidParams,

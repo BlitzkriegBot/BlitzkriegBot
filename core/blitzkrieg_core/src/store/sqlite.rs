@@ -313,30 +313,181 @@ impl SqliteStore {
             .cloned()
             .unwrap_or_default();
         for (field, value) in fields {
+            let raw = value.trim();
             match field.as_str() {
                 "stopLossPct" => {
-                    if let Ok(v) = value.trim().parse::<Decimal>() {
+                    if let Ok(v) = raw.parse::<Decimal>() {
                         exit.stop_loss_pct = v;
                     }
                 }
                 "takeProfitPct" => {
-                    if let Ok(v) = value.trim().parse::<Decimal>() {
+                    if let Ok(v) = raw.parse::<Decimal>() {
                         exit.take_profit_pct = v;
                     }
                 }
+                "ceilingTpPrice" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.ceiling_tp_price = v;
+                    }
+                }
+                "holderStopPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.holder_stop_pct = v;
+                    }
+                }
                 "forceExitSec" => {
-                    if let Ok(v) = value.trim().parse::<i64>() {
+                    if let Ok(v) = raw.parse::<i64>() {
                         exit.force_exit_sec = v;
                     }
                 }
+                "minTimeLeftSec" => {
+                    if let Ok(v) = raw.parse::<i64>() {
+                        exit.min_time_left_sec = v;
+                    }
+                }
+                "simpleExitEnabled" => {
+                    if let Ok(v) = raw.parse::<bool>() {
+                        exit.simple_exit_enabled = v;
+                    }
+                }
+                "dynamicStopEnabled" => {
+                    if let Ok(v) = raw.parse::<bool>() {
+                        exit.dynamic_stop_enabled = v;
+                    }
+                }
+                "stopTightenStartSec" => {
+                    if let Ok(v) = raw.parse::<i64>() {
+                        exit.stop_tighten_start_sec = v;
+                    }
+                }
+                "stopMinPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.stop_min_pct = v;
+                    }
+                }
                 "trailingEnabled" => {
-                    if let Ok(v) = value.trim().parse::<bool>() {
+                    if let Ok(v) = raw.parse::<bool>() {
                         exit.trailing_enabled = v;
                     }
                 }
+                "trailingMinHighPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.trailing_min_high_pct = v;
+                    }
+                }
+                "minTrailPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.min_trail_pct = v;
+                    }
+                }
+                "proportionalTrailEnabled" => {
+                    if let Ok(v) = raw.parse::<bool>() {
+                        exit.proportional_trail_enabled = v;
+                    }
+                }
+                "proportionalTrailPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.proportional_trail_pct = v;
+                    }
+                }
+                "proportionalTrailMinPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.proportional_trail_min_pct = v;
+                    }
+                }
+                "proportionalTrailMinGivebackPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.proportional_trail_min_giveback_pct = v;
+                    }
+                }
+                "tightStopEnabled" => {
+                    if let Ok(v) = raw.parse::<bool>() {
+                        exit.tight_stop_enabled = v;
+                    }
+                }
+                "tightStopPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.tight_stop_pct = v;
+                    }
+                }
+                "ratchetEnabled" => {
+                    if let Ok(v) = raw.parse::<bool>() {
+                        exit.ratchet_enabled = v;
+                    }
+                }
+                "ratchetConfirmTicks" => {
+                    if let Ok(v) = raw.parse::<u32>() {
+                        exit.ratchet_confirm_ticks = v;
+                    }
+                }
+                "ratchetConfirmTolerancePct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.ratchet_confirm_tolerance_pct = v;
+                    }
+                }
+                "maxBidWickPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.max_bid_wick_pct = v;
+                    }
+                }
+                "maxLastPriceAgeSec" => {
+                    if let Ok(v) = raw.parse::<i64>() {
+                        exit.max_last_price_age_sec = v;
+                    }
+                }
+                "staleProfitPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.stale_profit_pct = v;
+                    }
+                }
+                "staleProfitBidUnchangedSec" => {
+                    if let Ok(v) = raw.parse::<i64>() {
+                        exit.stale_profit_bid_unchanged_sec = v;
+                    }
+                }
+                "stagnantProfitPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.stagnant_profit_pct = v;
+                    }
+                }
+                "stagnantDurationSec" => {
+                    if let Ok(v) = raw.parse::<i64>() {
+                        exit.stagnant_duration_sec = v;
+                    }
+                }
+                "depthCollapseThresholdPct" => {
+                    if let Ok(v) = raw.parse::<Decimal>() {
+                        exit.depth_collapse_threshold_pct = v;
+                    }
+                }
+                "exitGraceSec" => {
+                    if let Ok(v) = raw.parse::<i64>() {
+                        exit.exit_grace_sec = v;
+                    }
+                }
+                "makerExitsForTpOnly" => {
+                    if let Ok(v) = raw.parse::<bool>() {
+                        exit.maker_exits_for_tp_only = v;
+                    }
+                }
+                "makerFirstExitEnabled" => {
+                    if let Ok(v) = raw.parse::<bool>() {
+                        exit.maker_first_exit_enabled = v;
+                    }
+                }
                 "strategyExitMakerFirst" => {
-                    if let Ok(v) = value.trim().parse::<bool>() {
+                    if let Ok(v) = raw.parse::<bool>() {
                         exit.strategy_exit_maker_first = v;
+                    }
+                }
+                "exitMakerTimeoutMs" => {
+                    if let Ok(v) = raw.parse::<i64>() {
+                        exit.exit_maker_timeout_ms = v;
+                    }
+                }
+                "maxBookAgeSec" => {
+                    if let Ok(v) = raw.parse::<i64>() {
+                        exit.max_book_age_sec = v;
                     }
                 }
                 other => {

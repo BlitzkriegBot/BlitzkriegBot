@@ -707,6 +707,25 @@ impl Core {
     /// fixed dollar default stops being meaningless on a small book. Called
     /// once per tick, before the exit checks, so a position closed right after
     /// the boundary is already counted in the new day.
+    /// Compute an account's total equity (`cash + open position cost basis`).
+    /// Used by both `roll_daily_budget` and `unfreeze_account` so daily-loss
+    /// caps never shrink when cash is deployed into open positions.
+    pub(super) fn account_total_equity(&self, account_id: &crate::account::AccountId) -> Decimal {
+        let cash = self
+            .accounts
+            .ledger_of(account_id)
+            .map(|l| l.balance())
+            .unwrap_or_default();
+        let open_cost: Decimal = self
+            .positions
+            .open_positions()
+            .iter()
+            .filter(|p| &p.account_id == account_id && p.shares > Decimal::ZERO)
+            .map(|p| p.entry_price * p.shares)
+            .sum();
+        cash + open_cost
+    }
+
     pub(super) fn roll_daily_budget(&mut self, now_ms: i64) {
         // `balance` is already gross of local reservations — adding `reserved`
         // here would double-count resting BUY commitments. However, filled
@@ -719,21 +738,7 @@ impl Core {
             .account_list()
             .iter()
             .filter(|a| a.status == crate::account::AccountStatus::Active)
-            .map(|a| {
-                let cash = self
-                    .accounts
-                    .ledger_of(&a.id)
-                    .map(|l| l.balance())
-                    .unwrap_or_default();
-                let open_cost: Decimal = self
-                    .positions
-                    .open_positions()
-                    .iter()
-                    .filter(|p| p.account_id == a.id && p.shares > Decimal::ZERO)
-                    .map(|p| p.entry_price * p.shares)
-                    .sum();
-                (a.id.clone(), cash + open_cost)
-            })
+            .map(|a| (a.id.clone(), self.account_total_equity(&a.id)))
             .collect();
         for (id, equity) in accounts {
             if let Some(roll) =

@@ -27,6 +27,7 @@ import type { PanelAccountRow } from '@/stores/panel'
 
 export function useAccountBalance(
   row: PanelAccountRow | null,
+  fees = 0,
 ): BalanceView | null {
   if (!row) return null
 
@@ -44,7 +45,7 @@ export function useAccountBalance(
       available: Number(row.available) || 0,
     },
     net,
-    0,
+    fees,
     row.equity ?? null,
   )
 }

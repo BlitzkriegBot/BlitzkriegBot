@@ -85,7 +85,7 @@ async function clearExpiredPosition(positionId: string): Promise<void> {
 const isDry = computed(() => snap.value?.mode === 'dry')
 const accountBalance = computed<BalanceView>(() => {
   const row = store.activeAccountRow
-  const view = row ? useAccountBalance(row) : null
+  const view = row ? useAccountBalance(row, trades.value.fees) : null
   return view ?? {
     net: null, fees: 0, gross: null, equity: null,
     cash: 0, reserved: 0, available: 0,

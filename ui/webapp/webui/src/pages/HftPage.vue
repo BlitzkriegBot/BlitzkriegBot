@@ -623,7 +623,7 @@ const cumStats = computed(() => {
 const accountBalance = computed(() => {
   const row = store.activeAccountRow
   if (!row) return null
-  return useAccountBalance(row)
+  return useAccountBalance(row, cumStats.value.fees)
 })
 // 兜底一拍的诚实标注：行未到（或单账户部署）才说「进程级”；账户行在场
 // 时读数就是显示账户的自有账本，不再有「显示账户的名字 + 进程级的钱」的
@@ -775,7 +775,7 @@ async function askRoundHint(): Promise<void> {
 }
 /** 空行情且判因已回答时是否走「轮次档位」文案。 */
 const venueRoundUnsupported = computed(() => {
-  if (!visiblePrices.value.length || venueLoading.value) return false
+  if (visiblePrices.value.length > 0 || venueLoading.value) return false
   if (!marketName.value || !engineUp.value) return false
   // 轮次告警三修（2026-10-23）：快照空判信号（A-lite，零内核改动）——
   // 该 venue 既无 venueRounds 行（没开口钟 = discovery 从未带回该所在此

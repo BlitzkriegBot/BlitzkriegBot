@@ -43,6 +43,10 @@ impl PriceBuffer {
     pub fn is_empty(&self) -> bool {
         self.prices.is_empty()
     }
+    /// Most recent `(timestamp_ms, price)` sample pushed into the buffer, if any.
+    pub fn latest_sample(&self) -> Option<(i64, Decimal)> {
+        self.prices.first().copied()
+    }
 
     fn in_window(&self, window_sec: i64, now_ms: i64) -> impl Iterator<Item = &(i64, Decimal)> {
         let cutoff = now_ms - window_sec * 1000;

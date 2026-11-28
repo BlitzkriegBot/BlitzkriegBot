@@ -657,7 +657,38 @@ async fn place(client: &PolySimRest, order: &PendingOrder) -> CoreResult<(String
         .place_order(&body)
         .await
         .map_err(|e| into_core_error(&e))?;
-    Ok((ack.venue_id(), ack_crossed(ack.status.as_deref())))
+    let venue_id = ack.venue_id();
+    let crossed = ack_crossed(ack.status.as_deref());
+    // PolySimulator's REST place has no FOK/FAK time-in-force flag: any
+    // non-crossing limit order rests GTC as a maker order. For a Taker
+    // (`FillPolicy::Taker`) strategy, leaving an unfilled buy resting on the
+    // book causes adverse selection ("catching a falling knife" seconds later
+    // when the market collapses). Cancel it immediately if it rested `live`.
+    if should_cancel_unfilled_taker(order.fill_policy, crossed) {
+        match client.cancel_order(&venue_id).await {
+            Ok(_) => {
+                return Err(CoreError::new(
+                    CoreErrorCode::WouldCross,
+                    format!(
+                        "polysimulator taker order {venue_id} rested live instead of crossing immediately — cancelled"
+                    ),
+                ));
+            }
+            Err(e) => {
+                eprintln!(
+                    "polysimulator-extension: taker order {venue_id} rested live and immediate cancel failed ({e}); keeping tracked"
+                );
+            }
+        }
+    }
+    Ok((venue_id, crossed))
+}
+
+fn should_cancel_unfilled_taker(
+    fill_policy: blitzkrieg_bk_contract::FillPolicy,
+    crossed: Option<bool>,
+) -> bool {
+    fill_policy.immediate() && crossed == Some(false)
 }
 
 /// Attribute one trade row to our order ids: a row is OURS when our venue id

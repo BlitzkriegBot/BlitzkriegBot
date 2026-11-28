@@ -11,7 +11,9 @@ pub const RETRY_BASE_MS: i64 = 5_000;
 /// retried, but never as a storm.
 pub const RETRY_MAX_MS: i64 = 300_000;
 /// How long an unanswered settlement query waits before the core asks again.
-pub const REQUERY_MS: i64 = 60_000;
+/// Set to 10s so fast-resolving 5m venues get multiple retries before
+/// `EXPIRY_ESTIMATE_SETTLE_AFTER_MS` (60s) fires.
+pub const REQUERY_MS: i64 = 10_000;
 /// Unanswered queries past this age mean the venue half is not running at all
 /// (no credentials, or the extension died) — reported as a blind settlement
 /// path rather than silence.
@@ -31,18 +33,10 @@ pub const BLIND_AFTER_MS: i64 = 300_000;
 /// for settlement: it stays open in the book where an operator can see it,
 /// instead of being closed at a made-up payout.
 pub const EXPIRY_TRUST_MS: i64 = 300_000;
-/// #1236（操作者裁决 2026-11-15）：**过期轮次必须强制结算——轮次过期 10s
-/// 内完成**。binary 市场到期时价格天然收敛到 1/0（实机截图：过期仓位
-/// Cur = 0.99 / 0.01 / 0.97），最后报价就是裁决结果的最佳估计；过期 10s
-/// 后平台侧结算已可确认，等待不再以幽灵仓位为代价。裁决晚到的真实现金
-/// 仍由 reconcile sweep 对平，与 #991 的现金裁决点一致。此时长取代原
-/// 120s 沉默窗（#930/#684）：强制结算不再区分 venue 是否应答。
-///
-/// Issue #176: the 120s silence bound (`EXPIRY_FALLBACK_AFTER_MS = 120_000`)
-/// was DELETED by this fix — #1236 already replaced it, and every caller had
-/// migrated to this constant. Keeping a dead bound around invites a future
-/// edit to "restore" the old wait without re-deriving the operator ruling.
-pub const EXPIRY_ESTIMATE_SETTLE_AFTER_MS: i64 = 10_000;
+/// Give venues (e.g. PolySimulator / Polymarket) 60s past expiry with 10s
+/// `REQUERY_MS` retries to report the true 1/0 resolution before falling back
+/// to `unverifiable_expiry`.
+pub const EXPIRY_ESTIMATE_SETTLE_AFTER_MS: i64 = 60_000;
 /// The exit reason a settled position closes with (`exit:settlement`).
 pub const SETTLEMENT_EXIT_REASON: ExitReason = ExitReason::Settlement;
 /// #684: the exit reason a fallback-closed position carries

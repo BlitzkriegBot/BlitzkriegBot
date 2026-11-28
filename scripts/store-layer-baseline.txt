@@ -32,8 +32,8 @@ core/blitzkrieg_core/src/ipc/version.rs:600 file-direct std::fs::write(&sums_tmp
 core/blitzkrieg_core/src/ipc/version.rs:966 file-direct std::fs::write(&tmp, serde_json::to_vec_pretty(&doc)?)?;
 core/blitzkrieg_core/src/jsonl.rs:308 file-direct let ok = match std::fs::OpenOptions::new()
 core/blitzkrieg_core/src/jsonl.rs:56 file-direct let mut f = std::fs::File::create(&tmp)?;
-core/blitzkrieg_core/src/ledger.rs:259 file-direct && !crate::jsonl::append(&path, &entry)
-core/blitzkrieg_core/src/ledger.rs:697 json-direct if !crate::jsonl::rewrite_atomic(&path, &bytes) {
+core/blitzkrieg_core/src/ledger.rs:278 file-direct && !crate::jsonl::append(&path, &entry)
+core/blitzkrieg_core/src/ledger.rs:716 json-direct if !crate::jsonl::rewrite_atomic(&path, &bytes) {
 core/blitzkrieg_core/src/order_db.rs:43 file-direct if !crate::jsonl::append(&self.jsonl_path, order) {
 core/blitzkrieg_core/src/order_db.rs:77 json-direct if !crate::jsonl::rewrite_atomic(&self.jsonl_path, buf.as_bytes()) {
 core/blitzkrieg_core/src/position/mod.rs:594 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {

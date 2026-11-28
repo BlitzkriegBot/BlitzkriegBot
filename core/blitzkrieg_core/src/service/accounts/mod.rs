@@ -674,9 +674,9 @@ impl Core {
                 // net PnL. opening_equity = configured seed (Dry/ReadOnly) or the
                 // account's persisted venue equity (Live); None until known.
                 let opening_equity = match self.config.mode {
-                    crate::model::Mode::Dry | crate::model::Mode::ReadOnly => {
-                        Some(self.config.dry_seed_balance)
-                    }
+                    crate::model::Mode::Dry | crate::model::Mode::ReadOnly => Some(
+                        crate::ledger::dry_opening_equity(ledger, self.config.dry_seed_balance),
+                    ),
                     crate::model::Mode::Live => a.opening_equity,
                 };
                 // `balance`, NOT `ledger.balance()`: this view already decided at

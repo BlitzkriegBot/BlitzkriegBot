@@ -153,6 +153,25 @@ pub fn cumulative_net_pnl(balance: Decimal, opening_equity: Option<Decimal>) -> 
     opening_equity.map(|oe| balance - oe)
 }
 
+/// DRY / ReadOnly opening equity (single source of truth shared by
+/// `ledger.balance` and `account.list`).
+///
+/// When a dry cash journal was replayed or reset (`Reset`/`Seed`) at a seed
+/// different from the current process's `--seed-balance` (e.g. account reset to
+/// `$1,000`, later restarted with default `--seed-balance 10000`), the journal's
+/// `seeded_total()` holds the true principal (`$1,000`). Using
+/// `dry_seed_balance` instead produces a phantom `-$9,000` net PnL. Prefer
+/// `ledger.seeded_total()` whenever it is positive; fall back to
+/// `dry_seed_balance` only when the book has no seed/reset row yet.
+pub fn dry_opening_equity(ledger: &Ledger, dry_seed_balance: Decimal) -> Decimal {
+    let seeded = ledger.seeded_total();
+    if seeded > Decimal::ZERO {
+        seeded
+    } else {
+        dry_seed_balance
+    }
+}
+
 impl Ledger {
     pub fn new() -> Self {
         Self::default()
@@ -1649,5 +1668,20 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dry_opening_equity_prefers_journal_seeded_total_over_boot_config() {
+        let mut l = Ledger::new();
+        // Unseeded book falls back to boot dry_seed_balance.
+        assert_eq!(dry_opening_equity(&l, dec!(10000)), dec!(10000));
+        // Account reset to $1,000, then earns +$1.50; even if the process
+        // later boots with default dry_seed_balance = $10,000, opening equity
+        // stays anchored at the journal's $1,000 principal (cumulative PnL = +$1.50).
+        assert!(l.reset_account_to_seed(dec!(1000)));
+        l.credit_cashflow(dec!(1.50), "rebate");
+        let oe = dry_opening_equity(&l, dec!(10000));
+        assert_eq!(oe, dec!(1000));
+        assert_eq!(cumulative_net_pnl(l.balance(), Some(oe)), Some(dec!(1.50)));
     }
 }

@@ -96,7 +96,10 @@ pub(crate) async fn handle_misc(
             // venue's first reported equity, persisted to the account file exactly
             // once (never overwritten) and read back here. `None` until known.
             let opening_equity = match c.mode() {
-                Mode::Dry | Mode::ReadOnly => seed,
+                Mode::Dry | Mode::ReadOnly => Some(crate::ledger::dry_opening_equity(
+                    ledger,
+                    c.config().dry_seed_balance,
+                )),
                 Mode::Live => c.accounts().account(&active).and_then(|a| a.opening_equity),
             };
             // issue 787 + issue 749: same projection as `account_views` — a

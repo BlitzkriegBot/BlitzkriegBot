@@ -92,7 +92,13 @@ const filteredCandidates = computed<RadarCandidateDoc[]>(() => {
 })
 
 function onMarketChange(v: string): void {
-  radarMarket.value = v === '15m' ? '15m' : '5m'
+  const next = v === '15m' ? '15m' : '5m'
+  if (next === '15m' && radarMinFills.value.trim() === '20') {
+    radarMinFills.value = '10'
+  } else if (next === '5m' && radarMinFills.value.trim() === '10') {
+    radarMinFills.value = '20'
+  }
+  radarMarket.value = next
 }
 
 function onPeriodChange(v: string): void {
@@ -131,11 +137,12 @@ async function runRadarScan(): Promise<void> {
   scanning.value = true
   scanErr.value = null
   try {
-    const minBuyFills = Math.max(5, Math.floor(Number(radarMinFills.value) || 20))
+    const fallbackMin = radarMarket.value === '15m' ? 10 : 20
+    const minBuyFills = Math.max(5, Math.floor(Number(radarMinFills.value) || fallbackMin))
     const res = await api.smartMoneyScan({
       market: radarMarket.value,
       minBuyFills,
-      limit: 30,
+      limit: 50,
       timePeriod: radarPeriod.value,
     })
     if (res.error) throw new Error(res.error)

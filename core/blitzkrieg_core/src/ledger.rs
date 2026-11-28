@@ -554,6 +554,21 @@ impl Ledger {
         self.apply_tagged(JournalKind::Fee, -fee_usd, "entry fee", "model");
     }
 
+    /// Charge a BUY fill fee whose authoritative value came from a venue
+    /// receipt: books the model estimate plus any receipt-vs-model delta row
+    /// (`fee_source = "receipt"`), matching `settle_sell_fill_from_receipt`.
+    pub fn charge_fee_from_receipt(&mut self, receipt_fee_usd: Decimal, model_fee_usd: Decimal) {
+        self.apply_tagged(JournalKind::Fee, -model_fee_usd, "entry fee", "model");
+        if receipt_fee_usd != model_fee_usd {
+            self.apply_tagged(
+                JournalKind::Fee,
+                -(receipt_fee_usd - model_fee_usd),
+                "receipt fee correction (venue receipt vs model)",
+                "receipt",
+            );
+        }
+    }
+
     /// #995 acceptance 4 — settle a SELL fill whose fee comes from the VENUE
     /// RECEIPT. Two rows, arithmetic that never double-counts: the fill's own
     /// row nets the MODEL fee (`fee_source = "model"`, exactly as

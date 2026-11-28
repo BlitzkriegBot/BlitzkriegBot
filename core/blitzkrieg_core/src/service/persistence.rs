@@ -362,6 +362,7 @@ impl Core {
         if let Some(store) = self.store.as_ref() {
             match store.save_positions(positions) {
                 Ok(true) => {
+                    self.persist_positions_failures.set(0);
                     tracing::debug!(
                         count = positions.len(),
                         "open positions persisted via StoreApi"
@@ -371,10 +372,22 @@ impl Core {
                     tracing::warn!("open positions not persisted: no StoreApi carrier configured");
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        error = %e.message,
-                        "open positions persist via StoreApi failed; the round keeps running"
-                    );
+                    let streak = self.persist_positions_failures.get().saturating_add(1);
+                    self.persist_positions_failures.set(streak);
+                    if streak >= 2 {
+                        let msg = format!(
+                            "persist_positions_failed_repeatedly: StoreApi::save_positions failed                              {streak} times in a row ({}) — disk/SQLite persistence degraded",
+                            e.message
+                        );
+                        tracing::error!(streak, error = %e.message, "{msg}");
+                        self.emit_risk_alert(CoreErrorCode::Internal, msg);
+                    } else {
+                        tracing::warn!(
+                            streak,
+                            error = %e.message,
+                            "open positions persist via StoreApi failed"
+                        );
+                    }
                 }
             }
         }

@@ -309,7 +309,7 @@ fn the_same_residual_dedups_but_a_new_one_re_alerts() {
 #[test]
 fn a_sibling_venues_facts_do_not_explain_this_venues_residual() {
     // 双账户：poly-acct 绑 polymarket，klin-acct 绑 poly。
-    let dir = reset_audit_dir("ghost-701-cross");
+    let dir = reset_audit_dir("ghost-701-cross-residual");
     let log = |name: &str| Some(dir.join(name).to_string_lossy().into_owned());
     let acct = |id: &str, name: &str, venue: &str| crate::account::Account {
         id: crate::account::AccountId::from(id),

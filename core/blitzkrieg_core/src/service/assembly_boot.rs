@@ -937,6 +937,7 @@ impl Core {
             account_gates: HashMap::new(),
             venue_halts: VenueHalts::default(),
             last_error: None,
+            persist_positions_failures: std::cell::Cell::new(0),
             recon_watermark_ms: 0,
             boot_replayed_journal,
             last_self_check: None,

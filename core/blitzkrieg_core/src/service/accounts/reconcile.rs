@@ -1085,6 +1085,7 @@ impl Core {
             round_slot: market.round_slot,
             mode: crate::model::FillPolicy::Taker,
             role,
+            venue_fee_usd: None,
             limit_price: t.price,
             trade_id: t.trade_id.clone(),
         };

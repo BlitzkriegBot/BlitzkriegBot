@@ -46,7 +46,7 @@ core/blitzkrieg_core/src/service/config/records.rs:67 file-direct if let Ok(mut 
 core/blitzkrieg_core/src/service/risk_admission/persist.rs:129 json-direct if !crate::jsonl::rewrite_atomic(&self.path, text.as_bytes()) {
 core/blitzkrieg_core/src/service/settlement_orders/closing.rs:338 file-direct && !crate::jsonl::append(path, &CloseCredentialLine::Consumed { trade_id: evicted })
 core/blitzkrieg_core/src/service/settlement_orders/closing.rs:347 file-direct && !crate::jsonl::append(
-core/blitzkrieg_core/src/service/settlement_orders/orders.rs:1290 file-direct && !crate::jsonl::append(
+core/blitzkrieg_core/src/service/settlement_orders/orders.rs:1297 file-direct && !crate::jsonl::append(
 core/blitzkrieg_core/src/settlement.rs:208 file-direct if !crate::jsonl::append(&self.path, line) {
 core/blitzkrieg_core/src/shadow/near_miss.rs:292 file-direct let mut f = std::fs::OpenOptions::new()
 core/blitzkrieg_core/src/shadow_evolution/audit.rs:85 file-direct crate::jsonl::append(&path, &rec);

@@ -467,7 +467,7 @@ impl Dispatcher {
         // Idle: (re)configure then spawn.
         let mut cfg = self.sup.config().clone();
         if !assets.is_empty() {
-            cfg.assets = assets;
+            cfg.assets = Some(assets);
         }
         cfg.mode = if dry_run { "dry".into() } else { "live".into() };
         if let Some(s) = size_usd {
@@ -488,7 +488,10 @@ impl Dispatcher {
                 format!(
                     "core started (pid {pid}) mode={} assets={}",
                     cfg.mode,
-                    cfg.assets.join(",")
+                    cfg.assets
+                        .as_deref()
+                        .map(|v| v.join(","))
+                        .unwrap_or_else(|| "default".into())
                 ),
             )
             .with_data(serde_json::json!({

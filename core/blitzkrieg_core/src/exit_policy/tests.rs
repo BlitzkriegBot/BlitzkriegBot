@@ -112,6 +112,31 @@ fn holder_view_flattens_the_stop_at_the_wide_width() {
     // The view is a pure projection: the kernel-wide config is untouched.
     assert_eq!(cfg.stop_loss_pct, dec!(12));
     assert_eq!(cfg.stop_min_pct, dec!(10));
+
+    // Hold-to-settlement strategies must be exempted from scanner `min_time_left_sec`
+    // (e.g. 60s on 5m rounds) so late-round entries are not immediately dumped by TimeExit.
+    let with_min_tl = ExitConfig {
+        min_time_left_sec: 60,
+        ..cfg
+    };
+    let hv = with_min_tl.holder_view();
+    assert_eq!(hv.min_time_left_sec, 0);
+    let st = ExitState::new(dec!(0.85), 0);
+    let b = book(0.84, 0.86);
+    assert!(
+        decide_exit(ExitTickInput {
+            entry_price: dec!(0.85),
+            book: Some(&b),
+            fallback_price: None,
+            time_left_sec: 46,
+            hold_sec: 0,
+            state: &st,
+            now_ms: 1000,
+            cfg: &hv,
+        })
+        .is_none(),
+        "holder_view must not fire TimeExit at 46s left when scanner min_time_left_sec is 60s"
+    );
 }
 
 /// The curves as charged, quoted as a percentage of price. #995: the ACTIVE

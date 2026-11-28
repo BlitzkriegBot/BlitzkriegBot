@@ -84,13 +84,19 @@ pub struct SupervisorConfig {
     pub socket_path: String,
     /// "dry" | "live".
     pub mode: String,
-    pub seed_balance: String,
-    pub tick_ms: u64,
+    /// `Some(v)` = launcher explicitly overrides `--seed-balance`.
+    /// `None` = stay silent so core `.env` / defaults stay in charge.
+    pub seed_balance: Option<String>,
+    /// `Some(n)` = launcher explicitly overrides `--tick-ms`.
+    /// `None` = stay silent so core `.env` / defaults stay in charge.
+    pub tick_ms: Option<u64>,
     /// `Some(v)` = the launcher explicitly overrides `--max-order-notional`.
     /// `None` = stay silent so the kernel default (`100` USD) and per-account
     /// Risk panel `maxOrderNotionalUsd` stay in charge without a hidden `$6.00` cap.
     pub max_order_notional: Option<String>,
-    pub assets: Vec<String>,
+    /// `Some(list)` = launcher explicitly overrides `--assets` (CLI or `HFT_ASSETS`).
+    /// `None` = stay silent so core `.env` (`BK_ASSETS`) / defaults stay in charge.
+    pub assets: Option<Vec<String>>,
     /// `Some(n)` = the launcher owns the round length (CLI flag or
     /// `HFT_ROUND_SEC` spoke) and passes `--round-sec` to the core. `None` =
     /// the launcher stays silent, so the kernel's own tier resolution applies
@@ -98,8 +104,12 @@ pub struct SupervisorConfig {
     /// A hardcoded 900 here is what pinned every session to 15m rounds: the
     /// launcher's flag outranked the cell by design, so the cell never won.
     pub round_sec: Option<u64>,
-    pub min_round_age: u64,
-    pub min_time_left: u64,
+    /// `Some(n)` = launcher explicitly overrides `--min-round-age`.
+    /// `None` = stay silent so core `.env` / strategy config stay in charge.
+    pub min_round_age: Option<u64>,
+    /// `Some(n)` = launcher explicitly overrides `--min-time-left`.
+    /// `None` = stay silent so core `.env` / strategy config stay in charge.
+    pub min_time_left: Option<u64>,
     /// `Some(n)` = launcher explicitly overrides `--max-positions` / share band.
     /// `None` = stay silent so the kernel default / Risk panel settings stay in charge.
     pub max_positions: Option<u64>,
@@ -119,11 +129,16 @@ impl SupervisorConfig {
     pub fn from_env(socket_path: String) -> Self {
         let env_opt =
             |k: &str| -> Option<u64> { std::env::var(k).ok().and_then(|v| v.trim().parse().ok()) };
-        let assets = std::env::var("HFT_ASSETS")
+        let assets: Option<Vec<String>> = std::env::var("HFT_ASSETS")
             .ok()
             .filter(|s| !s.trim().is_empty())
-            .map(|s| s.split(',').map(|a| a.trim().to_uppercase()).collect())
-            .unwrap_or_else(|| vec!["BTC".into(), "ETH".into(), "SOL".into(), "XRP".into()]);
+            .map(|s| {
+                s.split(',')
+                    .map(|a| a.trim().to_uppercase())
+                    .filter(|a| !a.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|v| !v.is_empty());
         let max_shares = env_opt("HFT_MAX_SHARES");
         let min_shares = match (env_opt("HFT_MIN_SHARES"), max_shares) {
             (Some(min), Some(max)) => Some(min.min(max)),
@@ -132,9 +147,8 @@ impl SupervisorConfig {
         let dry = std::env::var("DRY_RUN")
             .map(|v| v != "false")
             .unwrap_or(true);
-        // Leave max_order_notional silent unless the operator passes
-        // --max-order-notional explicitly; otherwise the kernel default ($100)
-        // and per-account Risk panel maxOrderNotionalUsd stay in charge.
+        // Leave tuning knobs silent unless explicitly set by CLI or HFT_* env;
+        // otherwise core `.env`, SQLite, and strategy configs stay in charge.
         // Ops/test overrides: pin the binary, the child working directory (so a
         // harness can isolate `data/`), and append raw args (e.g. `--no-trade-log`).
         let binary_path = std::env::var("UIKIT_CORE_BIN")
@@ -154,15 +168,15 @@ impl SupervisorConfig {
             binary_path,
             socket_path,
             mode: if dry { "dry".into() } else { "live".into() },
-            seed_balance: "1000".into(),
-            tick_ms: 10,
+            seed_balance: None,
+            tick_ms: None,
             max_order_notional: None,
             assets,
             round_sec: std::env::var("HFT_ROUND_SEC")
                 .ok()
                 .and_then(|v| v.trim().parse().ok()),
-            min_round_age: 30,
-            min_time_left: 180,
+            min_round_age: None,
+            min_time_left: None,
             max_positions: env_opt("HFT_MAX_POSITIONS"),
             min_shares,
             max_shares,
@@ -177,13 +191,21 @@ impl SupervisorConfig {
             self.socket_path.clone(),
             "--mode".into(),
             self.mode.clone(),
-            "--tick-ms".into(),
-            self.tick_ms.to_string(),
-            "--seed-balance".into(),
-            self.seed_balance.clone(),
-            "--assets".into(),
-            self.assets.join(","),
         ];
+        if let Some(tick) = self.tick_ms {
+            a.push("--tick-ms".into());
+            a.push(tick.to_string());
+        }
+        if let Some(ref sb) = self.seed_balance {
+            a.push("--seed-balance".into());
+            a.push(sb.clone());
+        }
+        if let Some(ref assets) = self.assets {
+            if !assets.is_empty() {
+                a.push("--assets".into());
+                a.push(assets.join(","));
+            }
+        }
         if let Some(ref mon) = self.max_order_notional {
             a.push("--max-order-notional".into());
             a.push(mon.clone());
@@ -204,12 +226,14 @@ impl SupervisorConfig {
             a.push("--max-shares".into());
             a.push(max.to_string());
         }
-        a.extend([
-            "--min-round-age".into(),
-            self.min_round_age.to_string(),
-            "--min-time-left".into(),
-            self.min_time_left.to_string(),
-        ]);
+        if let Some(age) = self.min_round_age {
+            a.push("--min-round-age".into());
+            a.push(age.to_string());
+        }
+        if let Some(left) = self.min_time_left {
+            a.push("--min-time-left".into());
+            a.push(left.to_string());
+        }
         a.extend(self.extra_args.iter().cloned());
         a
     }
@@ -792,12 +816,64 @@ fn send_sigterm(pid: u32) {
 #[test]
 fn args_include_engine_and_assets() {
     let mut cfg = SupervisorConfig::from_env("/tmp/x.sock".into());
-    cfg.assets = vec!["BTC".into(), "ETH".into()];
+    cfg.assets = Some(vec!["BTC".into(), "ETH".into()]);
     let args = cfg.to_args();
     assert!(args.contains(&"--engine".to_string()));
     assert!(args.contains(&"--feed-ws".to_string()));
     let i = args.iter().position(|a| a == "--assets").unwrap();
     assert_eq!(args[i + 1], "BTC,ETH");
+}
+
+#[test]
+fn silent_hidden_knobs_stay_absent_by_default() {
+    std::env::remove_var("HFT_ASSETS");
+    let cfg = SupervisorConfig::from_env("/tmp/x.sock".into());
+    assert!(cfg.tick_ms.is_none());
+    assert!(cfg.seed_balance.is_none());
+    assert!(cfg.assets.is_none());
+    assert!(cfg.min_round_age.is_none());
+    assert!(cfg.min_time_left.is_none());
+    let args = cfg.to_args();
+    for flag in [
+        "--tick-ms",
+        "--seed-balance",
+        "--assets",
+        "--min-round-age",
+        "--min-time-left",
+    ] {
+        assert!(
+            !args.contains(&flag.to_string()),
+            "hidden default flag {flag} must not be injected: {args:?}"
+        );
+    }
+
+    let mut explicit = cfg;
+    explicit.tick_ms = Some(25);
+    explicit.seed_balance = Some("500".into());
+    explicit.assets = Some(vec!["BTC".into(), "SOL".into()]);
+    explicit.min_round_age = Some(15);
+    explicit.min_time_left = Some(90);
+    let args = explicit.to_args();
+    assert_eq!(
+        args[args.iter().position(|a| a == "--tick-ms").unwrap() + 1],
+        "25"
+    );
+    assert_eq!(
+        args[args.iter().position(|a| a == "--seed-balance").unwrap() + 1],
+        "500"
+    );
+    assert_eq!(
+        args[args.iter().position(|a| a == "--assets").unwrap() + 1],
+        "BTC,SOL"
+    );
+    assert_eq!(
+        args[args.iter().position(|a| a == "--min-round-age").unwrap() + 1],
+        "15"
+    );
+    assert_eq!(
+        args[args.iter().position(|a| a == "--min-time-left").unwrap() + 1],
+        "90"
+    );
 }
 
 #[test]

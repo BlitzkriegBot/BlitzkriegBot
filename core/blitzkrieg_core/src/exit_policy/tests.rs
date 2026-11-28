@@ -986,3 +986,81 @@ fn exit_readout_carries_the_maker_first_gate() {
         Some(&serde_json::json!(true))
     );
 }
+
+#[test]
+fn ceiling_tp_banks_near_certain_win_at_098_for_high_entry_and_holders() {
+    let cfg = ExitConfig::default();
+    assert_eq!(cfg.ceiling_tp_price, dec!(0.98));
+
+    // Entry 0.85, bid 0.98 (+15.3%, well below 100% take_profit_pct):
+    // ceiling TP fires immediately as taker so a last-second crash cannot
+    // wipe out the position.
+    let st = ExitState::new(dec!(0.85), 0);
+    let b98 = book(0.98, 0.99);
+    for effective in [&cfg, &cfg.holder_view()] {
+        let d = decide_exit(ExitTickInput {
+            entry_price: dec!(0.85),
+            book: Some(&b98),
+            fallback_price: None,
+            time_left_sec: 25,
+            hold_sec: 20,
+            state: &st,
+            now_ms: 20_000,
+            cfg: effective,
+        })
+        .expect("bid 0.98 must trigger ceiling take-profit");
+        assert_eq!(d.reason, ExitReason::TakeProfit);
+        assert!(!d.use_maker, "ceiling TP crosses immediately as taker");
+    }
+
+    // Below 0.98 (e.g. 0.97) stays held.
+    let b97 = book(0.97, 0.98);
+    assert!(
+        decide_exit(ExitTickInput {
+            entry_price: dec!(0.85),
+            book: Some(&b97),
+            fallback_price: None,
+            time_left_sec: 25,
+            hold_sec: 20,
+            state: &st,
+            now_ms: 20_000,
+            cfg: &cfg,
+        })
+        .is_none()
+    );
+
+    // Entry at 0.99 with bid 0.98 is a loss — ceiling TP must not fire.
+    let st_high = ExitState::new(dec!(0.99), 0);
+    assert!(
+        decide_exit(ExitTickInput {
+            entry_price: dec!(0.99),
+            book: Some(&b98),
+            fallback_price: None,
+            time_left_sec: 25,
+            hold_sec: 20,
+            state: &st_high,
+            now_ms: 20_000,
+            cfg: &cfg,
+        })
+        .is_none()
+    );
+
+    // Setting ceiling_tp_price = 0 disables the rule.
+    let off = ExitConfig {
+        ceiling_tp_price: Decimal::ZERO,
+        ..Default::default()
+    };
+    assert!(
+        decide_exit(ExitTickInput {
+            entry_price: dec!(0.85),
+            book: Some(&b98),
+            fallback_price: None,
+            time_left_sec: 25,
+            hold_sec: 20,
+            state: &st,
+            now_ms: 20_000,
+            cfg: &off,
+        })
+        .is_none()
+    );
+}

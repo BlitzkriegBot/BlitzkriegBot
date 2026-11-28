@@ -312,6 +312,7 @@ where
         }
         dec_key!(stop_loss_pct, "STOP_LOSS_PCT");
         dec_key!(take_profit_pct, "TAKE_PROFIT_PCT");
+        dec_key!(ceiling_tp_price, "CEILING_TP_PRICE");
         dec_key!(min_trail_pct, "MIN_TRAIL_PCT");
         dec_key!(trailing_min_high_pct, "TRAILING_MIN_HIGH_PCT");
         let force_key = format!("BK_EXIT_FORCE_EXIT_SEC_{suffix}");

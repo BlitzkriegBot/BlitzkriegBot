@@ -104,6 +104,11 @@ pub struct ExitConfig {
     pub force_exit_sec: i64,
     pub min_time_left_sec: i64,
     pub take_profit_pct: Decimal,
+    /// Price ceiling take-profit (0 disables; default `0.98`): once the live
+    /// executable bid reaches this price and is above `entry_price`, bank the
+    /// near-certain binary win immediately as a taker instead of risking a
+    /// last-second reversal to `$0.00` for the final 1–2 cents.
+    pub ceiling_tp_price: Decimal,
     pub stop_loss_pct: Decimal,
     /// The stop width a hold-to-settlement strategy's positions run on when
     /// the exit ladder is still LIVE-enforced (the ladder skip at
@@ -264,6 +269,7 @@ impl Default for ExitConfig {
             // runs that far. An aggressive fixed TP (e.g. 20%) would cut winners
             // short and hand the profit-taking job back to a static level.
             take_profit_pct: dec!(100),
+            ceiling_tp_price: dec!(0.98),
             // Was 50. A 50% stop meant a binary contract (entry ~0.40-0.45) could
             // ride to ~0.20 before exiting — a ~$2.4 loss vs a ~$0.45 median win.
             // 12% caps the loss near $0.55; the canonical exit sweep over 62
@@ -1214,6 +1220,13 @@ pub fn decide_exit_verdict(input: ExitTickInput) -> ExitVerdict {
         {
             return ExitVerdict::exit(ExitReason::TakeProfit, cfg.maker_first_exit_enabled, None);
         }
+        if live
+            && cfg.ceiling_tp_price > Decimal::ZERO
+            && bid >= cfg.ceiling_tp_price
+            && bid > entry_price
+        {
+            return ExitVerdict::exit(ExitReason::TakeProfit, false, None);
+        }
         match stop_verdict(
             entry_price,
             effective_stop_pct(cfg.stop_loss_pct, time_left_sec, cfg),
@@ -1251,6 +1264,13 @@ pub fn decide_exit_verdict(input: ExitTickInput) -> ExitVerdict {
 
     if profit_judge.is_some() && pct >= cfg.take_profit_pct {
         return ExitVerdict::exit(ExitReason::TakeProfit, cfg.maker_first_exit_enabled, None);
+    }
+    if live
+        && cfg.ceiling_tp_price > Decimal::ZERO
+        && bid >= cfg.ceiling_tp_price
+        && bid > entry_price
+    {
+        return ExitVerdict::exit(ExitReason::TakeProfit, false, None);
     }
 
     let base_stop = if cfg.tight_stop_enabled {

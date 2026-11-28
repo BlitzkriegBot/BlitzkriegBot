@@ -84,6 +84,35 @@ impl RiskLimitsResult {
                 trailing_enabled: exit.trailing_enabled,
                 holder_stop_pct: exit.holder_stop_pct,
                 strategy_exit_maker_first: exit.strategy_exit_maker_first,
+                ceiling_tp_price: Some(exit.ceiling_tp_price),
+                min_time_left_sec: Some(exit.min_time_left_sec),
+                simple_exit_enabled: Some(exit.simple_exit_enabled),
+                dynamic_stop_enabled: Some(exit.dynamic_stop_enabled),
+                stop_tighten_start_sec: Some(exit.stop_tighten_start_sec),
+                stop_min_pct: Some(exit.stop_min_pct),
+                trailing_min_high_pct: Some(exit.trailing_min_high_pct),
+                min_trail_pct: Some(exit.min_trail_pct),
+                proportional_trail_enabled: Some(exit.proportional_trail_enabled),
+                proportional_trail_pct: Some(exit.proportional_trail_pct),
+                proportional_trail_min_pct: Some(exit.proportional_trail_min_pct),
+                proportional_trail_min_giveback_pct: Some(exit.proportional_trail_min_giveback_pct),
+                tight_stop_enabled: Some(exit.tight_stop_enabled),
+                tight_stop_pct: Some(exit.tight_stop_pct),
+                ratchet_enabled: Some(exit.ratchet_enabled),
+                ratchet_confirm_ticks: Some(exit.ratchet_confirm_ticks),
+                ratchet_confirm_tolerance_pct: Some(exit.ratchet_confirm_tolerance_pct),
+                max_bid_wick_pct: Some(exit.max_bid_wick_pct),
+                max_last_price_age_sec: Some(exit.max_last_price_age_sec),
+                stale_profit_pct: Some(exit.stale_profit_pct),
+                stale_profit_bid_unchanged_sec: Some(exit.stale_profit_bid_unchanged_sec),
+                stagnant_profit_pct: Some(exit.stagnant_profit_pct),
+                stagnant_duration_sec: Some(exit.stagnant_duration_sec),
+                depth_collapse_threshold_pct: Some(exit.depth_collapse_threshold_pct),
+                exit_grace_sec: Some(exit.exit_grace_sec),
+                maker_exits_for_tp_only: Some(exit.maker_exits_for_tp_only),
+                maker_first_exit_enabled: Some(exit.maker_first_exit_enabled),
+                exit_maker_timeout_ms: Some(exit.exit_maker_timeout_ms),
+                max_book_age_sec: Some(exit.max_book_age_sec),
             },
             size_pct: None,
             max_positions: None,
@@ -106,7 +135,7 @@ pub struct RiskAccountLimitsView {
 /// and the hard force-exit deadline. Plain numbers — the IPC contract's usual
 /// Decimal convention — NOT the `Bound` envelope: these are behaviour knobs
 /// with factory values, not operator limits with provenance.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RiskExitView {
     #[serde(with = "crate::decimal")]
@@ -119,19 +148,72 @@ pub struct RiskExitView {
     /// ignore it.
     pub trailing_enabled: bool,
     /// #935 fix 3: the stop width a hold-to-settlement strategy's positions
-    /// actually run on (`holder_stop_pct`) — the panel's 12% readout does not
-    /// bind holders, and showing only it misstates the kernel's posture.
-    /// Read-only display field (the 50% semantics are calibrated, funadmental
-    /// change is a separate ruling); old panels ignore it.
+    /// actually run on (`holder_stop_pct`).
     #[serde(with = "crate::decimal")]
     pub holder_stop_pct: Decimal,
-    /// #935 fix 2: strategy-exit maker-first gate's current state — the
-    /// panel's toggle row arms on this (undefined = old kernel → the Vue
-    /// gate keeps the row honestly disabled). Same hot-writable-via-
-    /// `risk.setExit` semantics as `trailing_enabled` above; old panels
-    /// ignore it.
+    /// #935 fix 2: strategy-exit maker-first gate's current state.
     #[serde(default)]
     pub strategy_exit_maker_first: bool,
+    // ── Full ExitConfig surface (additive optional fields so frozen wire
+    // golden stays byte-identical when omitted) ────────────────────────────
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceiling_tp_price: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_time_left_sec: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simple_exit_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_stop_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_tighten_start_sec: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_min_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trailing_min_high_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_trail_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proportional_trail_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proportional_trail_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proportional_trail_min_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proportional_trail_min_giveback_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tight_stop_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tight_stop_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratchet_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratchet_confirm_ticks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratchet_confirm_tolerance_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bid_wick_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_last_price_age_sec: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_profit_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_profit_bid_unchanged_sec: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stagnant_profit_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stagnant_duration_sec: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth_collapse_threshold_pct: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_grace_sec: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maker_exits_for_tp_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maker_first_exit_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_maker_timeout_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_book_age_sec: Option<i64>,
 }
 
 /// Params of `risk.setLimits` — the ONLY knobs an operator may change without a

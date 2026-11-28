@@ -23,6 +23,8 @@ import Button from '@/components/ui/button/Button.vue'
 import Input from '@/components/ui/input/Input.vue'
 import Switch from '@/components/ui/switch/Switch.vue'
 import AlertBanner from '@/components/ui/alert/AlertBanner.vue'
+import SettingsExitConfigFields from './SettingsExitConfigFields.vue'
+import { buildExitPatchFromBuffers, syncExitBuffers } from './exit-config-fields'
 
 const props = defineProps<{
   /** 当前编辑中的最小下注金额（USD），用于实时估算单笔下单金额预览。 */
@@ -123,12 +125,12 @@ function syncBuffers(d: RiskLimitsDoc): void {
   const next: Record<string, string> = {}
   // issue 278: 读不到限额时留空而非填 '0'（0 在风控语义中代表关闭该限额）。
   for (const r of ROW_DEFS) next[r.field] = r.bound()?.value ?? ''
-  next['stopLossPct'] = String(d.exit.stopLossPct)
-  next['takeProfitPct'] = String(d.exit.takeProfitPct)
-  next['forceExitSec'] = String(d.exit.forceExitSec)
-  next['trailingEnabled'] = String(d.exit.trailingEnabled ?? false)
-  next['makerFirstExits'] = String(d.exit.strategyExitMakerFirst ?? false)
+  syncExitBuffers(d.exit, next)
   editBufs.value = next
+}
+
+function setEditBuf(key: string, value: string): void {
+  editBufs.value[key] = value
 }
 
 function currentSizePct(): number | null {
@@ -171,6 +173,14 @@ function exitPctText(v: unknown): string {
   return n === null ? '—' : `${n}%`
 }
 
+function exitPriceText(v: unknown): string {
+  const n = finiteNumber(v)
+  if (n === null) return '不支持'
+  return n <= 0 ? '关闭' : `$${n}`
+}
+
+const ceilingTpSupported = computed(() => riskDoc.value?.exit.ceilingTpPrice !== undefined)
+
 function trailingOn(): boolean {
   return (editBufs.value['trailingEnabled'] ?? 'false') === 'true'
 }
@@ -180,42 +190,21 @@ function setTrailing(on: boolean): void {
 const trailingSupported = computed(() => riskDoc.value?.exit.trailingEnabled !== undefined)
 
 function makerFirstOn(): boolean {
-  return (editBufs.value['makerFirstExits'] ?? 'false') === 'true'
+  return (editBufs.value['strategyExitMakerFirst'] ?? 'false') === 'true'
 }
 function setMakerFirst(on: boolean): void {
-  editBufs.value['makerFirstExits'] = String(on)
+  editBufs.value['strategyExitMakerFirst'] = String(on)
 }
 const makerFirstSupported = computed(() => riskDoc.value?.exit.strategyExitMakerFirst !== undefined)
 
 function buildExitPatch(): Record<string, string | number | boolean> | string {
   const e = riskDoc.value?.exit
   if (!e) return '读不到退出纪律当前值'
-  const patch: Record<string, string | number | boolean> = {}
-  const sl = (editBufs.value['stopLossPct'] ?? '').trim()
-  if (sl !== '' && String(e.stopLossPct) !== sl) {
-    const n = Number(sl)
-    if (!Number.isFinite(n) || n <= 0) return '止损：必须是 > 0 的百分比'
-    patch.stopLossPct = sl
-  }
-  const tp = (editBufs.value['takeProfitPct'] ?? '').trim()
-  if (tp !== '' && String(e.takeProfitPct) !== tp) {
-    const n = Number(tp)
-    if (!Number.isFinite(n) || n <= 0) return '止盈：必须是 > 0 的百分比'
-    patch.takeProfitPct = tp
-  }
-  const fe = (editBufs.value['forceExitSec'] ?? '').trim()
-  if (fe !== '' && String(e.forceExitSec) !== fe) {
-    const n = Number(fe)
-    if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return '强平：必须是 ≥ 0 的整数秒（0 = 关闭强平）'
-    patch.forceExitSec = n
-  }
+  const patch = buildExitPatchFromBuffers(e, editBufs.value)
+  if (typeof patch === 'string') return patch
   if (e.trailingEnabled !== undefined) {
     const tr = (editBufs.value['trailingEnabled'] ?? 'false') === 'true'
     if (tr !== e.trailingEnabled) patch.trailingEnabled = tr
-  }
-  if (e.strategyExitMakerFirst !== undefined) {
-    const mf = (editBufs.value['makerFirstExits'] ?? 'false') === 'true'
-    if (mf !== e.strategyExitMakerFirst) patch.strategyExitMakerFirst = mf
   }
   return patch
 }
@@ -428,6 +417,27 @@ onMounted(() => void loadRisk())
               <span class="w-8 text-[11px] text-faint-fg">%</span>
             </span>
           </div>
+
+          <div class="flex items-center justify-between gap-3 border-t border-line py-1.5 text-[12px]">
+            <div>
+              <span class="text-fg">天花板止盈价</span>
+              <span class="ml-1.5 text-[10.5px] text-faint-fg">当前 {{ exitPriceText(riskDoc.exit.ceilingTpPrice) }}（0 = 关闭）</span>
+            </div>
+            <span class="flex items-center gap-1.5">
+              <Input
+                v-model="editBufs['ceilingTpPrice']"
+                class="num h-7 w-24 text-right text-[12px]"
+                type="text"
+                min="0"
+                max="1"
+                step="any"
+                :disabled="!ceilingTpSupported"
+                placeholder="0.98"
+                aria-label="天花板止盈价"
+              />
+              <span class="w-8 text-[11px] text-faint-fg">USD</span>
+            </span>
+          </div>
         </div>
       </div>
 
@@ -480,7 +490,7 @@ onMounted(() => void loadRisk())
           <slot name="advanced-policy" />
 
           <div class="border-t border-line pt-2">
-            <div class="label-micro">高级退出控制</div>
+            <div class="label-micro">核心退出开关</div>
             <div class="mt-1 space-y-1">
               <div class="flex items-center justify-between gap-3 py-1 text-[12px]">
                 <span class="text-faint-fg">到期前强平<span class="ml-1 text-[10.5px]">0 = 关闭</span></span>
@@ -522,6 +532,12 @@ onMounted(() => void loadRisk())
               </div>
             </div>
           </div>
+
+          <SettingsExitConfigFields
+            :exit="riskDoc.exit"
+            :bufs="editBufs"
+            @update:field="setEditBuf"
+          />
 
           <!-- 执行策略规则：保留在卡内，共用底部唯一保存按钮。 -->
           <slot name="rules" />

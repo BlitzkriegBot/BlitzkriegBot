@@ -724,21 +724,48 @@ impl crate::service::Core {
         patch: &crate::schema::SetExitParams,
     ) -> ExitConfig {
         let mut exit = current.clone();
-        if let Some(v) = patch.stop_loss_pct {
-            exit.stop_loss_pct = v;
+        macro_rules! set_opt {
+            ($field:ident) => {
+                if let Some(v) = patch.$field {
+                    exit.$field = v;
+                }
+            };
         }
-        if let Some(v) = patch.take_profit_pct {
-            exit.take_profit_pct = v;
-        }
-        if let Some(sec) = patch.force_exit_sec {
-            exit.force_exit_sec = sec;
-        }
-        if let Some(on) = patch.trailing_enabled {
-            exit.trailing_enabled = on;
-        }
-        if let Some(on) = patch.strategy_exit_maker_first {
-            exit.strategy_exit_maker_first = on;
-        }
+        set_opt!(stop_loss_pct);
+        set_opt!(take_profit_pct);
+        set_opt!(ceiling_tp_price);
+        set_opt!(holder_stop_pct);
+        set_opt!(force_exit_sec);
+        set_opt!(min_time_left_sec);
+        set_opt!(simple_exit_enabled);
+        set_opt!(dynamic_stop_enabled);
+        set_opt!(stop_tighten_start_sec);
+        set_opt!(stop_min_pct);
+        set_opt!(trailing_enabled);
+        set_opt!(trailing_min_high_pct);
+        set_opt!(min_trail_pct);
+        set_opt!(proportional_trail_enabled);
+        set_opt!(proportional_trail_pct);
+        set_opt!(proportional_trail_min_pct);
+        set_opt!(proportional_trail_min_giveback_pct);
+        set_opt!(tight_stop_enabled);
+        set_opt!(tight_stop_pct);
+        set_opt!(ratchet_enabled);
+        set_opt!(ratchet_confirm_ticks);
+        set_opt!(ratchet_confirm_tolerance_pct);
+        set_opt!(max_bid_wick_pct);
+        set_opt!(max_last_price_age_sec);
+        set_opt!(stale_profit_pct);
+        set_opt!(stale_profit_bid_unchanged_sec);
+        set_opt!(stagnant_profit_pct);
+        set_opt!(stagnant_duration_sec);
+        set_opt!(depth_collapse_threshold_pct);
+        set_opt!(exit_grace_sec);
+        set_opt!(maker_exits_for_tp_only);
+        set_opt!(maker_first_exit_enabled);
+        set_opt!(strategy_exit_maker_first);
+        set_opt!(exit_maker_timeout_ms);
+        set_opt!(max_book_age_sec);
         self.config
             .positions
             .account_exit

@@ -280,13 +280,13 @@ fn build_supervisor_config(cli: &ParsedCli, fallback_socket: String) -> Supervis
         cfg.extra_args.push("--readonly".into());
     }
     if let Some(ref a) = cli.assets {
-        cfg.assets = a.clone();
+        cfg.assets = Some(a.clone());
     }
     if let Some(t) = cli.tick_ms {
-        cfg.tick_ms = t;
+        cfg.tick_ms = Some(t);
     }
     if let Some(ref sb) = cli.seed_balance {
-        cfg.seed_balance = sb.clone();
+        cfg.seed_balance = Some(sb.clone());
     }
     if let Some(ref mon) = cli.max_order_notional {
         cfg.max_order_notional = Some(mon.clone());
@@ -296,10 +296,10 @@ fn build_supervisor_config(cli: &ParsedCli, fallback_socket: String) -> Supervis
         cfg.round_sec = Some(v);
     }
     if let Some(v) = cli.min_round_age {
-        cfg.min_round_age = v;
+        cfg.min_round_age = Some(v);
     }
     if let Some(v) = cli.min_time_left {
-        cfg.min_time_left = v;
+        cfg.min_time_left = Some(v);
     }
     if let Some(v) = cli.max_positions {
         cfg.max_positions = Some(v);

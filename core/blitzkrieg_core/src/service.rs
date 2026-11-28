@@ -351,6 +351,8 @@ pub struct Core {
     /// surfaced to the panel as `engine.stats.lastError`. Session-scoped: a
     /// restart starts with no error, and nothing clears it but a new one.
     last_error: Option<LastError>,
+    /// Consecutive `StoreApi::save_positions` failures (fail-visible alert at >= 2).
+    pub(super) persist_positions_failures: std::cell::Cell<u32>,
     /// Newest external (unknown-order) fill timestamp already folded into the
     /// position book; persisted next to the position log.
     recon_watermark_ms: i64,

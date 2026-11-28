@@ -79,6 +79,9 @@ pub struct FillDelta {
     /// every fee decision downstream (E17). `mode` is what was requested; this is
     /// what happened.
     pub role: OrderRole,
+    /// Authoritative venue receipt fee for this fill delta, when reported by
+    /// the venue. `None` falls back to the kernel's fee schedule (`model`).
+    pub venue_fee_usd: Option<Decimal>,
     /// The order's own limit price. A resting BUY reserved `limit_price * size`;
     /// the filled shares must release the notional they were reserved AT, not the
     /// (better) price they happened to execute at — releasing only the execution
@@ -1418,6 +1421,7 @@ impl Ome {
             round_slot: order.round_slot,
             mode: order.mode,
             role,
+            venue_fee_usd: None,
             limit_price: order.price,
             // The caller (apply_fill) stamps the producing trade's ledger key
             // right after this returns — record_delta has no trade identity.

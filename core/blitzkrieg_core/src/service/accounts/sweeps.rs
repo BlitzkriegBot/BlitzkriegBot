@@ -585,10 +585,17 @@ impl Core {
         }
         if was_live && let Some(vid) = order.venue_order_id {
             let venue = self.execution_venue_of(order.account_id.as_str(), &order.token_id);
-            // Force-close is locally mandatory (round expired); the venue cancel
-            // is best-effort — a full queue must not abort it. The lingering
-            // venue order is recovered by reconcile/ghost detection (#18).
-            let _ = self.queue_venue_cancel(venue, vid);
+            // Force-close is locally mandatory (round expired); if the venue
+            // cancel queue is saturated, surface a loud RiskAlert immediately
+            // so a potentially live venue order is never silently dropped.
+            if let Err(e) = self.queue_venue_cancel(venue, vid.clone()) {
+                let msg = format!(
+                    "force_close_cancel_queue_full: order {id} (venue {vid}) marked ForceClosed                      locally, but venue cancel could not be queued ({}) — reconcile must verify",
+                    e.message
+                );
+                tracing::error!(order = %id, venue_order_id = %vid, error = %e.message, "{msg}");
+                self.emit_risk_alert(CoreErrorCode::Internal, msg);
+            }
         }
         tracing::warn!(
             order = %id,

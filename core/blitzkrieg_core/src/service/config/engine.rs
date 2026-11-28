@@ -118,7 +118,16 @@ impl CoreConfig {
     /// and an embedded caller decides what a zero-strategy engine means to it.
     /// [`CoreConfig::allow_zero_strategies`] is the acknowledged opt-out.
     pub fn install_engine(&self, core: &mut Core) -> Result<(), String> {
-        core.enable_engine(crate::engine::Engine::new(self.engine_config()));
+        let mut engine_cfg = self.engine_config();
+        // LIVE safety guard: enforce a 10s spot-freshness ceiling by default so
+        // a stalled Binance/Chainlink feed never lets momentum_ok or bk.spot
+        // trade on stale prices. Dry/backtest stay configurable (None unless set).
+        if core.config().mode == crate::model::Mode::Live
+            && engine_cfg.spot_freshness_max_ms.is_none()
+        {
+            engine_cfg.spot_freshness_max_ms = Some(10_000);
+        }
+        core.enable_engine(crate::engine::Engine::new(engine_cfg));
         // Grid-pool membership and per-account anchors must come from Core's
         // config — the SQLite overlay's destination — not from `self`.
         // Session boot clones CoreConfig before `Core::new`; `install_risk_db`

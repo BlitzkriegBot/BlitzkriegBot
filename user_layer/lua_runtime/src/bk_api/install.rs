@@ -443,7 +443,7 @@ pub fn install_bk(lua: &Lua, state: Arc<Mutex<BkState>>) -> mlua::Result<()> {
         )?;
     }
 
-    // -- bk.spot(asset) -----------------------------------------------------
+    // -- bk.spot(asset) & bk.spot_info(asset) -------------------------------
     {
         let st = Arc::clone(&state);
         bk.raw_set(
@@ -452,9 +452,29 @@ pub fn install_bk(lua: &Lua, state: Arc<Mutex<BkState>>) -> mlua::Result<()> {
                 let st = st.lock().expect("bk state mutex");
                 let key = asset.to_ascii_uppercase();
                 match st.spots.get(&key) {
-                    Some(px) => Ok(Value::String(lua.create_string(px.as_str())?)),
-                    None => Ok(Value::Nil),
+                    Some((px, ts_ms)) if st.spot_fresh(*ts_ms) => {
+                        Ok(Value::String(lua.create_string(px.as_str())?))
+                    }
+                    _ => Ok(Value::Nil),
                 }
+            })?,
+        )?;
+    }
+    {
+        let st = Arc::clone(&state);
+        bk.raw_set(
+            "spot_info",
+            lua.create_function(move |lua, asset: String| {
+                let st = st.lock().expect("bk state mutex");
+                let key = asset.to_ascii_uppercase();
+                let Some((px, ts_ms)) = st.spots.get(&key) else {
+                    return Ok(Value::Nil);
+                };
+                let t = lua.create_table()?;
+                t.raw_set("price", px.as_str())?;
+                t.raw_set("ts_ms", *ts_ms)?;
+                t.raw_set("fresh", st.spot_fresh(*ts_ms))?;
+                Ok(Value::Table(guard_readonly(lua, &t)?))
             })?,
         )?;
     }

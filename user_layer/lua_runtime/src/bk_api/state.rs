@@ -147,10 +147,16 @@ pub struct BkState {
     /// a host actually feeds klines — with no E29 aggregator there is no
     /// source, so `bk.kline` honestly returns `nil`.
     pub klines: HashMap<(String, String), Kline>,
-    /// Latest spot price per asset symbol (`bk.spot(asset)`), decimal STRINGS.
-    /// Populated by `LuaStrategy::on_spot` from `DataEvent::Spot`. Empty until
-    /// a spot tick arrives (`bk.spot(asset)` returns `nil`).
-    pub spots: HashMap<String, String>,
+    /// Latest spot `(price_str, trade_time_ms)` per asset symbol (`bk.spot` /
+    /// `bk.spot_info`). Populated by `LuaStrategy::on_spot` from
+    /// `DataEvent::Spot`. Empty until a spot tick arrives (`bk.spot` returns
+    /// `nil`).
+    pub spots: HashMap<String, (String, i64)>,
+    /// Optional freshness budget (ms) for `bk.spot(asset)`. When `Some(max_ms)`
+    /// and `now_ms - ts_ms > max_ms`, `bk.spot` returns `nil` (and
+    /// `bk.spot_info().fresh == false`) so a dead spot feed cannot fool a
+    /// live strategy. `None` keeps legacy/offline replay behaviour.
+    pub spot_freshness_max_ms: Option<i64>,
     /// #427: the confirmed cross-venue mappings (`bk.unified_events()`),
     /// pushed by the adapter from the ctx's view. Empty until a host pushes
     /// one — single-venue deployments answer an empty table, never an error.
@@ -253,9 +259,21 @@ impl BkState {
         self.books.insert(symbol, update);
     }
 
-    /// Overwrite the latest spot price for one asset (decimal string).
-    pub fn put_spot(&mut self, asset: &str, price: String) {
-        self.spots.insert(asset.to_ascii_uppercase(), price);
+    /// Overwrite the latest spot `(price, ts_ms)` for one asset.
+    pub fn put_spot(&mut self, asset: &str, price: String, ts_ms: i64) {
+        self.spots
+            .insert(asset.to_ascii_uppercase(), (price, ts_ms));
+    }
+
+    /// Whether a spot sample stamped at `ts_ms` is fresh under the configured
+    /// `spot_freshness_max_ms` budget.
+    pub fn spot_fresh(&self, ts_ms: i64) -> bool {
+        match self.spot_freshness_max_ms {
+            Some(max_ms) if max_ms > 0 && self.now_ms > 0 => {
+                self.now_ms.saturating_sub(ts_ms) <= max_ms
+            }
+            _ => true,
+        }
     }
 }
 

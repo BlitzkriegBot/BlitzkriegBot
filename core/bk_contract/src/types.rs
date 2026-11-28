@@ -178,6 +178,7 @@ pub enum CoreErrorCode {
     MarketHalted,
     NotAuthenticated,
     VenueError,
+    RateLimited,
     Timeout,
     Internal,
     /// #177: this kernel runs in `Mode::ReadOnly`, which refuses execution at

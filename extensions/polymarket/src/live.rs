@@ -214,6 +214,15 @@ pub async fn spawn_if_configured(
                             host.on_place_timeout(&core_order_id).await;
                             host.report_error(e).await;
                         }
+                        Err(e) if e.code == CoreErrorCode::RateLimited => {
+                            // 429 rate-limit is transient burst pressure, not a
+                            // broken channel: reject cleanly, back off briefly,
+                            // and do NOT count toward the 3-strike channel freeze.
+                            host.on_order_rejected(&core_order_id, Some(e.clone()))
+                                .await;
+                            host.report_error(e).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        }
                         Err(e) => {
                             place_failures = place_failures.saturating_add(1);
                             host.on_order_rejected(&core_order_id, Some(e.clone()))

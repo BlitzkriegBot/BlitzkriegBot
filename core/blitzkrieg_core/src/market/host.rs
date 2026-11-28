@@ -180,7 +180,7 @@ fn error_code_from_api(c: api::CoreErrorCode) -> m::CoreErrorCode {
         A::KillSwitchActive => C::KillSwitchActive,
         A::MarketHalted => C::MarketHalted,
         A::NotAuthenticated => C::NotAuthenticated,
-        A::VenueError => C::VenueError,
+        A::VenueError | A::RateLimited => C::VenueError,
         A::Timeout => C::Timeout,
         A::Internal => C::Internal,
         // #177: a kernel-side mode refusal crossing the plugin seam keeps its

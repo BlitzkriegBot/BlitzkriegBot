@@ -152,7 +152,14 @@ impl LuaStrategy {
     pub fn on_spot(&mut self, asset: &str, price: &str, now_ms: i64) {
         if let Ok(mut st) = self.state.lock() {
             st.set_now(now_ms);
-            st.put_spot(asset, price.to_string());
+            st.put_spot(asset, price.to_string(), now_ms);
+        }
+    }
+
+    /// Configure the maximum allowed spot age (ms) for `bk.spot` / `bk.spot_info`.
+    pub fn set_spot_freshness_max_ms(&mut self, max_ms: Option<i64>) {
+        if let Ok(mut st) = self.state.lock() {
+            st.spot_freshness_max_ms = max_ms;
         }
     }
 
@@ -978,5 +985,20 @@ mod tests {
         let intents = s.evaluate(&eval_ctx(2_000, 60));
         assert_eq!(intents.entries.len(), 1);
         assert_eq!(intents.entries[0].reason, "91234.56");
+    }
+
+    /// `bk.spot(asset)` returns `nil` and `bk.spot_info(asset).fresh` becomes
+    /// `false` once the spot sample ages past `spot_freshness_max_ms`.
+    #[test]
+    fn bk_spot_returns_nil_when_stale_beyond_freshness_budget() {
+        let mut s = strategy(
+            "function bk_evaluate()                local px = bk.spot('BTC')                local info = bk.spot_info('BTC')                if px ~= nil then                  return { entries = { { token = '0xup', price = '0.90', reason = 'fresh:' .. px } } }                end                if info ~= nil and info.fresh == false then                  return { entries = { { token = '0xup', price = '0.90', reason = 'stale:' .. info.price } } }                end                return {}              end",
+        );
+        s.set_spot_freshness_max_ms(Some(10_000));
+        s.on_spot("BTC", "91000.00", 1_000);
+        let fresh_intents = s.evaluate(&eval_ctx(5_000, 60));
+        assert_eq!(fresh_intents.entries[0].reason, "fresh:91000.00");
+        let stale_intents = s.evaluate(&eval_ctx(15_000, 50));
+        assert_eq!(stale_intents.entries[0].reason, "stale:91000.00");
     }
 }
